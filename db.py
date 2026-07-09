@@ -96,3 +96,37 @@ def init_db():
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
         except Exception:
             pass
+
+    # Chat history
+    execute("""
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            user_msg TEXT NOT NULL,
+            avatar_reply TEXT NOT NULL DEFAULT '',
+            emotion_label VARCHAR(100) NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # Diary entries
+    execute("""
+        CREATE TABLE IF NOT EXISTS diary_entries (
+            id SERIAL PRIMARY KEY,
+            date DATE UNIQUE NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            chat_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # News items
+    execute("""
+        CREATE TABLE IF NOT EXISTS news_items (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL DEFAULT '',
+            source VARCHAR(50) NOT NULL DEFAULT '',
+            rank INTEGER NOT NULL DEFAULT 0,
+            fetched_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
