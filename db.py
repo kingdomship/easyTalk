@@ -1,0 +1,98 @@
+"""Emotion database — connects to the `emotion` database on PostgreSQL."""
+
+import re
+import psycopg2
+import psycopg2.extras
+from psycopg2 import pool
+
+DB_CONFIG = {
+    "host": "postgres",
+    "port": 5432,
+    "database": "emotion",
+    "user": "postgres",
+    "password": "123456",
+}
+
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = pool.SimpleConnectionPool(1, 5, **DB_CONFIG)
+    return _pool
+
+
+def _conn():
+    c = _get_pool().getconn()
+    c.autocommit = True
+    return c
+
+
+def _pg(sql):
+    return re.sub(r'\$\d+', '%s', sql)
+
+
+def q(sql, params=None, fetch="all"):
+    sql = _pg(sql)
+    conn = _conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params or ())
+            if fetch == "one":
+                row = cur.fetchone()
+                return dict(row) if row is not None else None
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return [] if fetch == "all" else None
+    finally:
+        _get_pool().putconn(conn)
+
+
+def execute(sql, params=None):
+    sql = _pg(sql)
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params or ())
+            return True
+    except Exception:
+        return False
+    finally:
+        _get_pool().putconn(conn)
+
+
+def init_db():
+    execute("""
+        CREATE TABLE IF NOT EXISTS emotion_cache (
+            id SERIAL PRIMARY KEY,
+            label VARCHAR(100) UNIQUE NOT NULL,
+            eye_curve REAL NOT NULL DEFAULT 0,
+            eye_open REAL NOT NULL DEFAULT 0.5,
+            eye_pupil REAL NOT NULL DEFAULT 0,
+            mouth_curve REAL NOT NULL DEFAULT 0,
+            mouth_open REAL NOT NULL DEFAULT 0,
+            mouth_width REAL NOT NULL DEFAULT 0.8,
+            sparkle REAL NOT NULL DEFAULT 0.5,
+            brow_angle REAL NOT NULL DEFAULT 0,
+            brow_height REAL NOT NULL DEFAULT 0.5,
+            brow_asym REAL NOT NULL DEFAULT 0,
+            reply TEXT NOT NULL DEFAULT '',
+            sequence_data JSONB,
+            use_count INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    # Migration for missing columns
+    for col, typ in [
+        ("eye_pupil", "REAL NOT NULL DEFAULT 0"),
+        ("brow_angle", "REAL NOT NULL DEFAULT 0"),
+        ("brow_height", "REAL NOT NULL DEFAULT 0.5"),
+        ("brow_asym", "REAL NOT NULL DEFAULT 0"),
+        ("sequence_data", "JSONB"),
+    ]:
+        try:
+            execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
+        except Exception:
+            pass
