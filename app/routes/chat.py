@@ -414,16 +414,21 @@ _FALLBACKS = [
 
 
 def _call_llm(messages: list) -> tuple:
-    """Call DeepSeek without response_format (unreliable with history).
-    Append JSON instruction to the last user message, then extract JSON from the response."""
-    client = _get_llm()
+    """Call DeepSeek and extract JSON from the response.
 
-    # Append JSON instruction to user message
-    messages[-1]["content"] += "\n\n请务必只输出一个JSON对象，不要包含任何其他文字。格式：{\"emotions\":[...],\"reply\":\"...\"}"
+    DeepSeek's response_format=json_object is buggy with conversation history
+    (silently returns spaces). We skip it and instead use prompt instruction +
+    brace-matching JSON extraction.
+    """
+    client = _get_llm()
+    # Append JSON format reminder without modifying user's original words
+    msgs = list(messages)
+    msgs[-1] = dict(msgs[-1])
+    msgs[-1]["content"] += "\n（请以上述JSON格式回复）"
 
     try:
         resp = client.chat.completions.create(
-            model="deepseek-chat", messages=messages,
+            model="deepseek-chat", messages=msgs,
             temperature=0.9, max_tokens=800,
         )
         raw = resp.choices[0].message.content
@@ -431,12 +436,21 @@ def _call_llm(messages: list) -> tuple:
         end = raw.rfind("}") + 1
         if start >= 0 and end > start:
             data = json.loads(raw[start:end])
-            if "reply" in data:
+            if "reply" in data and "emotions" in data:
                 return data, None
-        logger.warning("No valid JSON found: %s", raw[:200])
+        logger.warning("No valid JSON in response: %s", raw[:200])
         return None, "嗯...刚刚组织语言出了点小岔子，再说一次？"
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as e:
+        err = str(e).lower()
         logger.error("LLM call failed: %s", e)
+        if "timeout" in err or "timed out" in err:
+            return None, "等我一下...星空信号不太好呢 ✨"
+        if "rate" in err or "429" in err:
+            return None, "说得太快啦，让我喘口气～"
+        if "auth" in err or "401" in err or "403" in err:
+            return None, "嗯...我的星空钥匙好像出了问题 🗝️"
+        if "connection" in err or "refused" in err or "network" in err:
+            return None, "星空连接断了一下，再试试？"
         return None, random.choice(_FALLBACKS)
 
 
