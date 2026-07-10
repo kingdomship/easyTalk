@@ -4,7 +4,7 @@ import os
 import json
 from datetime import date, timedelta
 
-from db import q, execute
+from app.db import q, execute
 
 
 DIARY_SYSTEM_PROMPT = """你是一个像素头像，生活在数字星空里。用户每天会和你聊天。

@@ -2,7 +2,7 @@
 
 import os
 
-_MEMORY_DIR = os.path.join(os.path.dirname(__file__), "memory")
+_MEMORY_DIR = os.environ.get("MEMORY_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory"))
 
 
 def _read_file(path: str) -> str:

@@ -1,16 +1,17 @@
 """Emotion database — connects to the `emotion` database on PostgreSQL."""
 
+import os
 import re
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
 
 DB_CONFIG = {
-    "host": "postgres",
-    "port": 5432,
-    "database": "emotion",
-    "user": "postgres",
-    "password": "123456",
+    "host": os.getenv("DB_HOST", "postgres"),
+    "port": int(os.getenv("DB_PORT", "5432")),
+    "database": os.getenv("DB_NAME", "emotion"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", ""),
 }
 
 _pool = None
@@ -63,6 +64,8 @@ def execute(sql, params=None):
 
 
 def init_db():
+    execute("CREATE EXTENSION IF NOT EXISTS vector")
+
     execute("""
         CREATE TABLE IF NOT EXISTS emotion_cache (
             id SERIAL PRIMARY KEY,
@@ -106,6 +109,20 @@ def init_db():
             emotion_label VARCHAR(100) NOT NULL DEFAULT '',
             created_at TIMESTAMP DEFAULT NOW()
         )
+    """)
+
+    # Semantic memory vectors for similarity search
+    execute("""
+        CREATE TABLE IF NOT EXISTS memory_vectors (
+            id SERIAL PRIMARY KEY,
+            chat_id INTEGER NOT NULL REFERENCES chat_history(id),
+            embedding halfvec(256),
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_memory_vectors_embedding
+        ON memory_vectors USING hnsw (embedding halfvec_cosine_ops)
     """)
 
     # Diary entries

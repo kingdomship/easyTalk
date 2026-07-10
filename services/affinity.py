@@ -1,15 +1,24 @@
-"""6D affinity tracking — warmth, trust, intimacy, curiosity, patience, tension.
+"""6D affinity tracking + expression learning.
+
+Affinity dimensions: warmth, trust, intimacy, curiosity, patience, tension.
+Expression learning: adaptive amplitude based on user engagement signals.
 
 Updated after each conversation turn using EMA smoothing.
 Persisted in DB for survival across restarts.
 """
 
-import json
-from db import q, execute, init_db
+from app.db import q, execute
 
-DIMENSIONS = ["warmth", "trust", "intimacy", "curiosity", "patience", "tension"]
-DEFAULTS = {"warmth": 0.5, "trust": 0.4, "intimacy": 0.2, "curiosity": 0.6, "patience": 0.7, "tension": 0.1}
-EMA_ALPHA = 0.05  # Smoothing factor — small = slow change
+DIMENSIONS = ["warmth", "trust", "intimacy", "curiosity", "patience", "tension", "expression_amplitude"]
+DEFAULTS = {"warmth": 0.5, "trust": 0.4, "intimacy": 0.2, "curiosity": 0.6, "patience": 0.7, "tension": 0.1, "expression_amplitude": 1.0}
+EMA_ALPHA = 0.05
+
+# Neutral expression values for amplitude scaling
+NEUTRAL_PARAMS = {
+    "eye_curve": 0, "eye_open": 0.5, "eye_pupil": 0,
+    "mouth_curve": 0, "mouth_open": 0, "mouth_width": 0.8,
+    "sparkle": 0.5, "brow_angle": 0, "brow_height": 0.5, "brow_asym": 0,
+}
 
 
 def init_affinity_db():
@@ -110,3 +119,63 @@ def get_affinity_context() -> str:
             f"根据关系深浅自然调整你的语气和调侃尺度。"
         )
     return ""
+
+
+def get_expression_amplitude() -> float:
+    """Return current expression amplitude (0.5=subtle, 1.0=normal, 1.5=exaggerated)."""
+    row = q("SELECT value FROM affinity WHERE dimension = 'expression_amplitude'", fetch="one")
+    if row:
+        return max(0.5, min(1.5, row["value"]))
+    return 1.0
+
+
+def adjust_expression_amplitude(user_msg: str):
+    """Adjust expression amplitude based on user engagement signals.
+
+    Positive signals (enjoying expressions): long replies, positive words, emoji.
+    Negative signals (overwhelmed): very short replies, dismissive words.
+    Slow EMA so the AI gradually adapts to the user's preference.
+    """
+    current = get_expression_amplitude()
+    msg = user_msg.strip()
+    delta = 0.0
+
+    if len(msg) > 30:
+        delta += 0.015
+    if len(msg) > 80:
+        delta += 0.01
+    if any(w in msg for w in ["哈哈", "笑", "可爱", "好玩", "有意思", "有趣"]):
+        delta += 0.025
+    if any(w in msg for w in ["😂", "🤣", "😆", "😏", "✨", "❤️", "😊"]):
+        delta += 0.015
+
+    if len(msg) < 5:
+        delta -= 0.01
+    if any(w in msg for w in ["夸张", "戏精", "别闹", "正经"]):
+        delta -= 0.015
+
+    # Regression toward neutral
+    delta += (1.0 - current) * 0.002
+
+    new_val = max(0.5, min(1.5, current + delta))
+    execute(
+        "UPDATE affinity SET value = %s, updated_at = NOW() WHERE dimension = 'expression_amplitude'",
+        [round(new_val, 4)],
+    )
+
+
+def scale_emotion_params(frame: dict) -> dict:
+    """Scale emotion params by expression amplitude.
+
+    scaled = neutral + (param - neutral) * amplitude
+    Preserves emotion character while adjusting intensity.
+    """
+    amp = get_expression_amplitude()
+    if amp == 1.0:
+        return frame
+    result = dict(frame)
+    for key in NEUTRAL_PARAMS:
+        if key in result:
+            neutral = NEUTRAL_PARAMS[key]
+            result[key] = neutral + (result[key] - neutral) * amp
+    return result

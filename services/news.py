@@ -1,8 +1,9 @@
 """Multi-source hot-list fetcher — Bilibili, GitHub, Baidu, news aggregators."""
 
+import asyncio
 import re
 import httpx
-from db import execute, q
+from app.db import q, execute
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -10,13 +11,11 @@ HEADERS = {
 }
 
 
-def fetch_bilibili_popular() -> list[dict]:
-    """Bilibili popular videos — reliable public API."""
+async def _fetch_bilibili(client: httpx.AsyncClient) -> list[dict]:
     try:
-        resp = httpx.get(
+        resp = await client.get(
             "https://api.bilibili.com/x/web-interface/popular",
             params={"ps": 20},
-            headers=HEADERS,
             timeout=10,
         )
         resp.raise_for_status()
@@ -39,17 +38,15 @@ def fetch_bilibili_popular() -> list[dict]:
         return []
 
 
-def fetch_github_trend() -> list[dict]:
-    """GitHub Trending — HTML scraping."""
+async def _fetch_github(client: httpx.AsyncClient) -> list[dict]:
     try:
-        resp = httpx.get(
+        resp = await client.get(
             "https://github.com/trending",
-            headers={**HEADERS, "Accept": "text/html"},
+            headers={"Accept": "text/html"},
             timeout=10,
             follow_redirects=True,
         )
         resp.raise_for_status()
-        # Parse h2 > a tags with repo paths
         matches = re.findall(
             r'<h2[^>]*>.*?<a[^>]*href="(/[^/"]+/[^/"]+)"[^>]*>(.*?)</a>',
             resp.text, re.DOTALL,
@@ -75,16 +72,14 @@ def fetch_github_trend() -> list[dict]:
         return []
 
 
-def fetch_tophub() -> list[dict]:
-    """Tophub.today — Chinese hot-list aggregator."""
+async def _fetch_tophub(client: httpx.AsyncClient) -> list[dict]:
     try:
-        resp = httpx.get(
+        resp = await client.get(
             "https://tophub.today/",
-            headers={**HEADERS, "Accept": "text/html"},
+            headers={"Accept": "text/html"},
             timeout=10,
         )
         resp.raise_for_status()
-        # Parse table rows: <td class="al"><a href="..." ...>title</a></td>
         rows = re.findall(
             r'<td[^>]*>\d+</td>\s*<td[^>]*><a[^>]*href="([^"]*)"[^>]*>([^<]+)</a>',
             resp.text,
@@ -96,7 +91,6 @@ def fetch_tophub() -> list[dict]:
             if not title or len(title) < 2 or title in seen:
                 continue
             seen.add(title)
-            # Determine source from URL
             source = "tophub"
             if "weibo" in url:
                 source = "weibo"
@@ -115,18 +109,18 @@ def fetch_tophub() -> list[dict]:
         return []
 
 
-def fetch_baidu_hot() -> list[dict]:
-    """Baidu hot search — page scraping."""
+async def _fetch_baidu(client: httpx.AsyncClient) -> list[dict]:
     try:
-        resp = httpx.get(
+        resp = await client.get(
             "https://top.baidu.com/board?tab=realtime",
-            headers={**HEADERS, "Accept": "text/html"},
+            headers={"Accept": "text/html"},
             timeout=10,
         )
         resp.raise_for_status()
-        # Parse hot titles from the page
-        titles = re.findall(r'<div[^>]*class="[^"]*c-single-text-ellipsis[^"]*"[^>]*>([^<]+)</div>', resp.text)
-        # Backup: try other patterns
+        titles = re.findall(
+            r'<div[^>]*class="[^"]*c-single-text-ellipsis[^"]*"[^>]*>([^<]+)</div>',
+            resp.text,
+        )
         if not titles:
             titles = re.findall(r'"word":"([^"]+)"', resp.text)
         items = []
@@ -147,17 +141,20 @@ def fetch_baidu_hot() -> list[dict]:
         return []
 
 
-def fetch_all_sources() -> list[dict]:
-    """Aggregate all sources, deduplicate by title."""
-    all_items = []
-    for fetcher in [fetch_bilibili_popular, fetch_github_trend, fetch_tophub, fetch_baidu_hot]:
-        try:
-            items = fetcher()
-            all_items.extend(items)
-        except Exception:
-            pass
+async def _fetch_all_sources() -> list[dict]:
+    """Aggregate all sources concurrently, deduplicate by title."""
+    async with httpx.AsyncClient(headers=HEADERS) as client:
+        results = await asyncio.gather(
+            _fetch_bilibili(client),
+            _fetch_github(client),
+            _fetch_tophub(client),
+            _fetch_baidu(client),
+        )
 
-    # Dedup by first 15 chars of lowercase title
+    all_items = []
+    for items in results:
+        all_items.extend(items)
+
     seen = set()
     deduped = []
     for item in all_items:
@@ -167,16 +164,15 @@ def fetch_all_sources() -> list[dict]:
         seen.add(key)
         deduped.append(item)
 
-    # Re-number
     for i, item in enumerate(deduped):
         item["rank"] = i + 1
 
     return deduped
 
 
-def fetch_all():
+async def fetch_all() -> int:
     """Fetch from all sources and replace news_items table."""
-    items = fetch_all_sources()
+    items = await _fetch_all_sources()
     if not items:
         return 0
 

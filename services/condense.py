@@ -13,7 +13,11 @@ import sys
 
 
 def extract_transcript(jsonl_path: str) -> str:
-    """Extract user/assistant dialogue from JSONL."""
+    """Extract user/assistant dialogue from archive JSONL.
+
+    Supports both the current format ({timestamp, user, assistant})
+    and the legacy format ({type, message, ...}).
+    """
     with open(jsonl_path) as f:
         lines = f.readlines()
 
@@ -21,6 +25,17 @@ def extract_transcript(jsonl_path: str) -> str:
     for line in lines:
         try:
             d = json.loads(line)
+            # Current archive format: {timestamp, user, assistant}
+            if "user" in d and "assistant" in d:
+                user = d.get("user", "")
+                assistant = d.get("assistant", "")
+                if user and len(user.strip()) > 5:
+                    transcript.append(f"用户：{user.strip()}")
+                if assistant and len(assistant.strip()) > 5:
+                    transcript.append(f"AI：{assistant.strip()}")
+                continue
+
+            # Legacy format: {type, message: {content, ...}}
             t = d.get("type", "")
             if t == "user":
                 msg = d.get("message", {})
@@ -92,8 +107,8 @@ def condense(transcript: str, api_key: str) -> str:
 
 
 def main():
-    jsonl_path = os.path.join(os.path.dirname(__file__), "memory", "conversation_history.jsonl")
-    output_path = os.path.join(os.path.dirname(__file__), "memory", "conversation_summary.md")
+    jsonl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory", "conversation_archive.jsonl")
+    output_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory", "conversation_summary.md")
 
     if not os.path.exists(jsonl_path):
         print(f"File not found: {jsonl_path}")
