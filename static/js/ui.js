@@ -341,10 +341,6 @@ function extractMoodEmoji(text) {
   return match ? match[0] : '✨';
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ═══════════════════════════════════════════
 // Long press detection
 // ═══════════════════════════════════════════
@@ -603,4 +599,3 @@ initSparkleParticles();
 curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0 };
 tgtParams = { ...curParams };
 requestAnimationFrame(loop);
-</script>

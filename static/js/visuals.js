@@ -653,4 +653,3 @@ function drawChat() {
   // Overlay sparkle particles
   drawSparkleOverlay(faceBob);
 }
-
