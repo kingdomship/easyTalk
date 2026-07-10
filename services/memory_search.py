@@ -15,11 +15,20 @@ from app.db import q, execute
 
 VEC_DIM = 256
 _EXTRACT_PROMPT = """从以下对话中提取5-10个关键的语义标签（主题、情感、意图、实体）, 纯中文。
-输出格式：{"tags": ["标签1", "标签2", ...]}
+以json格式输出：{"tags": ["标签1", "标签2", ...]}
 
 示例：
 "我今天好累啊，加班到很晚" → {"tags": ["工作", "疲惫", "加班", "倾诉", "负面情绪"]}
 "哈哈这个笑话好好笑" → {"tags": ["笑话", "开心", "幽默", "正面情绪", "娱乐"]}"""
+
+
+_llm_client = None
+
+
+def set_llm_client(client):
+    """Share the LLM client from chat.py to avoid multiple client instances."""
+    global _llm_client
+    _llm_client = client
 
 
 def _hash_to_vector(tags: list[str], dim: int = VEC_DIM) -> list[float]:
@@ -43,26 +52,12 @@ def _hash_to_vector(tags: list[str], dim: int = VEC_DIM) -> list[float]:
     return vec
 
 
-_tag_client = None
-
-
-def _get_tag_client():
-    global _tag_client
-    if _tag_client is None:
-        from openai import OpenAI
-
-        _tag_client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com",
-        )
-    return _tag_client
-
-
 def _llm_extract_tags(text: str) -> list[str]:
     """Use DeepSeek to extract semantic tags from text."""
+    if _llm_client is None:
+        return []
     try:
-        client = _get_tag_client()
-        resp = client.chat.completions.create(
+        resp = _llm_client.chat.completions.create(
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": _EXTRACT_PROMPT},

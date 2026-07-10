@@ -45,11 +45,22 @@ def _get_llm():
             api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com",
         )
+        from services.memory_search import set_llm_client
+        set_llm_client(_client)
     return _client
 
 # Paths go up 3 levels: app/routes/chat.py → app/ → /app/
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 _ARCHIVE_PATH = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+
+
+def _strip_emoji(text: str) -> str:
+    """Remove emoji from conversation history to prevent DeepSeek JSON-mode crash."""
+    import re
+    return re.sub(
+        r'[\U0001F300-\U0001F9FF☀-➿⭐❤✨✀-➿️‍]',
+        '', text,
+    ).strip()
 
 
 def _jitter(value: float, amount: float = 0.03) -> float:
@@ -382,12 +393,12 @@ def _build_context(msg: str) -> list:
         system_msg += "\n\n" + memory_ctx
 
     history_rows = q(
-        "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 20", [],
+        "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
     )
     messages = [{"role": "system", "content": system_msg}]
     for row in reversed(history_rows):
-        messages.append({"role": "user", "content": row["user_msg"]})
-        messages.append({"role": "assistant", "content": row["avatar_reply"]})
+        messages.append({"role": "user", "content": _strip_emoji(row["user_msg"])})
+        messages.append({"role": "assistant", "content": _strip_emoji(row["avatar_reply"])})
     messages.append({"role": "user", "content": msg})
     return messages
 
@@ -403,29 +414,29 @@ _FALLBACKS = [
 
 
 def _call_llm(messages: list) -> tuple:
-    """Call DeepSeek with error categorization and natural fallbacks."""
+    """Call DeepSeek without response_format (unreliable with history).
+    Append JSON instruction to the last user message, then extract JSON from the response."""
+    client = _get_llm()
+
+    # Append JSON instruction to user message
+    messages[-1]["content"] += "\n\n请务必只输出一个JSON对象，不要包含任何其他文字。格式：{\"emotions\":[...],\"reply\":\"...\"}"
+
     try:
-        client = _get_llm()
         resp = client.chat.completions.create(
             model="deepseek-chat", messages=messages,
-            response_format={"type": "json_object"}, temperature=0.9, max_tokens=800,
+            temperature=0.9, max_tokens=800,
         )
-        data = json.loads(resp.choices[0].message.content)
-        return data, None
-    except json.JSONDecodeError:
-        logger.warning("LLM returned invalid JSON")
+        raw = resp.choices[0].message.content
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = json.loads(raw[start:end])
+            if "reply" in data:
+                return data, None
+        logger.warning("No valid JSON found: %s", raw[:200])
         return None, "嗯...刚刚组织语言出了点小岔子，再说一次？"
-    except Exception as e:
-        err_msg = str(e).lower()
+    except (json.JSONDecodeError, Exception) as e:
         logger.error("LLM call failed: %s", e)
-        if "timeout" in err_msg or "timed out" in err_msg:
-            return None, "等我一下...星空信号不太好呢 ✨"
-        if "rate" in err_msg or "429" in err_msg:
-            return None, "说得太快啦，让我喘口气～"
-        if "auth" in err_msg or "401" in err_msg or "403" in err_msg:
-            return None, "嗯...我的星空钥匙好像出了问题 🗝️"
-        if "connection" in err_msg or "refused" in err_msg or "network" in err_msg:
-            return None, "星空连接断了一下，再试试？"
         return None, random.choice(_FALLBACKS)
 
 
