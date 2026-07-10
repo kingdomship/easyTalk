@@ -38,7 +38,7 @@ def mood_calendar(days: int = 60):
     for r in rows:
         mood_emoji = "✨"
         for ch in (r.get("content") or ""):
-            if ord(ch) > 127 and any(0x1F300 <= ord(ch) <= 0x1F9FF):
+            if ord(ch) > 127 and 0x1F300 <= ord(ch) <= 0x1F9FF:
                 mood_emoji = ch
                 break
         result.append({

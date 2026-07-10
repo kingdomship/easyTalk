@@ -156,7 +156,6 @@ declare let cursorY: number | null;
 declare let dlgText: string;
 declare let dlgDisplayed: number;
 declare let dlgTyping: boolean;
-declare let stateTimer: number;
 declare let clickCount: number;
 declare let clickTimer: ReturnType<typeof setTimeout> | null;
 declare let pressTimer: ReturnType<typeof setTimeout> | null;
@@ -165,8 +164,6 @@ declare let pressStartY: number;
 declare let pending: boolean;
 declare let lastT: number;
 declare let convergeStart: number;
-declare let moodCalendarCache: unknown[] | null;
-
 // ── Global functions (declared across files) ──
 
 // engine.js

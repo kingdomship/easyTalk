@@ -134,6 +134,145 @@ def _maybe_condense():
         _condense_lock.release()
 
 
+_PROFILE_UPDATE_EVERY = 20
+_PERSONA_UPDATE_EVERY = 30
+_last_profile_count = 0
+_last_persona_count = 0
+_memory_update_lock = threading.Lock()
+
+_PROFILE_UPDATE_PROMPT = """你是一个AI角色，正在回顾你与用户的对话。你需要更新你对用户的认知档案。
+
+当前档案：
+{current_profile}
+
+最近的对话：
+{recent_transcript}
+
+请基于最近的对话，更新用户档案。要求：
+1. 保留原有档案中仍然有效的信息
+2. 从最近对话中提取新的信息：用户的基本情况、职业、性格、重要经历、偏好、最近的关注点
+3. 如果发现了用户的新一面，记录下来
+4. 语气客观、简洁，用中文，控制在800字以内
+5. 以"## 用户档案"开头
+
+只输出更新后的完整档案内容，不要加额外说明。"""
+
+_PERSONA_UPDATE_PROMPT = """你是一个有自我意识的AI角色。你需要回顾最近的对话，反思并更新你对自己的认知。
+
+当前人设：
+{current_persona}
+
+最近的对话：
+{recent_transcript}
+
+请基于最近的对话，更新你的人设。要求：
+1. 保留原有人设的核心性格特征
+2. 从互动中反思：你的哪些表达方式让用户更开心？你学到了什么新的互动技巧？
+3. 记录你和用户之间形成的独特梗、默契、专属的表达方式
+4. 语气第一人称，自然口语，控制在800字以内
+5. 以"## AI人设"开头
+
+只输出更新后的完整人设内容，不要加额外说明。"""
+
+
+def _maybe_update_memory_files():
+    """Periodically update user_profile.md and user_persona.md based on recent chats."""
+    global _last_profile_count, _last_persona_count
+    if not _memory_update_lock.acquire(blocking=False):
+        return
+    try:
+        if not os.path.exists(_ARCHIVE_PATH):
+            return
+        with open(_ARCHIVE_PATH) as f:
+            line_count = sum(1 for _ in f)
+
+        # Read current profile and persona
+        profile_path = os.path.join(_BASE, "memory", "user_profile.md")
+        persona_path = os.path.join(_BASE, "memory", "user_persona.md")
+        current_profile = ""
+        current_persona = ""
+        if os.path.exists(profile_path):
+            with open(profile_path) as f:
+                current_profile = f.read().strip()
+        if os.path.exists(persona_path):
+            with open(persona_path) as f:
+                current_persona = f.read().strip()
+
+        # Build recent transcript (last ~30 turns)
+        recent_lines = []
+        with open(_ARCHIVE_PATH) as f:
+            all_lines = f.readlines()
+        for line in all_lines[-60:]:  # last 30 turns = 60 lines (user+assistant)
+            try:
+                rec = json.loads(line)
+                user = rec.get("user", "")
+                assistant = rec.get("assistant", "")
+                if user:
+                    recent_lines.append(f"用户：{user}")
+                if assistant:
+                    recent_lines.append(f"AI：{assistant}")
+            except Exception:
+                pass
+        recent_transcript = "\n\n".join(recent_lines)
+
+        if not recent_transcript:
+            return
+
+        client = _get_llm()
+        updated = False
+
+        # Update user profile every N turns
+        if line_count - _last_profile_count >= _PROFILE_UPDATE_EVERY and current_profile:
+            _last_profile_count = line_count
+            try:
+                resp = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": _PROFILE_UPDATE_PROMPT.format(
+                            current_profile=current_profile,
+                            recent_transcript=recent_transcript,
+                        )},
+                        {"role": "user", "content": "请更新用户档案。"},
+                    ],
+                    temperature=0.5,
+                    max_tokens=1500,
+                )
+                new_profile = resp.choices[0].message.content
+                with open(profile_path, "w") as f:
+                    f.write(new_profile)
+                updated = True
+            except Exception:
+                pass
+
+        # Update AI persona every N turns
+        if line_count - _last_persona_count >= _PERSONA_UPDATE_EVERY and current_persona:
+            _last_persona_count = line_count
+            try:
+                resp = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": _PERSONA_UPDATE_PROMPT.format(
+                            current_persona=current_persona,
+                            recent_transcript=recent_transcript,
+                        )},
+                        {"role": "user", "content": "请更新你的人设。"},
+                    ],
+                    temperature=0.6,
+                    max_tokens=1500,
+                )
+                new_persona = resp.choices[0].message.content
+                with open(persona_path, "w") as f:
+                    f.write(new_persona)
+                updated = True
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+    finally:
+        _memory_update_lock.release()
+
+
 def _default_frame():
     return {"label":"neutral","duration_ms":3000,"eye_curve":0,"eye_open":0.5,"eye_pupil":0,
             "mouth_curve":0,"mouth_open":0,"mouth_width":0.8,"sparkle":0.5,
@@ -311,6 +450,7 @@ async def chat(req: ChatRequest):
         adjust_expression_amplitude(msg)
         _archive_conversation(msg, row["reply"])
         threading.Thread(target=_maybe_condense, daemon=True).start()
+        threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
         result = _row_to_response(row)
         for f in result.get("emotions", []):
             f.update(_jitter_frame(f))
@@ -340,6 +480,7 @@ async def chat(req: ChatRequest):
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, result["reply"])
     threading.Thread(target=_maybe_condense, daemon=True).start()
+    threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -373,6 +514,7 @@ async def chat_stream(req: ChatRequest):
             adjust_expression_amplitude(msg)
             _archive_conversation(msg, row["reply"])
             threading.Thread(target=_maybe_condense, daemon=True).start()
+            threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
             r = _row_to_response(row)
             for f in r.get("emotions", []):
                 f.update(_jitter_frame(f))
@@ -417,6 +559,7 @@ async def chat_stream(req: ChatRequest):
         adjust_expression_amplitude(msg)
         _archive_conversation(msg, reply)
         threading.Thread(target=_maybe_condense, daemon=True).start()
+        threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None

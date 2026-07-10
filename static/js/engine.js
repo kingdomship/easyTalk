@@ -122,12 +122,11 @@ console.warn = function(...args) {
 };
 
 addDebugLog('info', '启动', '页面加载完成', '正常启动，等待用户交互');
-let stateTimer = 0;
 
 // ═══════════════════════════════════════════
 // Audio system
 // ═══════════════════════════════════════════
-soundOn = false;
+let soundOn = false;
 let ambienceNode = null, ambienceGain = null;
 
 function initAudio() {

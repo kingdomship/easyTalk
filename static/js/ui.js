@@ -10,12 +10,19 @@ function showDialog(text, x, y) {
   const faceCenterX = canvas.width / 2;
   const faceCenterY = canvas.height / 2;
   const faceRadius = 16 * faceCS;
+  const isNarrow = window.innerWidth < 600;
+  const dlgW = isNarrow ? 260 : 340;
 
-  // Try to place to the right of the face, or above if not enough space
+  // Try to place to the right of the face, or left if not enough space
   let dx = faceCenterX + faceRadius + 20;
   let dy = faceCenterY - 60;
-  if (dx + 340 > window.innerWidth - 20) {
-    dx = Math.max(10, faceCenterX - faceRadius - 340);
+  if (dx + dlgW > window.innerWidth - 20) {
+    dx = Math.max(10, faceCenterX - faceRadius - dlgW);
+  }
+  // On very narrow screens, center below the face
+  if (isNarrow && dx < 10) {
+    dx = (window.innerWidth - dlgW) / 2;
+    dy = faceCenterY + faceRadius + 30;
   }
   if (dy < 60) dy = faceCenterY + faceRadius + 20;
   if (dy + 120 > window.innerHeight - 20) dy = faceCenterY - 120;
@@ -457,13 +464,16 @@ async function sendMessage() {
 
   input.value = ''; pending = true; sendBtn.disabled = true;
 
-  // Position dialog immediately (will fill in text as it streams)
+  // Position dialog (responsive)
   const faceCenterX = canvas.width / 2;
   const faceCenterY = canvas.height / 2;
   const faceRadius = 16 * faceCS;
+  const isNarrow = window.innerWidth < 600;
+  const dlgW = isNarrow ? 260 : 340;
   let dx = faceCenterX + faceRadius + 20;
   let dy = faceCenterY - 60;
-  if (dx + 340 > window.innerWidth - 20) dx = Math.max(10, faceCenterX - faceRadius - 340);
+  if (dx + dlgW > window.innerWidth - 20) dx = Math.max(10, faceCenterX - faceRadius - dlgW);
+  if (isNarrow && dx < 10) { dx = (window.innerWidth - dlgW) / 2; dy = faceCenterY + faceRadius + 30; }
   if (dy < 60) dy = faceCenterY + faceRadius + 20;
   if (dy + 120 > window.innerHeight - 20) dy = faceCenterY - 120;
   dialog.style.left = dx + 'px';

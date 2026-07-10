@@ -9,8 +9,6 @@ Flow:
 
 import hashlib
 import json
-import os
-from typing import Optional
 
 from app.db import q, execute
 
