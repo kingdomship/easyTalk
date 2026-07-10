@@ -180,7 +180,7 @@ declare function updateMoodFromEmotion(label: string): void;
 declare function circadianBaseColor(): RGB;
 declare function circadianBrightness(): number;
 declare function updateAtmosphere(dt: number): void;
-declare function _initAudio(): void;
+declare function playTypingSound(): void;
 declare function playTypingSound(): void;
 declare function addDebugLog(level: string, title: string, msg: string, analysis?: string): void;
 declare function escapeHtml(s: string): string;

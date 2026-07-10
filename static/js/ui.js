@@ -49,7 +49,6 @@ function typeNextChar() {
   dlgDisplayed++;
   const shown = dlgText.substring(0, dlgDisplayed);
   dlgBody.innerHTML = formatDialogText(shown) + '<span class="cursor-blink"></span>';
-  playBeep();
   const delay = 40 + Math.random() * 50;
   dlgTimer = setTimeout(typeNextChar, delay);
 }
@@ -174,7 +173,6 @@ function closeAuxiliary() {
   state = STATE.STARFIELD;
   chatFadeIn = 0;
   initStarfield();
-  if (soundOn) startAmbience();
   inputRow.classList.remove('visible');
 }
 
@@ -356,7 +354,6 @@ const LONG_PRESS_DURATION = 1000;
 const MOVE_THRESHOLD = 10;
 
 canvas.addEventListener('pointerdown', e => {
-  _initAudio(); // Unlock audio on first interaction
   pressStartX = e.clientX;
   pressStartY = e.clientY;
   pressTimer = setTimeout(() => {

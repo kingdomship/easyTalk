@@ -17,29 +17,40 @@ const auxPanel = document.getElementById('aux-panel'), auxContent = document.get
 // ═══════════════════════════════════════════
 // Typing sound engine (Web Audio API)
 // ═══════════════════════════════════════════
-let audioCtx = null;
-function _initAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+// Pre-generate WAV blobs at different frequencies for typing sound variety
+var _blipBlobs = [];
+function _makeBlipBlob(freq) {
+  var sampleRate = 8000, duration = 0.04;
+  var numSamples = Math.floor(sampleRate * duration);
+  var dataSize = numSamples;
+  var fileSize = 44 + dataSize;
+  var buf = new ArrayBuffer(fileSize);
+  var v = new DataView(buf);
+  function w16(o, x) { v.setUint16(o, x, true); }
+  function w32(o, x) { v.setUint32(o, x, true); }
+  w32(0, 0x46464952); w32(4, fileSize - 8); w32(8, 0x45564157);
+  w32(12, 0x20746d66); w32(16, 16); w16(20, 1); w16(22, 1);
+  w32(24, sampleRate); w32(28, sampleRate); w16(32, 1); w16(34, 8);
+  w32(36, 0x61746164); w32(40, dataSize);
+  var u8 = new Uint8Array(buf, 44, dataSize);
+  for (var i = 0; i < numSamples; i++) {
+    u8[i] = Math.sin(2 * Math.PI * freq * i / sampleRate) > 0 ? 220 : 36;
+  }
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
+// Pre-generate 5 blips at different pitches for variety
+[600, 900, 1100, 1400, 1800].forEach(function(f) {
+  _blipBlobs.push(_makeBlipBlob(f));
+});
 
 function playTypingSound() {
-  _initAudio();
-  const t = audioCtx.currentTime;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.connect(gain); gain.connect(audioCtx.destination);
-
-  // Random pitch variation for natural feel: ~800-1800Hz
-  osc.type = 'square';
-  osc.frequency.setValueAtTime(800 + Math.random() * 1000, t);
-
-  // Short blip envelope: quick attack, fast decay
-  gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(0.06 + Math.random() * 0.04, t + 0.005);
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04 + Math.random() * 0.03);
-
-  osc.start(t); osc.stop(t + 0.06);
+  if (!soundOn) return;
+  try {
+    var blob = _blipBlobs[Math.floor(Math.random() * _blipBlobs.length)];
+    var a = new Audio(blob);
+    a.volume = 0.10;
+    a.play().catch(function(){});
+  } catch(e) {}
 }
 const auxBack = document.getElementById('auxBack');
 const soundToggle = document.getElementById('sound-toggle');
@@ -124,70 +135,14 @@ console.warn = function(...args) {
 addDebugLog('info', '启动', '页面加载完成', '正常启动，等待用户交互');
 
 // ═══════════════════════════════════════════
-// Audio system
+// Sound toggle (controls typing sound on/off)
 // ═══════════════════════════════════════════
-let soundOn = false;
-let ambienceNode = null, ambienceGain = null;
-
-function initAudio() {
-  if (audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-}
-
-function playBeep() {
-  if (!soundOn || !audioCtx) return;
-  const t = audioCtx.currentTime;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'square';
-  osc.frequency.value = 800 + Math.random() * 400;
-  gain.gain.setValueAtTime(0.06, t);
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-  osc.connect(gain); gain.connect(audioCtx.destination);
-  osc.start(t); osc.stop(t + 0.1);
-}
-
-function startAmbience() {
-  if (!soundOn || !audioCtx || ambienceNode) return;
-  ambienceGain = audioCtx.createGain();
-  ambienceGain.gain.value = 0.03;
-  ambienceGain.connect(audioCtx.destination);
-  // Low drone using filtered noise
-  const bufferSize = 2 * audioCtx.sampleRate;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-  ambienceNode = audioCtx.createBufferSource();
-  ambienceNode.buffer = buffer;
-  ambienceNode.loop = true;
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.frequency.value = 200;
-  filter.Q.value = 1;
-  ambienceNode.connect(filter);
-  filter.connect(ambienceGain);
-  ambienceNode.start();
-}
-
-function stopAmbience() {
-  if (ambienceNode) {
-    try { ambienceNode.stop(); } catch(e) {}
-    ambienceNode = null;
-    ambienceGain = null;
-  }
-}
+let soundOn = true;
 
 soundToggle.addEventListener('click', () => {
-  initAudio();
   soundOn = !soundOn;
   soundToggle.textContent = soundOn ? '🔊' : '🔇';
   soundToggle.classList.toggle('muted', !soundOn);
-  if (soundOn) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    if (state === STATE.STARFIELD) startAmbience();
-  } else {
-    stopAmbience();
-  }
 });
 
 // ═══════════════════════════════════════════

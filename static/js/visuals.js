@@ -394,7 +394,6 @@ function startConvergence() {
   for (const s of stars) {
     s.trail = [];
   }
-  stopAmbience();
 }
 
 function updateConvergence(dt) {
