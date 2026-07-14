@@ -84,7 +84,7 @@ def idle_thought():
         "FROM idle_thoughts ORDER BY id DESC LIMIT 1",
         fetch="one",
     )
-    if last_thought and last_thought["secs"] and last_thought["secs"] < 300:
+    if last_thought and last_thought["secs"] and float(last_thought["secs"]) < 300:
         return  # already thought within last 5 min
 
     try:

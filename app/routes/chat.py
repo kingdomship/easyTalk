@@ -552,7 +552,7 @@ def _call_llm(messages: list) -> tuple:
 
         # Compute idle minutes for arousal state
         last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
-        idle_min = (last_row["secs"] / 60.0) if last_row and last_row["secs"] else 0
+        idle_min = (float(last_row["secs"]) / 60.0) if last_row and last_row["secs"] else 0
 
         arousal = determine_arousal(mode, affect, idle_min)
         temp = rhythm_temp + get_mode_temp_mod(mode) + get_arousal_temp_mod(arousal)
