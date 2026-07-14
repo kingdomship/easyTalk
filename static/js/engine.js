@@ -159,10 +159,10 @@ resize();
 // ═══════════════════════════════════════════
 // Face computation (ported from original)
 // ═══════════════════════════════════════════
-const GRID = 32;
-const FACE_COLORS = { face:'#ffeaa7', faceD:'#f0d67a', outline:'#d4b84c', dark:'#2d3436', light:'#ffffff' };
+const GRID = 64;
+const FACE_COLORS = { face:'#ffeaa7', faceD:'#f0d67a', outline:'#d4b84c', dark:'#2d3436', light:'#ffffff', blush:'#ff7799' };
 
-function fd(r, c) { return Math.sqrt((r-16)**2 + (c-16)**2); }
+function fd(r, c) { return Math.sqrt((r-32)**2 + (c-32)**2); }
 function lerp(a,b,t) { return a+(b-a)*t; }
 function easeInOutCubic(t) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2; }
 function easeOutElastic(t) {
@@ -180,69 +180,103 @@ function lerpH(c1, c2, t) {
 function getFacePixels(params) {
   const p = params;
   const pixels = [];
-  // Face circle
+  // Face circle (radius 29, outline 27, darker edge 24)
   for (let r = 0; r < GRID; r++)
     for (let cc = 0; cc < GRID; cc++) {
       const d = fd(r, cc);
-      if (d > 14.5) continue;
-      const color = d > 13 ? FACE_COLORS.outline : (d > 12 ? FACE_COLORS.faceD : FACE_COLORS.face);
+      if (d > 29) continue;
+      const color = d > 27 ? FACE_COLORS.outline : (d > 24 ? FACE_COLORS.faceD : FACE_COLORS.face);
       pixels.push({ r, c: cc, color });
     }
-  // Eyebrows
-  const baseR = Math.round(lerp(9, 4, p.brow_height));
+  // Blush — distinct pink circles on cheeks, always slightly visible
+  const blushVal = p.blush || 0;
+  const blushBlend = 0.08 + blushVal * 0.7;
+  if (blushBlend > 0.02) {
+    const blushColor = lerpH(FACE_COLORS.face, FACE_COLORS.blush, blushBlend);
+    // Left cheek: center ~(27, 11), radius 8
+    for (let r = 19; r <= 35; r++) {
+      for (let cc = 3; cc <= 19; cc++) {
+        if (Math.sqrt((r-27)**2 + (cc-11)**2) < 8) pixels.push({ r, c: cc, color: blushColor });
+      }
+    }
+    // Right cheek: center ~(27, 53), radius 8
+    for (let r = 19; r <= 35; r++) {
+      for (let cc = 45; cc <= 61; cc++) {
+        if (Math.sqrt((r-27)**2 + (cc-53)**2) < 8) pixels.push({ r, c: cc, color: blushColor });
+      }
+    }
+  }
+  // Eyebrows (pixel blocks)
+  const baseR = Math.round(lerp(17, 8, p.brow_height));
   const asym = p.brow_asym || 0;
-  const lOff = -Math.round(asym * 2), rOff = Math.round(asym * 2);
-  for (let i = 0; i < 4; i++) {
-    const cc = 7 + i, isInner = i >= 2;
-    const rowOff = isInner ? -Math.round(p.brow_angle * 1.5) : Math.round(p.brow_angle * 1.5);
+  const lOff = -Math.round(asym * 4), rOff = Math.round(asym * 4);
+  for (let i = 0; i < 5; i++) {
+    const cc = 14 + i, isInner = i >= 2;
+    const rowOff = isInner ? -Math.round(p.brow_angle * 3) : Math.round(p.brow_angle * 3);
     pixels.push({ r: baseR + rowOff + lOff, c: cc, color: FACE_COLORS.dark });
   }
-  for (let i = 0; i < 4; i++) {
-    const cc = 21 + i, isInner = i <= 1;
-    const rowOff = isInner ? -Math.round(p.brow_angle * 1.5) : Math.round(p.brow_angle * 1.5);
+  for (let i = 0; i < 5; i++) {
+    const cc = 43 + i, isInner = i <= 2;
+    const rowOff = isInner ? -Math.round(p.brow_angle * 3) : Math.round(p.brow_angle * 3);
     pixels.push({ r: baseR + rowOff + rOff, c: cc, color: FACE_COLORS.dark });
   }
-  // Eyes
+  // Eyes (pixel blocks, wink support)
   function eyePx(cc) {
-    const px = [], bR = 10;
-    const rows = p.eye_open < 0.2 ? 1 : (p.eye_open < 0.6 ? 2 : 3);
+    const px = [], bR = 20;
+    let eyeOpen = p.eye_open;
+    const wink = p.eye_wink || 0;
+    if (wink < -0.5 && cc === 20) eyeOpen = 0.05;
+    if (wink > 0.5 && cc === 43) eyeOpen = 0.05;
+    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 3);
     if (rows === 1) {
-      for (let c = cc - 3; c <= cc + 3 && px.length < 6; c++) px.push({ r: bR, c, color: FACE_COLORS.dark });
+      for (let c = cc - 5; c <= cc + 5 && px.length < 10; c++) px.push({ r: bR, c, color: FACE_COLORS.dark });
     } else if (rows === 2) {
-      for (let c = cc - 1; c <= cc + 1; c++) px.push({ r: bR - 1, c, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(-p.eye_curve * 2), c: cc - 1, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(p.eye_curve), c: cc, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(-p.eye_curve * 2), c: cc + 1, color: FACE_COLORS.dark });
+      for (let c = cc - 3; c <= cc + 3; c++) px.push({ r: bR - 2, c, color: FACE_COLORS.dark });
+      px.push({ r: bR + Math.round(-p.eye_curve * 4), c: cc - 3, color: FACE_COLORS.dark });
+      px.push({ r: bR + Math.round(p.eye_curve * 2), c: cc, color: FACE_COLORS.dark });
+      px.push({ r: bR + Math.round(-p.eye_curve * 4), c: cc + 3, color: FACE_COLORS.dark });
     } else {
-      px.push({ r: bR - 2, c: cc - 2, color: FACE_COLORS.dark });
-      px.push({ r: bR - 2, c: cc + 1, color: FACE_COLORS.dark });
-      px.push({ r: bR - 1, c: cc - 2, color: FACE_COLORS.dark });
-      px.push({ r: bR - 1, c: cc + 1, color: FACE_COLORS.dark });
-      px.push({ r: bR, c: cc - 2, color: FACE_COLORS.dark });
-      px.push({ r: bR, c: cc + 1, color: FACE_COLORS.dark });
+      px.push({ r: bR - 4, c: cc - 4, color: FACE_COLORS.dark });
+      px.push({ r: bR - 4, c: cc + 3, color: FACE_COLORS.dark });
+      px.push({ r: bR - 2, c: cc - 4, color: FACE_COLORS.dark });
+      px.push({ r: bR - 2, c: cc + 3, color: FACE_COLORS.dark });
+      px.push({ r: bR, c: cc - 4, color: FACE_COLORS.dark });
+      px.push({ r: bR, c: cc + 3, color: FACE_COLORS.dark });
     }
-    const ps = Math.round((p.eye_pupil || 0) * 1.5);
+    const ps = Math.round((p.eye_pupil || 0) * 3.5);
     for (let k = 0; k < px.length; k++) px[k].c += ps;
-    const hlR = rows === 1 ? bR : bR - 1;
-    px.push({ r: hlR, c: cc + 1 + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, p.sparkle) });
+    const hlR = rows === 1 ? bR : bR - 2;
+    px.push({ r: hlR, c: cc + 3 + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, p.sparkle) });
     return px;
   }
-  pixels.push(...eyePx(10));
-  pixels.push(...eyePx(21));
-  // Mouth
-  const cc = 16, hw = Math.round(lerp(2, 5.5, p.mouth_width));
-  const cs = cc - hw, ce = cc + hw;
+  pixels.push(...eyePx(20));
+  pixels.push(...eyePx(43));
+  // Tear
+  if ((p.tear || 0) > 0.05) {
+    const tearColor = lerpH('#ffffff', '#88ccff', p.tear);
+    const tearR = 23 + Math.round(p.tear * 2);
+    pixels.push({ r: tearR, c: 18, color: tearColor });
+    pixels.push({ r: tearR + 1, c: 18, color: tearColor });
+    pixels.push({ r: tearR, c: 19, color: tearColor });
+    pixels.push({ r: tearR + 1, c: 19, color: tearColor });
+  }
+  // Mouth (pixel blocks, asymmetric)
+  const mcc = 32, hw = Math.round(lerp(4, 11, p.mouth_width));
+  const cs = mcc - hw, ce = mcc + hw;
+  const ma = p.mouth_asym || 0;
   if (p.mouth_open < 0.25) {
-    for (let c = cs; c <= ce && pixels.length < 800; c++) {
+    for (let c = cs; c <= ce && pixels.length < 2000; c++) {
       const t = (c - cs) / (ce - cs || 1), edgeF = Math.abs(t - 0.5) * 2;
-      pixels.push({ r: 19 + Math.round(-p.mouth_curve * edgeF * 2), c, color: FACE_COLORS.dark });
+      const asymOffset = Math.round(ma * (c - mcc) * 0.4);
+      pixels.push({ r: 39 + Math.round(-p.mouth_curve * edgeF * 4) + asymOffset, c, color: FACE_COLORS.dark });
     }
   } else {
-    const topR = 18 - Math.round(p.mouth_open * 0.8), botR = 19 + Math.round(p.mouth_open * 0.8);
-    for (let c = 15; c <= 17; c++) pixels.push({ r: topR, c, color: FACE_COLORS.dark });
-    for (let c = cs + 1; c <= ce - 1 && pixels.length < 800; c++) {
+    const topR = 37 - Math.round(p.mouth_open * 1.6), botR = 39 + Math.round(p.mouth_open * 1.6);
+    for (let c = 31; c <= 34; c++) pixels.push({ r: topR, c, color: FACE_COLORS.dark });
+    for (let c = cs + 1; c <= ce - 1 && pixels.length < 2000; c++) {
       const isE = (c === cs + 1 || c === ce - 1);
-      pixels.push({ r: botR + (isE ? Math.round(-p.mouth_curve) : Math.round(p.mouth_curve * 0.3)), c, color: FACE_COLORS.dark });
+      const asymOffset = Math.round(ma * (c - mcc) * 0.4);
+      pixels.push({ r: botR + (isE ? Math.round(-p.mouth_curve * 2) : Math.round(p.mouth_curve * 0.7)) + asymOffset, c, color: FACE_COLORS.dark });
     }
   }
   return pixels;
@@ -251,7 +285,7 @@ function getFacePixels(params) {
 // ═══════════════════════════════════════════
 // Face parameters
 // ═══════════════════════════════════════════
-let curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0 };
+let curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, blush:0.15, head_tilt:0, tear:0 };
 let tgtParams = { ...curParams };
 
 // Mood-driven atmosphere
@@ -271,9 +305,10 @@ let replyText = '';
 function setSequence(emotions, reply) {
   sequence = emotions.map(e => ({
     params: {
-      eye_curve:e.eye_curve, eye_open:e.eye_open, eye_pupil:e.eye_pupil||0,
-      mouth_curve:e.mouth_curve, mouth_open:e.mouth_open, mouth_width:e.mouth_width,
+      eye_curve:e.eye_curve, eye_open:e.eye_open, eye_pupil:e.eye_pupil||0, eye_wink:e.eye_wink||0,
+      mouth_curve:e.mouth_curve, mouth_open:e.mouth_open, mouth_width:e.mouth_width, mouth_asym:e.mouth_asym||0,
       sparkle:e.sparkle, brow_angle:e.brow_angle, brow_height:e.brow_height, brow_asym:e.brow_asym||0,
+      blush:e.blush??curParams.blush, head_tilt:e.head_tilt||0, tear:e.tear||0,
     },
     duration: e.duration_ms || 3000,
     label: e.label || '',

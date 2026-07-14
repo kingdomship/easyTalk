@@ -15,9 +15,10 @@ EMA_ALPHA = 0.05
 
 # Neutral expression values for amplitude scaling
 NEUTRAL_PARAMS = {
-    "eye_curve": 0, "eye_open": 0.5, "eye_pupil": 0,
-    "mouth_curve": 0, "mouth_open": 0, "mouth_width": 0.8,
+    "eye_curve": 0, "eye_open": 0.5, "eye_pupil": 0, "eye_wink": 0,
+    "mouth_curve": 0, "mouth_open": 0, "mouth_width": 0.8, "mouth_asym": 0,
     "sparkle": 0.5, "brow_angle": 0, "brow_height": 0.5, "brow_asym": 0,
+    "blush": 0, "head_tilt": 0, "tear": 0,
 }
 
 

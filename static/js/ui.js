@@ -9,7 +9,7 @@ function showDialog(text, x, y) {
   // Position dialog near the face but not covering it
   const faceCenterX = canvas.width / 2;
   const faceCenterY = canvas.height / 2;
-  const faceRadius = 16 * faceCS;
+  const faceRadius = 29 * faceCS;
   const isNarrow = window.innerWidth < 600;
   const dlgW = isNarrow ? 260 : 340;
 
@@ -464,7 +464,7 @@ async function sendMessage() {
   // Position dialog (responsive)
   const faceCenterX = canvas.width / 2;
   const faceCenterY = canvas.height / 2;
-  const faceRadius = 16 * faceCS;
+  const faceRadius = 29 * faceCS;
   const isNarrow = window.innerWidth < 600;
   const dlgW = isNarrow ? 260 : 340;
   let dx = faceCenterX + faceRadius + 20;
@@ -506,6 +506,8 @@ async function sendMessage() {
           if (evt.type === 'emotions') {
             setSequence(evt.emotions, '');
             updateMoodFromEmotion(evt.label || '');
+          } else if (evt.type === 'thinking') {
+            dlgBody.innerHTML = '<span class="thinking-indicator">思考中<span class="thinking-dots"></span></span>';
           } else if (evt.type === 'text') {
             streamedReply += evt.text;
             playTypingSound();

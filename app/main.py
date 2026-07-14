@@ -19,6 +19,7 @@ from app.db import init_db
 from services.news import fetch_all
 from services.diary import generate_diary
 from services.affinity import init_affinity_db
+from services.affect import init_affect_db
 
 
 def _seed_memory():
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
     _check_memory_files()
     init_db()
     init_affinity_db()
+    init_affect_db()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
     scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)

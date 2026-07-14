@@ -94,6 +94,11 @@ def init_db():
         ("brow_height", "REAL NOT NULL DEFAULT 0.5"),
         ("brow_asym", "REAL NOT NULL DEFAULT 0"),
         ("sequence_data", "JSONB"),
+        ("blush", "REAL NOT NULL DEFAULT 0"),
+        ("head_tilt", "REAL NOT NULL DEFAULT 0"),
+        ("tear", "REAL NOT NULL DEFAULT 0"),
+        ("mouth_asym", "REAL NOT NULL DEFAULT 0"),
+        ("eye_wink", "REAL NOT NULL DEFAULT 0"),
     ]:
         try:
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
@@ -145,5 +150,15 @@ def init_db():
             source VARCHAR(50) NOT NULL DEFAULT '',
             rank INTEGER NOT NULL DEFAULT 0,
             fetched_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # Panksepp affect state (6 primary emotional dimensions)
+    execute("""
+        CREATE TABLE IF NOT EXISTS affect_state (
+            id SERIAL PRIMARY KEY,
+            dimension VARCHAR(20) UNIQUE NOT NULL,
+            value REAL NOT NULL DEFAULT 0.0,
+            updated_at TIMESTAMP DEFAULT NOW()
         )
     """)

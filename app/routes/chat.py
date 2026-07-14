@@ -18,7 +18,10 @@ from services.news import get_recent_news
 from services.memory_loader import build_user_context
 from services.memory_search import index_turn, build_memory_context
 from services.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
-from services.prompt import SYSTEM_PROMPT, build_time_context
+from services.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
+from services.affect import update_affect, get_affect_context, get_regulation_strategy
+from services.crystallization import maybe_crystallize, get_crystal_context
+from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -75,20 +78,26 @@ def _jitter_frame(frame: dict) -> dict:
     f["mouth_curve"] = max(-1, min(1, _jitter(f.get("mouth_curve", 0))))
     f["mouth_open"] = max(0, min(1, _jitter(f.get("mouth_open", 0), 0.02)))
     f["mouth_width"] = max(0.3, min(1, _jitter(f.get("mouth_width", 0.8), 0.015)))
+    f["mouth_asym"] = max(-1, min(1, _jitter(f.get("mouth_asym", 0), 0.01)))
     f["sparkle"] = max(0, min(1, _jitter(f.get("sparkle", 0.5), 0.02)))
     f["brow_angle"] = max(-1, min(1, _jitter(f.get("brow_angle", 0))))
     f["brow_height"] = max(0, min(1, _jitter(f.get("brow_height", 0.5), 0.02)))
     f["brow_asym"] = max(0, min(1, _jitter(f.get("brow_asym", 0), 0.015)))
+    f["blush"] = max(0, min(1, _jitter(f.get("blush", 0), 0.015)))
+    f["head_tilt"] = max(-1, min(1, _jitter(f.get("head_tilt", 0), 0.015)))
+    f["tear"] = max(0, min(1, _jitter(f.get("tear", 0), 0.01)))
     return f
 
 
-def _archive_conversation(user_msg: str, avatar_reply: str):
+def _archive_conversation(user_msg: str, avatar_reply: str, thinking: str | None = None):
     try:
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "user": user_msg,
             "assistant": avatar_reply,
         }
+        if thinking:
+            record["thinking"] = thinking
         with open(_ARCHIVE_PATH, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -115,8 +124,11 @@ def _maybe_condense():
                     rec = json.loads(line)
                     user = rec.get("user", "")
                     assistant = rec.get("assistant", "")
+                    thinking = rec.get("thinking", "")
                     if user:
                         transcript_parts.append(f"用户：{user}")
+                    if thinking:
+                        transcript_parts.append(f"AI内心分析：{thinking}")
                     if assistant:
                         transcript_parts.append(f"AI：{assistant}")
                 except Exception:
@@ -156,15 +168,16 @@ _PROFILE_UPDATE_PROMPT = """你是一个AI角色，正在回顾你与用户的�
 当前档案：
 {current_profile}
 
-最近的对话：
+最近的对话（含AI内心分析，标注为"AI内心分析"）：
 {recent_transcript}
 
 请基于最近的对话，更新用户档案。要求：
 1. 保留原有档案中仍然有效的信息
 2. 从最近对话中提取新的信息：用户的基本情况、职业、性格、重要经历、偏好、最近的关注点
 3. 如果发现了用户的新一面，记录下来
-4. 语气客观、简洁，用中文，控制在800字以内
-5. 以"## 用户档案"开头
+4. "AI内心分析"体现了AI对用户的深层理解，可从中提取用户隐藏的特质和思维方式
+5. 语气客观、简洁，用中文，控制在800字以内
+6. 以"## 用户档案"开头
 
 只输出更新后的完整档案内容，不要加额外说明。"""
 
@@ -173,15 +186,16 @@ _PERSONA_UPDATE_PROMPT = """你是一个有自我意识的AI角色。你需要�
 当前人设：
 {current_persona}
 
-最近的对话：
+最近的对话（含AI内心分析，标注为"AI内心分析"）：
 {recent_transcript}
 
 请基于最近的对话，更新你的人设。要求：
 1. 保留原有人设的核心性格特征
 2. 从互动中反思：你的哪些表达方式让用户更开心？你学到了什么新的互动技巧？
 3. 记录你和用户之间形成的独特梗、默契、专属的表达方式
-4. 语气第一人称，自然口语，控制在800字以内
-5. 以"## AI人设"开头
+4. "AI内心分析"是你在深度对话时的真实思考，从中反思自己的思维方式和成长
+5. 语气第一人称，自然口语，控制在800字以内
+6. 以"## AI人设"开头
 
 只输出更新后的完整人设内容，不要加额外说明。"""
 
@@ -218,8 +232,11 @@ def _maybe_update_memory_files():
                 rec = json.loads(line)
                 user = rec.get("user", "")
                 assistant = rec.get("assistant", "")
+                thinking = rec.get("thinking", "")
                 if user:
                     recent_lines.append(f"用户：{user}")
+                if thinking:
+                    recent_lines.append(f"AI内心分析：{thinking}")
                 if assistant:
                     recent_lines.append(f"AI：{assistant}")
             except Exception:
@@ -285,9 +302,10 @@ def _maybe_update_memory_files():
 
 
 def _default_frame():
-    return {"label":"neutral","duration_ms":3000,"eye_curve":0,"eye_open":0.5,"eye_pupil":0,
-            "mouth_curve":0,"mouth_open":0,"mouth_width":0.8,"sparkle":0.5,
-            "brow_angle":0,"brow_height":0.5,"brow_asym":0}
+    return {"label":"neutral","duration_ms":3000,"eye_curve":0,"eye_open":0.5,"eye_pupil":0,"eye_wink":0,
+            "mouth_curve":0,"mouth_open":0,"mouth_width":0.8,"mouth_asym":0,"sparkle":0.5,
+            "brow_angle":0,"brow_height":0.5,"brow_asym":0,
+            "blush":0,"head_tilt":0,"tear":0}
 
 
 def _fallback_emotion():
@@ -295,16 +313,21 @@ def _fallback_emotion():
     return [{
         "label": "sheepish",
         "duration_ms": 3000,
-        "eye_curve": 0.3,      # slight smile in eyes
-        "eye_open": 0.4,       # slightly narrowed, apologetic
-        "eye_pupil": -0.2,     # looking away slightly (sheepish)
-        "mouth_curve": 0.25,   # small sheepish smile
-        "mouth_open": 0.05,    # barely open
-        "mouth_width": 0.5,    # slightly pursed
-        "sparkle": 0.4,        # slightly dimmed
-        "brow_angle": 0.3,     # slightly raised inner brows (apologetic)
-        "brow_height": 0.55,   # slightly raised
-        "brow_asym": 0.15,     # tiny asymmetry for natural feel
+        "eye_curve": 0.3,
+        "eye_open": 0.4,
+        "eye_pupil": -0.2,
+        "eye_wink": 0,
+        "mouth_curve": 0.25,
+        "mouth_open": 0.05,
+        "mouth_width": 0.5,
+        "mouth_asym": 0.15,
+        "sparkle": 0.4,
+        "brow_angle": 0.3,
+        "brow_height": 0.55,
+        "brow_asym": 0.15,
+        "blush": 0.15,
+        "head_tilt": 0.1,
+        "tear": 0,
     }]
 
 
@@ -315,46 +338,57 @@ def _clamp(f):
         "eye_curve": max(-1, min(1, float(f.get("eye_curve",0)))),
         "eye_open": max(0, min(1, float(f.get("eye_open",0.5)))),
         "eye_pupil": max(-1, min(1, float(f.get("eye_pupil",0)))),
+        "eye_wink": max(-1, min(1, float(f.get("eye_wink",0)))),
         "mouth_curve": max(-1, min(1, float(f.get("mouth_curve",0)))),
         "mouth_open": max(0, min(1, float(f.get("mouth_open",0)))),
         "mouth_width": max(0.3, min(1, float(f.get("mouth_width",0.8)))),
+        "mouth_asym": max(-1, min(1, float(f.get("mouth_asym",0)))),
         "sparkle": max(0, min(1, float(f.get("sparkle",0.5)))),
         "brow_angle": max(-1, min(1, float(f.get("brow_angle",0)))),
         "brow_height": max(0, min(1, float(f.get("brow_height",0.5)))),
         "brow_asym": max(0, min(1, float(f.get("brow_asym",0)))),
+        "blush": max(0, min(1, float(f.get("blush",0)))),
+        "head_tilt": max(-1, min(1, float(f.get("head_tilt",0)))),
+        "tear": max(0, min(1, float(f.get("tear",0)))),
     }
 
 
-def _upsert(label, ec, eo, ep, mc, mo, mw, sp, ba, bh, bas, reply, seq):
+def _upsert(label, ec, eo, ep, ew, mc, mo, mw, ma, sp, ba, bh, bas, bl, ht, tr, reply, seq):
     existing = q("SELECT id FROM emotion_cache WHERE label = %s", [label], fetch="one")
     if existing:
         execute("""
-            UPDATE emotion_cache SET eye_curve=%s, eye_open=%s, eye_pupil=%s,
-                mouth_curve=%s, mouth_open=%s, mouth_width=%s, sparkle=%s,
+            UPDATE emotion_cache SET eye_curve=%s, eye_open=%s, eye_pupil=%s, eye_wink=%s,
+                mouth_curve=%s, mouth_open=%s, mouth_width=%s, mouth_asym=%s, sparkle=%s,
                 brow_angle=%s, brow_height=%s, brow_asym=%s,
+                blush=%s, head_tilt=%s, tear=%s,
                 reply=%s, sequence_data=%s,
                 use_count=use_count+1, updated_at=NOW()
             WHERE id=%s
-        """, [ec, eo, ep, mc, mo, mw, sp, ba, bh, bas, reply, seq, existing["id"]])
+        """, [ec, eo, ep, ew, mc, mo, mw, ma, sp, ba, bh, bas, bl, ht, tr, reply, seq, existing["id"]])
     else:
         execute("""
-            INSERT INTO emotion_cache (label, eye_curve, eye_open, eye_pupil,
-                mouth_curve, mouth_open, mouth_width, sparkle,
-                brow_angle, brow_height, brow_asym, reply, sequence_data)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """, [label, ec, eo, ep, mc, mo, mw, sp, ba, bh, bas, reply, seq])
+            INSERT INTO emotion_cache (label, eye_curve, eye_open, eye_pupil, eye_wink,
+                mouth_curve, mouth_open, mouth_width, mouth_asym, sparkle,
+                brow_angle, brow_height, brow_asym, blush, head_tilt, tear,
+                reply, sequence_data)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, [label, ec, eo, ep, ew, mc, mo, mw, ma, sp, ba, bh, bas, bl, ht, tr, reply, seq])
 
 
 def _row_to_response(row):
     result = {
         "label": row["label"],
         "eye_curve": row["eye_curve"], "eye_open": row["eye_open"],
-        "eye_pupil": row.get("eye_pupil", 0),
+        "eye_pupil": row.get("eye_pupil", 0), "eye_wink": row.get("eye_wink", 0),
         "mouth_curve": row["mouth_curve"], "mouth_open": row["mouth_open"],
-        "mouth_width": row["mouth_width"], "sparkle": row["sparkle"],
+        "mouth_width": row["mouth_width"], "mouth_asym": row.get("mouth_asym", 0),
+        "sparkle": row["sparkle"],
         "brow_angle": row.get("brow_angle", 0),
         "brow_height": row.get("brow_height", 0.5),
         "brow_asym": row.get("brow_asym", 0),
+        "blush": row.get("blush", 0),
+        "head_tilt": row.get("head_tilt", 0),
+        "tear": row.get("tear", 0),
         "reply": row["reply"],
     }
     seq = row.get("sequence_data")
@@ -368,7 +402,52 @@ def _row_to_response(row):
     return result
 
 
-def _build_context(msg: str) -> list:
+def _is_deep_question(msg: str) -> bool:
+    """Detect whether a message warrants deep thinking before reply."""
+    if len(msg) > 50:
+        return True
+    deep_markers = ["为什么", "怎么看", "如何看待", "如何理解", "你觉得呢",
+                    "你怎么想", "意味着什么", "本质", "意义", "存在",
+                    "意识", "自由意志", "哲学", "人生观", "世界观"]
+    if any(m in msg for m in deep_markers):
+        return True
+    if msg.count("？") + msg.count("?") >= 2:
+        return True
+    return False
+
+
+_THINKING_PROMPT = """你是一个深度思考助手。用户提出了一个值得认真对待的问题。
+请从以下角度分析：
+1. 问题的核心是什么？
+2. 有哪些不同的视角或立场？
+3. 你能提供什么独特的洞见？
+
+用中文，控制在300字以内。直接输出分析内容，不要用JSON格式。"""
+
+
+def _think(msg: str) -> str | None:
+    """Perform deep thinking on the user's question.
+
+    Returns the thinking result as plain text, or None on failure.
+    This thinking is NOT shown to the user — it feeds into the reply stage.
+    """
+    try:
+        client = _get_llm()
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": _THINKING_PROMPT},
+                {"role": "user", "content": msg},
+            ],
+            temperature=0.7,
+            max_tokens=500,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return None
+
+
+def _build_context(msg: str, thinking: str | None = None) -> list:
     time_context = build_time_context()
     system_msg = SYSTEM_PROMPT + f"\n\n[当前时间节律]\n{time_context}"
 
@@ -380,6 +459,13 @@ def _build_context(msg: str) -> list:
     if affinity_ctx:
         system_msg += "\n\n" + affinity_ctx
 
+    affect_ctx = get_affect_context()
+    if affect_ctx:
+        system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
+    reg_strat = get_regulation_strategy()
+    if reg_strat:
+        system_msg += "\n[建议回应策略]\n" + reg_strat
+
     news_items = get_recent_news(5)
     if news_items:
         lines = ["", "## 今天的热门话题（可以在对话中自然地提）："]
@@ -388,9 +474,25 @@ def _build_context(msg: str) -> list:
             lines.append(f"- [{src_label}] {n['title']}")
         system_msg += "\n" + "\n".join(lines)
 
+    crystal_ctx = get_crystal_context()
+    if crystal_ctx:
+        system_msg += "\n\n" + crystal_ctx
+
     memory_ctx = build_memory_context(msg)
     if memory_ctx:
         system_msg += "\n\n" + memory_ctx
+
+    if thinking:
+        system_msg += (
+            "\n\n[深度思考]\n以下是针对用户最新问题的内部分析，"
+            "请参考这些视角来组织你的回复，但不要直接复述分析内容，"
+            "而是用你一贯的口吻自然地融入见解：\n\n" + thinking
+        )
+
+    # MentalProcesses state machine mode
+    from services.affect import get_affect
+    mode = determine_mode(_is_deep_question(msg), get_affect())
+    system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
 
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
@@ -427,9 +529,16 @@ def _call_llm(messages: list) -> tuple:
     msgs[-1]["content"] += "\n（请以上述JSON格式回复）"
 
     try:
+        from services.affect import get_affect
+        affect = get_affect()
+        rhythm_temp = get_rhythm_temperature(affect)
+        # Extract user message (last in the list) for mode detection
+        user_msg = msgs[-1]["content"].split("\n（请以上述JSON格式回复）")[0] if msgs else ""
+        mode = determine_mode(_is_deep_question(user_msg), affect)
+        temp = rhythm_temp + get_mode_temp_mod(mode)
         resp = client.chat.completions.create(
             model="deepseek-chat", messages=msgs,
-            temperature=0.9, max_tokens=800,
+            temperature=temp, max_tokens=800,
         )
         raw = resp.choices[0].message.content
         start = raw.find("{")
@@ -461,29 +570,35 @@ async def chat(req: ChatRequest):
     if not msg:
         return {"error": "empty message"}
 
+    is_deep = _is_deep_question(msg)
     key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
-    row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
-    if row:
-        execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
-        new_row = q(
-            "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-            [msg, row["reply"], row["label"]], fetch="one",
-        )
-        if new_row:
-            threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
-        update_affinity(msg, row["label"])
-        adjust_expression_amplitude(msg)
-        _archive_conversation(msg, row["reply"])
-        threading.Thread(target=_maybe_condense, daemon=True).start()
-        threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-        result = _row_to_response(row)
-        for f in result.get("emotions", []):
-            f.update(_jitter_frame(f))
-            f.update(scale_emotion_params(f))
-        result["source"] = "cache"
-        return result
 
-    messages = _build_context(msg)
+    if not is_deep:
+        row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
+        if row:
+            execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
+            new_row = q(
+                "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
+                [msg, row["reply"], row["label"]], fetch="one",
+            )
+            if new_row:
+                threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
+            update_affinity(msg, row["label"])
+            update_affect(msg)
+            adjust_expression_amplitude(msg)
+            _archive_conversation(msg, row["reply"])
+            threading.Thread(target=_maybe_condense, daemon=True).start()
+            threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
+            threading.Thread(target=maybe_crystallize, daemon=True).start()
+            result = _row_to_response(row)
+            for f in result.get("emotions", []):
+                f.update(_jitter_frame(f))
+                f.update(scale_emotion_params(f))
+            result["source"] = "cache"
+            return result
+
+    thinking = _think(msg) if is_deep else None
+    messages = _build_context(msg, thinking)
     data, fallback = _call_llm(messages)
     if fallback:
         return {"emotions": _fallback_emotion(), "reply": fallback, "source": "fallback"}
@@ -502,21 +617,25 @@ async def chat(req: ChatRequest):
     if new_row:
         threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
     update_affinity(msg, parsed[0]["label"])
+    update_affect(msg)
     adjust_expression_amplitude(msg)
-    _archive_conversation(msg, result["reply"])
+    _archive_conversation(msg, result["reply"], thinking)
     threading.Thread(target=_maybe_condense, daemon=True).start()
     threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
+    threading.Thread(target=maybe_crystallize, daemon=True).start()
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
-    _upsert(key, first["eye_curve"], first["eye_open"], first["eye_pupil"],
-            first["mouth_curve"], first["mouth_open"], first["mouth_width"],
-            first["sparkle"], first["brow_angle"], first["brow_height"],
-            first["brow_asym"], result["reply"], seq)
-    _upsert(first["label"], first["eye_curve"], first["eye_open"], first["eye_pupil"],
-            first["mouth_curve"], first["mouth_open"], first["mouth_width"],
-            first["sparkle"], first["brow_angle"], first["brow_height"],
-            first["brow_asym"], result["reply"], seq)
+    _upsert(key, first["eye_curve"], first["eye_open"], first["eye_pupil"], first.get("eye_wink", 0),
+            first["mouth_curve"], first["mouth_open"], first["mouth_width"], first.get("mouth_asym", 0),
+            first["sparkle"], first["brow_angle"], first["brow_height"], first["brow_asym"],
+            first.get("blush", 0), first.get("head_tilt", 0), first.get("tear", 0),
+            result["reply"], seq)
+    _upsert(first["label"], first["eye_curve"], first["eye_open"], first["eye_pupil"], first.get("eye_wink", 0),
+            first["mouth_curve"], first["mouth_open"], first["mouth_width"], first.get("mouth_asym", 0),
+            first["sparkle"], first["brow_angle"], first["brow_height"], first["brow_asym"],
+            first.get("blush", 0), first.get("head_tilt", 0), first.get("tear", 0),
+            result["reply"], seq)
 
     result["source"] = "llm"
     return result
@@ -530,29 +649,40 @@ async def chat_stream(req: ChatRequest):
         return {"error": "empty message"}
 
     async def generate():
+        is_deep = _is_deep_question(msg)
         key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
-        row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
-        if row:
-            execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
-            execute("INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s)", [msg, row["reply"], row["label"]])
-            update_affinity(msg, row["label"])
-            adjust_expression_amplitude(msg)
-            _archive_conversation(msg, row["reply"])
-            threading.Thread(target=_maybe_condense, daemon=True).start()
-            threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-            r = _row_to_response(row)
-            for f in r.get("emotions", []):
-                f.update(_jitter_frame(f))
-                f.update(scale_emotion_params(f))
-            yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label']}, ensure_ascii=False)}\n\n"
-            reply = row["reply"]
-            for i in range(0, len(reply), 2):
-                yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.03)
-            yield f"data: {json.dumps({'type': 'done', 'source': 'cache'}, ensure_ascii=False)}\n\n"
-            return
 
-        messages = _build_context(msg)
+        if not is_deep:
+            row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
+            if row:
+                execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
+                execute("INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s)", [msg, row["reply"], row["label"]])
+                update_affinity(msg, row["label"])
+                update_affect(msg)
+                adjust_expression_amplitude(msg)
+                _archive_conversation(msg, row["reply"])
+                threading.Thread(target=_maybe_condense, daemon=True).start()
+                threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
+                threading.Thread(target=maybe_crystallize, daemon=True).start()
+                r = _row_to_response(row)
+                for f in r.get("emotions", []):
+                    f.update(_jitter_frame(f))
+                    f.update(scale_emotion_params(f))
+                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label']}, ensure_ascii=False)}\n\n"
+                reply = row["reply"]
+                for i in range(0, len(reply), 2):
+                    yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(0.03)
+                yield f"data: {json.dumps({'type': 'done', 'source': 'cache'}, ensure_ascii=False)}\n\n"
+                return
+
+        if is_deep:
+            yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
+            thinking = _think(msg)
+        else:
+            thinking = None
+
+        messages = _build_context(msg, thinking)
         data, fallback = _call_llm(messages)
         if fallback:
             yield f"data: {json.dumps({'type': 'emotions', 'emotions': _fallback_emotion(), 'label': 'sheepish'}, ensure_ascii=False)}\n\n"
@@ -581,21 +711,25 @@ async def chat_stream(req: ChatRequest):
         if new_row:
             threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
         update_affinity(msg, parsed[0]["label"])
+        update_affect(msg)
         adjust_expression_amplitude(msg)
-        _archive_conversation(msg, reply)
+        _archive_conversation(msg, reply, thinking)
         threading.Thread(target=_maybe_condense, daemon=True).start()
         threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
+        threading.Thread(target=maybe_crystallize, daemon=True).start()
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
-        _upsert(key, first["eye_curve"], first["eye_open"], first["eye_pupil"],
-                first["mouth_curve"], first["mouth_open"], first["mouth_width"],
-                first["sparkle"], first["brow_angle"], first["brow_height"],
-                first["brow_asym"], reply, seq)
-        _upsert(first["label"], first["eye_curve"], first["eye_open"], first["eye_pupil"],
-                first["mouth_curve"], first["mouth_open"], first["mouth_width"],
-                first["sparkle"], first["brow_angle"], first["brow_height"],
-                first["brow_asym"], reply, seq)
+        _upsert(key, first["eye_curve"], first["eye_open"], first["eye_pupil"], first.get("eye_wink", 0),
+                first["mouth_curve"], first["mouth_open"], first["mouth_width"], first.get("mouth_asym", 0),
+                first["sparkle"], first["brow_angle"], first["brow_height"], first["brow_asym"],
+                first.get("blush", 0), first.get("head_tilt", 0), first.get("tear", 0),
+                reply, seq)
+        _upsert(first["label"], first["eye_curve"], first["eye_open"], first["eye_pupil"], first.get("eye_wink", 0),
+                first["mouth_curve"], first["mouth_open"], first["mouth_width"], first.get("mouth_asym", 0),
+                first["sparkle"], first["brow_angle"], first["brow_height"], first["brow_asym"],
+                first.get("blush", 0), first.get("head_tilt", 0), first.get("tear", 0),
+                reply, seq)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

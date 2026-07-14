@@ -70,9 +70,9 @@ function initStarfield() {
 }
 
 function recomputeFaceLayout() {
-  faceCS = Math.min(canvas.width, canvas.height) / 38;
-  faceOx = canvas.width / 2 - 16 * faceCS;
-  faceOy = canvas.height / 2 - 16 * faceCS;
+  faceCS = Math.min(canvas.width, canvas.height) / 76;
+  faceOx = canvas.width / 2 - 32 * faceCS;
+  faceOy = canvas.height / 2 - 32 * faceCS;
 }
 
 function updateFacePixelTargets() {
@@ -478,7 +478,7 @@ let microTimer = null; // micro-expression cooldown
 let faceBob = 0, faceFrame = 0;
 
 let sparkleParticles = [];
-const NUM_SPARKLES = 55;
+const NUM_SPARKLES = 80;
 let chatFadeIn = 0; // 0-1 fade-in for face after convergence
 
 function initSparkleParticles() {
@@ -512,7 +512,7 @@ function updateChat(dt) {
   if (microTimer === null || microTimer <= 0) {
     microTimer = 2 + Math.random() * 4; // every 2-6 seconds
     // Brief micro-movement on a random param
-    const microKeys = ['eye_pupil', 'brow_asym', 'mouth_width'];
+    const microKeys = ['eye_pupil', 'brow_asym', 'mouth_width', 'blush', 'head_tilt'];
     const key = microKeys[Math.floor(Math.random() * microKeys.length)];
     const orig = tgtParams[key];
     const offset = (Math.random() - 0.5) * 0.04;
@@ -530,88 +530,132 @@ function updateChat(dt) {
 }
 
 function drawFaceOnCanvas(params, oy) {
-  // Draw the face using the original grid-based approach
+  // Head tilt — pixel shift instead of rotation
+  const tiltX = (params.head_tilt || 0) * 3 * faceCS;
+  const ox = faceOx + tiltX;
+
   // Shadow
-  const cx = canvas.width / 2, cy = canvas.height / 2 + 5 * faceCS + oy;
+  const shx = canvas.width / 2 + tiltX, shy = canvas.height / 2 + 10 * faceCS + oy;
   ctx.fillStyle = 'rgba(0,0,0,0.12)';
   ctx.beginPath();
-  ctx.ellipse(cx, cy, 13 * faceCS, 6 * faceCS, 0, 0, Math.PI * 2);
+  ctx.ellipse(shx, shy, 25 * faceCS, 10 * faceCS, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Face circle
+  // Face circle (radius 29, outline 27, darker edge 24)
   for (let r = 0; r < GRID; r++)
     for (let cc = 0; cc < GRID; cc++) {
       const d = fd(r, cc);
-      if (d > 14.5) continue;
-      ctx.fillStyle = d > 13 ? FACE_COLORS.outline : (d > 12 ? FACE_COLORS.faceD : FACE_COLORS.face);
-      ctx.fillRect(faceOx + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
+      if (d > 29) continue;
+      ctx.fillStyle = d > 27 ? FACE_COLORS.outline : (d > 24 ? FACE_COLORS.faceD : FACE_COLORS.face);
+      ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
     }
 
-  // Eyebrows
-  const baseR = Math.round(lerp(9, 4, params.brow_height));
-  const asym = params.brow_asym || 0;
-  const lOff = -Math.round(asym * 2), rOff = Math.round(asym * 2);
-  for (let i = 0; i < 4; i++) {
-    const cc = 7 + i, isInner = i >= 2;
-    const rowOff = isInner ? -Math.round(params.brow_angle * 1.5) : Math.round(params.brow_angle * 1.5);
-    ctx.fillStyle = FACE_COLORS.dark;
-    ctx.fillRect(faceOx + cc * faceCS, faceOy + (baseR + rowOff + lOff) * faceCS + oy, faceCS, faceCS);
-  }
-  for (let i = 0; i < 4; i++) {
-    const cc = 21 + i, isInner = i <= 1;
-    const rowOff = isInner ? -Math.round(params.brow_angle * 1.5) : Math.round(params.brow_angle * 1.5);
-    ctx.fillStyle = FACE_COLORS.dark;
-    ctx.fillRect(faceOx + cc * faceCS, faceOy + (baseR + rowOff + rOff) * faceCS + oy, faceCS, faceCS);
+  // Blush — semi-transparent pink overlay, always slightly visible
+  const blushVal = params.blush || 0;
+  const blushAlpha = 0.08 + blushVal * 0.7;
+  if (blushAlpha > 0.02) {
+    ctx.globalAlpha = blushAlpha;
+    ctx.fillStyle = FACE_COLORS.blush;
+    for (let r = 19; r <= 35; r++) {
+      for (let cc = 3; cc <= 19; cc++) {
+        if (Math.sqrt((r-27)**2 + (cc-11)**2) < 8)
+          ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
+      }
+    }
+    for (let r = 19; r <= 35; r++) {
+      for (let cc = 45; cc <= 61; cc++) {
+        if (Math.sqrt((r-27)**2 + (cc-53)**2) < 8)
+          ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 
-  // Eyes
+  // Eyebrows — pixel blocks, 5 wide
+  const baseR = Math.round(lerp(17, 8, params.brow_height));
+  const asym = params.brow_asym || 0;
+  const lOff = -Math.round(asym * 4), rOff = Math.round(asym * 4);
+  ctx.fillStyle = FACE_COLORS.dark;
+  for (let i = 0; i < 5; i++) {
+    const cc = 14 + i, isInner = i >= 2;
+    const rowOff = isInner ? -Math.round(params.brow_angle * 3) : Math.round(params.brow_angle * 3);
+    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + rowOff + lOff) * faceCS + oy, faceCS, faceCS);
+  }
+  for (let i = 0; i < 5; i++) {
+    const cc = 43 + i, isInner = i <= 2;
+    const rowOff = isInner ? -Math.round(params.brow_angle * 3) : Math.round(params.brow_angle * 3);
+    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + rowOff + rOff) * faceCS + oy, faceCS, faceCS);
+  }
+
+  // Eyes — pixel blocks, wink support
   function drawEye(cc) {
-    const bR = 10, rows = params.eye_open < 0.2 ? 1 : (params.eye_open < 0.6 ? 2 : 3);
+    const bR = 20;
+    let eyeOpen = params.eye_open;
+    const wink = params.eye_wink || 0;
+    if (wink < -0.5 && cc === 20) eyeOpen = 0.05;
+    if (wink > 0.5 && cc === 43) eyeOpen = 0.05;
+    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 3);
     const px = [];
     if (rows === 1) {
-      for (let c = cc - 3; c <= cc + 3 && px.length < 6; c++) px.push({ r: bR, c });
+      for (let c = cc - 5; c <= cc + 5 && px.length < 10; c++) px.push({ r: bR, c });
     } else if (rows === 2) {
-      for (let c = cc - 1; c <= cc + 1; c++) px.push({ r: bR - 1, c });
-      px.push({ r: bR + Math.round(-params.eye_curve * 2), c: cc - 1 });
-      px.push({ r: bR + Math.round(params.eye_curve), c: cc });
-      px.push({ r: bR + Math.round(-params.eye_curve * 2), c: cc + 1 });
+      for (let c = cc - 3; c <= cc + 3; c++) px.push({ r: bR - 2, c });
+      px.push({ r: bR + Math.round(-params.eye_curve * 4), c: cc - 3 });
+      px.push({ r: bR + Math.round(params.eye_curve * 2), c: cc });
+      px.push({ r: bR + Math.round(-params.eye_curve * 4), c: cc + 3 });
     } else {
-      px.push({ r: bR - 2, c: cc - 2 }); px.push({ r: bR - 2, c: cc + 1 });
-      px.push({ r: bR - 1, c: cc - 2 }); px.push({ r: bR - 1, c: cc + 1 });
-      px.push({ r: bR, c: cc - 2 }); px.push({ r: bR, c: cc + 1 });
+      px.push({ r: bR - 4, c: cc - 4 }); px.push({ r: bR - 4, c: cc + 3 });
+      px.push({ r: bR - 2, c: cc - 4 }); px.push({ r: bR - 2, c: cc + 3 });
+      px.push({ r: bR, c: cc - 4 }); px.push({ r: bR, c: cc + 3 });
     }
-    const ps = Math.round((params.eye_pupil || 0) * 1.5);
+    const ps = Math.round((params.eye_pupil || 0) * 3.5);
     for (let k = 0; k < px.length; k++) px[k].c += ps;
-    const hlR = rows === 1 ? bR : bR - 1;
-    px.push({ r: hlR, c: cc + 1 + ps, hl: true });
+    const hlR = rows === 1 ? bR : bR - 2;
+    px.push({ r: hlR, c: cc + 3 + ps, hl: true });
     for (const ep of px) {
       ctx.fillStyle = ep.hl ? lerpH(FACE_COLORS.dark, FACE_COLORS.light, params.sparkle) : FACE_COLORS.dark;
-      ctx.fillRect(faceOx + ep.c * faceCS, faceOy + ep.r * faceCS + oy, faceCS, faceCS);
+      ctx.fillRect(ox + ep.c * faceCS, faceOy + ep.r * faceCS + oy, faceCS, faceCS);
     }
   }
-  drawEye(10); drawEye(21);
+  drawEye(20); drawEye(43);
 
-  // Mouth
-  const mcc = 16, hw = Math.round(lerp(2, 5.5, params.mouth_width));
+  // Tear — small blue pixel block
+  if ((params.tear || 0) > 0.05) {
+    const tearColor = lerpH('#ffffff', '#88ccff', params.tear);
+    ctx.fillStyle = tearColor;
+    const tearR = 23 + Math.round(params.tear * 2);
+    ctx.fillRect(ox + 18 * faceCS, faceOy + tearR * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 19 * faceCS, faceOy + tearR * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 18 * faceCS, faceOy + (tearR + 1) * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 19 * faceCS, faceOy + (tearR + 1) * faceCS + oy, faceCS, faceCS);
+  }
+
+  // Mouth — pixel blocks, asymmetric
+  const mcc = 32, hw = Math.round(lerp(4, 11, params.mouth_width));
   const cs = mcc - hw, ce = mcc + hw;
+  const ma = params.mouth_asym || 0;
   ctx.fillStyle = FACE_COLORS.dark;
   if (params.mouth_open < 0.25) {
     for (let c = cs; c <= ce; c++) {
       const t = (c - cs) / (ce - cs || 1), edgeF = Math.abs(t - 0.5) * 2;
-      ctx.fillRect(faceOx + c * faceCS, faceOy + (19 + Math.round(-params.mouth_curve * edgeF * 2)) * faceCS + oy, faceCS, faceCS);
+      const asymOffset = Math.round(ma * (c - mcc) * 0.4);
+      ctx.fillRect(ox + c * faceCS, faceOy + (39 + Math.round(-params.mouth_curve * edgeF * 4) + asymOffset) * faceCS + oy, faceCS, faceCS);
     }
   } else {
-    const topR = 18 - Math.round(params.mouth_open * 0.8), botR = 19 + Math.round(params.mouth_open * 0.8);
-    for (let c = 15; c <= 17; c++) ctx.fillRect(faceOx + c * faceCS, faceOy + topR * faceCS + oy, faceCS, faceCS);
+    const topR = 37 - Math.round(params.mouth_open * 1.6), botR = 39 + Math.round(params.mouth_open * 1.6);
+    for (let c = 31; c <= 34; c++) ctx.fillRect(ox + c * faceCS, faceOy + topR * faceCS + oy, faceCS, faceCS);
     for (let c = cs + 1; c <= ce - 1; c++) {
       const isE = (c === cs + 1 || c === ce - 1);
-      ctx.fillRect(faceOx + c * faceCS, faceOy + (botR + (isE ? Math.round(-params.mouth_curve) : Math.round(params.mouth_curve * 0.3))) * faceCS + oy, faceCS, faceCS);
+      const asymOffset = Math.round(ma * (c - mcc) * 0.4);
+      ctx.fillRect(ox + c * faceCS, faceOy + (botR + (isE ? Math.round(-params.mouth_curve * 2) : Math.round(params.mouth_curve * 0.7)) + asymOffset) * faceCS + oy, faceCS, faceCS);
     }
   }
 }
 
 function drawSparkleOverlay(oy) {
   const t = performance.now() / 1000;
+  const tiltX = (curParams.head_tilt || 0) * 3 * faceCS;
+  const ox = faceOx + tiltX;
   const facePixels = getFacePixels(curParams);
   const fps = facePixels;
   for (const sp of sparkleParticles) {
@@ -619,7 +663,7 @@ function drawSparkleOverlay(oy) {
     const fp = fps[fpIdx];
     const sparkle = 0.15 + 0.2 * Math.sin(t * sp.speed + sp.phase);
     if (sparkle < 0.05) continue;
-    const sx = faceOx + fp.c * faceCS;
+    const sx = ox + fp.c * faceCS;
     const sy = faceOy + fp.r * faceCS + oy;
     ctx.fillStyle = '#ffffff';
     ctx.globalAlpha = sparkle;
