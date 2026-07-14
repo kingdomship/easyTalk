@@ -19,9 +19,9 @@ from services.memory_loader import build_user_context
 from services.memory_search import index_turn, build_memory_context
 from services.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
 from services.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
-from services.affect import update_affect, get_affect_context, get_regulation_strategy
+from services.affect import update_affect, get_affect_context, get_regulation_strategy, get_valence_context
 from services.crystallization import maybe_crystallize, get_crystal_context
-from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod
+from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
 from services.identity_guard import maybe_guard, get_drift_correction
 from services.narrative import detect_situations, distill_episode, get_narrative_context
 
@@ -468,6 +468,10 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     if reg_strat:
         system_msg += "\n[建议回应策略]\n" + reg_strat
 
+    valence_ctx = get_valence_context()
+    if valence_ctx:
+        system_msg += "\n[情绪变化]\n" + valence_ctx
+
     news_items = get_recent_news(5)
     if news_items:
         lines = ["", "## 今天的热门话题（可以在对话中自然地提）："]
@@ -545,10 +549,17 @@ def _call_llm(messages: list) -> tuple:
         # Extract user message (last in the list) for mode detection
         user_msg = msgs[-1]["content"].split("\n（请以上述JSON格式回复）")[0] if msgs else ""
         mode = determine_mode(_is_deep_question(user_msg), affect)
-        temp = rhythm_temp + get_mode_temp_mod(mode)
+
+        # Compute idle minutes for arousal state
+        last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
+        idle_min = (last_row["secs"] / 60.0) if last_row and last_row["secs"] else 0
+
+        arousal = determine_arousal(mode, affect, idle_min)
+        temp = rhythm_temp + get_mode_temp_mod(mode) + get_arousal_temp_mod(arousal)
+        token_mod = get_arousal_token_mod(arousal)
         resp = client.chat.completions.create(
             model="deepseek-chat", messages=msgs,
-            temperature=temp, max_tokens=800,
+            temperature=temp, max_tokens=800 + token_mod,
         )
         raw = resp.choices[0].message.content
         start = raw.find("{")

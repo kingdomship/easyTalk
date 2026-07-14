@@ -98,3 +98,73 @@ def get_mode_suffix(mode: str) -> str:
 def get_mode_temp_mod(mode: str) -> float:
     """Return the temperature modifier for a given mode."""
     return MODES.get(mode, MODES["chat"])["temp_mod"]
+
+
+# ── Metabolic / arousal states (SAGE inspired) ────────────────────
+
+_AROUSAL = {
+    "wake": {
+        "label": "唤醒",
+        "temp_mod": 0.03,
+        "max_tokens_mod": 0,
+        "amplitude_mod": 0.05,
+        "desc": "用户刚来，快速进入状态",
+    },
+    "focus": {
+        "label": "专注",
+        "temp_mod": -0.03,
+        "max_tokens_mod": 200,
+        "amplitude_mod": -0.05,
+        "desc": "深度对话中，认知资源集中",
+    },
+    "rest": {
+        "label": "放松",
+        "temp_mod": 0.02,
+        "max_tokens_mod": -200,
+        "amplitude_mod": 0.0,
+        "desc": "闲聊放松，认知资源低",
+    },
+    "crisis": {
+        "label": "危机",
+        "temp_mod": -0.05,
+        "max_tokens_mod": 100,
+        "amplitude_mod": -0.1,
+        "desc": "用户情绪危机，全神贯注",
+    },
+}
+
+
+def determine_arousal(
+    mode: str,
+    affect: dict | None = None,
+    idle_minutes: float = 0,
+) -> str:
+    """Determine arousal state based on conversation mode and affect.
+
+    Priority: crisis > focus > wake > rest
+    """
+    if mode == "comfort":
+        panic = (affect or {}).get("panic", 0)
+        fear = (affect or {}).get("fear", 0)
+        if panic > 0.35 or fear > 0.35:
+            return "crisis"
+
+    if mode == "deep":
+        return "focus"
+
+    if idle_minutes > 10:
+        return "wake"
+
+    return "rest"
+
+
+def get_arousal_temp_mod(arousal: str) -> float:
+    return _AROUSAL.get(arousal, _AROUSAL["rest"])["temp_mod"]
+
+
+def get_arousal_token_mod(arousal: str) -> int:
+    return _AROUSAL.get(arousal, _AROUSAL["rest"])["max_tokens_mod"]
+
+
+def get_arousal_amplitude_mod(arousal: str) -> float:
+    return _AROUSAL.get(arousal, _AROUSAL["rest"])["amplitude_mod"]

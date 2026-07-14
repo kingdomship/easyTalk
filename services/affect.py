@@ -5,9 +5,18 @@ SEEKING, PLAY, CARE, FEAR, RAGE, PANIC/GRIEF.
 
 Uses keyword seeds for efficiency — each dimension has curated Chinese
 and English triggers. EMA smoothing (alpha=0.05) stored in DB.
+
+Valence tracking (Active Inference): tracks emotional direction
+(improving/worsening) to evaluate regulation strategy effectiveness.
 """
 
+import json
+import os
+
 from app.db import q, execute
+
+_PREV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                          "memory", "valence_prev.json")
 
 DIMENSIONS = ["seeking", "play", "care", "fear", "rage", "panic"]
 DEFAULTS = {"seeking": 0.35, "play": 0.25, "care": 0.2, "fear": 0.1, "rage": 0.05, "panic": 0.1}
@@ -142,6 +151,9 @@ def update_affect(user_msg: str):
             [round(smooth, 4), dim],
         )
 
+    # Save snapshot for next-turn valence comparison
+    snapshot_for_valence()
+
 
 def dominant_affect() -> tuple[str, float]:
     """Return the dominant emotional dimension and its value."""
@@ -221,3 +233,90 @@ def get_affect_context() -> str:
         parts.append(strategy)
 
     return "\n".join(parts)
+
+
+# ── Valence tracking (Active Inference inspired) ──────────────────
+
+def _save_prev_state(aff: dict):
+    """Save current affect snapshot for next-turn comparison."""
+    try:
+        os.makedirs(os.path.dirname(_PREV_PATH), exist_ok=True)
+        with open(_PREV_PATH, "w") as f:
+            json.dump(aff, f)
+    except Exception:
+        pass
+
+
+def _load_prev_state() -> dict | None:
+    """Load the previous turn's affect snapshot."""
+    try:
+        if os.path.exists(_PREV_PATH):
+            with open(_PREV_PATH) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def snapshot_for_valence():
+    """Save current smoothed affect as 'previous' for next turn comparison."""
+    aff = get_affect()
+    if aff:
+        _save_prev_state(aff)
+
+
+def get_valence_context() -> str:
+    """Return valence delta hint based on Active Inference V(t) = -dF/dt.
+
+    Compares current raw assessment with previous smoothed state to
+    determine if user's emotional state is improving or worsening.
+    """
+    prev = _load_prev_state()
+    curr = get_affect()
+    if not prev or not curr:
+        return ""
+
+    # Key dimensions where direction matters
+    panic_delta = curr.get("panic", 0) - prev.get("panic", 0)
+    fear_delta = curr.get("fear", 0) - prev.get("fear", 0)
+    seeking_delta = curr.get("seeking", 0) - prev.get("seeking", 0)
+    play_delta = curr.get("play", 0) - prev.get("play", 0)
+
+    # Determine valence — improving or worsening
+    improving = 0
+    worsening = 0
+
+    if panic_delta < -0.02:
+        improving += 1  # sadness decreasing → good
+    elif panic_delta > 0.03:
+        worsening += 1
+
+    if fear_delta < -0.02:
+        improving += 1  # anxiety decreasing → good
+    elif fear_delta > 0.03:
+        worsening += 1
+
+    if seeking_delta > 0.02:
+        improving += 1  # curiosity increasing → good
+    if play_delta > 0.02:
+        improving += 1  # playfulness increasing → good
+
+    # Dominant negative emotion was high last turn
+    prev_had_negative = prev.get("panic", 0) > 0.25 or prev.get("fear", 0) > 0.25
+
+    if not prev_had_negative:
+        return ""  # no emotional regulation needed last turn
+
+    if improving > worsening:
+        return (
+            "用户的情绪正在改善（消极情绪↓，积极情绪↑）。"
+            "你上轮的回应策略是有效的，继续保持类似风格。"
+        )
+    elif worsening > improving:
+        return (
+            "用户的消极情绪似乎在加深。你上轮的回应策略可能不太奏效，"
+            "考虑换一种方式——如果上次是共情，这次试试认知重评；"
+            "如果上次是幽默，这次试试安静陪伴。"
+        )
+    else:
+        return ""

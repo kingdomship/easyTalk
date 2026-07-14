@@ -367,11 +367,12 @@ function drawStarfield() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const t = performance.now() / 1000;
+  const breathe = 1 + 0.06 * Math.sin(t * 0.52); // ~12s breathing cycle
   const circBright = circadianBrightness();
   for (const s of stars) {
     const twinkle = 0.5 + 0.5 * Math.sin(t * s.speed + s.phase);
-    s.brightness = (0.3 + twinkle * 0.7) * circBright;
-    if (s.isFunctional) s.brightness = (0.6 + twinkle * 0.4) * circBright;
+    s.brightness = (0.3 + twinkle * 0.7) * circBright * breathe;
+    if (s.isFunctional) s.brightness = (0.6 + twinkle * 0.4) * circBright * breathe;
     drawStar(s);
   }
   drawConstellations(cursorX, cursorY);
@@ -531,7 +532,10 @@ function updateChat(dt) {
 
 function drawFaceOnCanvas(params, oy) {
   // Head tilt — pixel shift instead of rotation
-  const tiltX = (params.head_tilt || 0) * 3 * faceCS;
+  // Add subtle ~8s breathing oscillation
+  const t = performance.now() / 1000;
+  const headBob = Math.sin(t * 0.78) * 0.03;
+  const tiltX = ((params.head_tilt || 0) + headBob) * 3 * faceCS;
   const ox = faceOx + tiltX;
 
   // Shadow
@@ -654,7 +658,8 @@ function drawFaceOnCanvas(params, oy) {
 
 function drawSparkleOverlay(oy) {
   const t = performance.now() / 1000;
-  const tiltX = (curParams.head_tilt || 0) * 3 * faceCS;
+  const headBob = Math.sin(t * 0.78) * 0.03;
+  const tiltX = ((curParams.head_tilt || 0) + headBob) * 3 * faceCS;
   const ox = faceOx + tiltX;
   const facePixels = getFacePixels(curParams);
   const fps = facePixels;
