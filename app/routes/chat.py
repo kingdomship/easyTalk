@@ -22,6 +22,7 @@ from services.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temper
 from services.affect import update_affect, get_affect_context, get_regulation_strategy
 from services.crystallization import maybe_crystallize, get_crystal_context
 from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod
+from services.identity_guard import maybe_guard, get_drift_correction
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -494,6 +495,10 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     mode = determine_mode(_is_deep_question(msg), get_affect())
     system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
 
+    drift_correction = get_drift_correction()
+    if drift_correction:
+        system_msg += "\n\n" + drift_correction
+
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
     )
@@ -590,6 +595,7 @@ async def chat(req: ChatRequest):
             threading.Thread(target=_maybe_condense, daemon=True).start()
             threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
             threading.Thread(target=maybe_crystallize, daemon=True).start()
+            threading.Thread(target=maybe_guard, daemon=True).start()
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(_jitter_frame(f))
@@ -623,6 +629,7 @@ async def chat(req: ChatRequest):
     threading.Thread(target=_maybe_condense, daemon=True).start()
     threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
     threading.Thread(target=maybe_crystallize, daemon=True).start()
+    threading.Thread(target=maybe_guard, daemon=True).start()
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -664,6 +671,7 @@ async def chat_stream(req: ChatRequest):
                 threading.Thread(target=_maybe_condense, daemon=True).start()
                 threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
                 threading.Thread(target=maybe_crystallize, daemon=True).start()
+                threading.Thread(target=maybe_guard, daemon=True).start()
                 r = _row_to_response(row)
                 for f in r.get("emotions", []):
                     f.update(_jitter_frame(f))

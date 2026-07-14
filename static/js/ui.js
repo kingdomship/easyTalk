@@ -605,6 +605,22 @@ initMemoryStars();
 recomputeFaceLayout();
 initSparkleParticles();
 // Initial face pixel computation for convergence targets
-curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0 };
+curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, blush:0.15, head_tilt:0, tear:0 };
 tgtParams = { ...curParams };
 requestAnimationFrame(loop);
+
+// Check for idle thoughts on load
+(async function checkIdleThought() {
+  try {
+    const resp = await fetch('/api/idle-thought');
+    const data = await resp.json();
+    if (data.thought) {
+      setTimeout(() => {
+        if (state === STATE.STARFIELD) {
+          showDialog('💭 ' + data.thought, canvas.width / 2, canvas.height * 0.3);
+          setTimeout(() => { if (state === STATE.STARFIELD) hideDialog(); }, 5000);
+        }
+      }, 2000);
+    }
+  } catch (e) {}
+})();

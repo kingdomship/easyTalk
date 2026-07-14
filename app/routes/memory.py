@@ -24,7 +24,19 @@ def get_user_profile():
 def show_affinity():
     _ensure_db()
     init_affinity_db()
-    return get_affinity()
+    aff = get_affinity()
+    from services.affinity import get_milestones
+    aff["milestones"] = get_milestones()
+    return aff
+
+
+@router.get("/api/idle-thought")
+def latest_idle_thought():
+    """Return the most recent idle thought, if within the last hour."""
+    _ensure_db()
+    from services.consciousness_loop import get_latest_idle_thought
+    thought = get_latest_idle_thought()
+    return {"thought": thought}
 
 
 @router.get("/api/mood/calendar")

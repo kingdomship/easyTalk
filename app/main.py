@@ -20,6 +20,7 @@ from services.news import fetch_all
 from services.diary import generate_diary
 from services.affinity import init_affinity_db
 from services.affect import init_affect_db
+from services.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed
 
 
 def _seed_memory():
@@ -67,9 +68,13 @@ async def lifespan(app: FastAPI):
     init_db()
     init_affinity_db()
     init_affect_db()
+    init_loop_db()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
     scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)
+    scheduler.add_job(idle_thought, "cron", minute="*/5")
+    scheduler.add_job(mood_fluctuation, "cron", minute="*/30")
+    scheduler.add_job(diary_seed, "cron", minute="0")
     scheduler.start()
     yield
     scheduler.shutdown()

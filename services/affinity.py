@@ -1,16 +1,29 @@
 """6D affinity tracking + expression learning.
 
-Affinity dimensions: warmth, trust, intimacy, curiosity, patience, tension.
+Affinity dimensions: warmth, trust, intimacy, curiosity, patience, tension,
+user_autonomy, user_competence, user_relatedness.
 Expression learning: adaptive amplitude based on user engagement signals.
 
 Updated after each conversation turn using EMA smoothing.
 Persisted in DB for survival across restarts.
 """
 
+import json
+import logging
+import os
+
 from app.db import q, execute
 
-DIMENSIONS = ["warmth", "trust", "intimacy", "curiosity", "patience", "tension", "expression_amplitude"]
-DEFAULTS = {"warmth": 0.5, "trust": 0.4, "intimacy": 0.2, "curiosity": 0.6, "patience": 0.7, "tension": 0.1, "expression_amplitude": 1.0}
+DIMENSIONS = [
+    "warmth", "trust", "intimacy", "curiosity", "patience", "tension",
+    "expression_amplitude",
+    "user_autonomy", "user_competence", "user_relatedness",
+]
+DEFAULTS = {
+    "warmth": 0.5, "trust": 0.4, "intimacy": 0.2, "curiosity": 0.6,
+    "patience": 0.7, "tension": 0.1, "expression_amplitude": 1.0,
+    "user_autonomy": 0.5, "user_competence": 0.5, "user_relatedness": 0.3,
+}
 EMA_ALPHA = 0.05
 
 # Neutral expression values for amplitude scaling
@@ -84,9 +97,31 @@ def update_affinity(user_msg: str, emotion_label: str):
         deltas["intimacy"] += 0.01
         deltas["warmth"] += 0.01
 
+    # SDT: user autonomy — choosing from AI suggestions, disagreeing
+    if any(w in msg_lower for w in ["我选", "第一个", "第二个", "第三个", "换一个", "不是"]):
+        deltas["user_autonomy"] += 0.02
+    # User shares their opinion confidently
+    if any(w in msg_lower for w in ["我觉得", "我认为", "我的想法", "按我的"]):
+        deltas["user_autonomy"] += 0.015
+
+    # SDT: user competence — AI acknowledged user insight last round
+    if emotion_label in ["impressed", "surprised", "curious"]:
+        deltas["user_competence"] += 0.015
+    if any(w in msg_lower for w in ["我知道", "我会", "我懂", "我做过", "我擅长"]):
+        deltas["user_competence"] += 0.02
+
+    # SDT: user relatedness — personal sharing
+    if len(user_msg) > 40:
+        deltas["user_relatedness"] += 0.01
+    if any(w in msg_lower for w in ["我", "我的", "我们家", "我妈", "我爸", "我朋友"]):
+        deltas["user_relatedness"] += 0.01
+
     # Natural decay (time passing)
     deltas["tension"] -= 0.005
     deltas["patience"] -= 0.002
+    deltas["user_autonomy"] -= 0.002
+    deltas["user_competence"] -= 0.001
+    deltas["user_relatedness"] -= 0.002
 
     # Apply EMA smoothing
     for dim in DIMENSIONS:
@@ -98,6 +133,9 @@ def update_affinity(user_msg: str, emotion_label: str):
             "UPDATE affinity SET value = %s, updated_at = NOW() WHERE dimension = %s",
             [round(new_val, 4), dim],
         )
+
+    # Check for relationship milestones after updating
+    check_milestones()
 
 
 def get_affinity_context() -> str:
@@ -180,3 +218,76 @@ def scale_emotion_params(frame: dict) -> dict:
             neutral = NEUTRAL_PARAMS[key]
             result[key] = neutral + (result[key] - neutral) * amp
     return result
+
+
+# ── Relationship milestones ─────────────────────────────────────
+
+_MILESTONES = [
+    ("warmth", 0.6, "温暖的默契", "你们之间形成了一种舒适的相处节奏"),
+    ("intimacy", 0.3, "信任的分享", "用户开始愿意分享更私人的话题"),
+    ("intimacy", 0.5, "深刻的联结", "你们的关系从闲聊进入了更深层的连接"),
+    ("trust", 0.7, "无话不谈", "用户几乎可以和你聊任何事"),
+    ("user_relatedness", 0.5, "心之桥梁", "用户真正感受到了与你的情感联结"),
+]
+
+_MILESTONE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                "memory", "milestones.jsonl")
+
+
+def check_milestones() -> str | None:
+    """Check for newly crossed relationship milestones.
+
+    Returns the milestone name if one was triggered, None otherwise.
+    Each milestone only triggers once.
+    """
+    import json
+    triggered = set()
+    if os.path.exists(_MILESTONE_PATH):
+        with open(_MILESTONE_PATH) as f:
+            for line in f:
+                try:
+                    m = json.loads(line)
+                    triggered.add(m.get("name", ""))
+                except Exception:
+                    pass
+
+    aff = get_affinity()
+    if not aff:
+        return None
+
+    for dim, threshold, name, desc in _MILESTONES:
+        if name in triggered:
+            continue
+        if aff.get(dim, 0) >= threshold:
+            entry = {
+                "name": name,
+                "description": desc,
+                "dimension": dim,
+                "threshold": threshold,
+                "value": round(aff[dim], 3),
+            }
+            os.makedirs(os.path.dirname(_MILESTONE_PATH), exist_ok=True)
+            try:
+                with open(_MILESTONE_PATH, "a") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                logger = logging.getLogger("emoji-chat")
+                logger.info("Milestone reached: %s (%s=%.2f)", name, dim, aff[dim])
+            except Exception:
+                pass
+            return name
+
+    return None
+
+
+def get_milestones() -> list[dict]:
+    """Return all achieved milestones."""
+    import json
+    milestones = []
+    if os.path.exists(_MILESTONE_PATH):
+        with open(_MILESTONE_PATH) as f:
+            for line in f:
+                try:
+                    milestones.append(json.loads(line))
+                except Exception:
+                    pass
+    return milestones
