@@ -23,6 +23,7 @@ from services.affect import update_affect, get_affect_context, get_regulation_st
 from services.crystallization import maybe_crystallize, get_crystal_context
 from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod
 from services.identity_guard import maybe_guard, get_drift_correction
+from services.narrative import detect_situations, distill_episode, get_narrative_context
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -479,6 +480,10 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     if crystal_ctx:
         system_msg += "\n\n" + crystal_ctx
 
+    narrative_ctx = get_narrative_context()
+    if narrative_ctx:
+        system_msg += "\n\n" + narrative_ctx
+
     memory_ctx = build_memory_context(msg)
     if memory_ctx:
         system_msg += "\n\n" + memory_ctx
@@ -596,6 +601,8 @@ async def chat(req: ChatRequest):
             threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
             threading.Thread(target=maybe_crystallize, daemon=True).start()
             threading.Thread(target=maybe_guard, daemon=True).start()
+            threading.Thread(target=detect_situations, daemon=True).start()
+            threading.Thread(target=distill_episode, daemon=True).start()
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(_jitter_frame(f))

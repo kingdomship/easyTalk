@@ -39,6 +39,20 @@ def latest_idle_thought():
     return {"thought": thought}
 
 
+@router.get("/api/narrative/situations")
+def list_situations():
+    """Return all detected conversation situations."""
+    from services.narrative import get_situations
+    return get_situations()
+
+
+@router.get("/api/narrative/episodes")
+def list_episodes():
+    """Return all distilled narrative episodes."""
+    from services.narrative import get_episodes
+    return get_episodes()
+
+
 @router.get("/api/mood/calendar")
 def mood_calendar(days: int = 60):
     _ensure_db()
