@@ -85,13 +85,14 @@ def update_salience(user_msg: str, emotion_label: str):
     else:
         raw["surprise"] = 0.05
 
-    # Novelty: check if message contains entirely new keywords
-    from services.memory_search import _llm_extract_tags
-    try:
-        tags = _llm_extract_tags(user_msg)
-        raw["novelty"] = min(0.8, len(tags) * 0.1)
-    except Exception:
-        raw["novelty"] = 0.1
+    # Novelty: check against previous message overlap
+    if prev_msg:
+        prev_words = set(prev_msg)
+        curr_words = set(user_msg)
+        overlap = len(prev_words & curr_words) / max(1, len(curr_words))
+        raw["novelty"] = max(0.05, 1.0 - overlap)
+    else:
+        raw["novelty"] = 0.15
 
     # Arousal: emotional intensity from affect
     from services.affect import assess_affect

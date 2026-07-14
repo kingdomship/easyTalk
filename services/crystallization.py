@@ -285,9 +285,13 @@ def reinforce_crystal(tag: str):
                         pass
 
         if found:
-            with open(_CRYSTAL_PATH, "w") as f:
+            # Atomic write: write to temp, then rename
+            import tempfile, shutil
+            tmp = _CRYSTAL_PATH + ".tmp"
+            with open(tmp, "w") as f:
                 for c in crystals:
                     f.write(json.dumps(c, ensure_ascii=False) + "\n")
+            shutil.move(tmp, _CRYSTAL_PATH)
     except Exception:
         pass
 
