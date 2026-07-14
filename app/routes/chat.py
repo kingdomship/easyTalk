@@ -24,6 +24,8 @@ from services.crystallization import maybe_crystallize, get_crystal_context
 from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
 from services.identity_guard import maybe_guard, get_drift_correction
 from services.narrative import detect_situations, distill_episode, get_narrative_context
+from services.salience import update_salience, get_salience_context
+from services.attachment import analyze_attachment, get_attachment_context
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -472,6 +474,14 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     if valence_ctx:
         system_msg += "\n[情绪变化]\n" + valence_ctx
 
+    salience_ctx = get_salience_context()
+    if salience_ctx:
+        system_msg += "\n" + salience_ctx
+
+    attachment_ctx = get_attachment_context()
+    if attachment_ctx:
+        system_msg += "\n" + attachment_ctx
+
     news_items = get_recent_news(5)
     if news_items:
         lines = ["", "## 今天的热门话题（可以在对话中自然地提）："]
@@ -606,6 +616,7 @@ async def chat(req: ChatRequest):
                 threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
             update_affinity(msg, row["label"])
             update_affect(msg)
+            update_salience(msg, row["label"])
             adjust_expression_amplitude(msg)
             _archive_conversation(msg, row["reply"])
             threading.Thread(target=_maybe_condense, daemon=True).start()
@@ -614,6 +625,7 @@ async def chat(req: ChatRequest):
             threading.Thread(target=maybe_guard, daemon=True).start()
             threading.Thread(target=detect_situations, daemon=True).start()
             threading.Thread(target=distill_episode, daemon=True).start()
+            threading.Thread(target=analyze_attachment, daemon=True).start()
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(_jitter_frame(f))
@@ -642,6 +654,7 @@ async def chat(req: ChatRequest):
         threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
     update_affinity(msg, parsed[0]["label"])
     update_affect(msg)
+    update_salience(msg, parsed[0]["label"])
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, result["reply"], thinking)
     threading.Thread(target=_maybe_condense, daemon=True).start()
@@ -743,6 +756,10 @@ async def chat_stream(req: ChatRequest):
         threading.Thread(target=_maybe_condense, daemon=True).start()
         threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
         threading.Thread(target=maybe_crystallize, daemon=True).start()
+        threading.Thread(target=maybe_guard, daemon=True).start()
+        threading.Thread(target=detect_situations, daemon=True).start()
+        threading.Thread(target=distill_episode, daemon=True).start()
+        threading.Thread(target=analyze_attachment, daemon=True).start()
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None

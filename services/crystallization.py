@@ -137,13 +137,16 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
 
 
 def _save_crystals(crystals: list[dict]):
-    """Append new crystals to crystals.jsonl."""
+    """Append new crystals to crystals.jsonl with importance metadata."""
     if not crystals:
         return
     os.makedirs(os.path.dirname(_CRYSTAL_PATH), exist_ok=True)
     try:
         with open(_CRYSTAL_PATH, "a") as f:
             for c in crystals:
+                c["importance"] = 0.5  # initial importance score
+                c["reinforcement_count"] = 1
+                c["last_reinforced"] = 0  # turn count at last reinforcement
                 f.write(json.dumps(c, ensure_ascii=False) + "\n")
         logger.info("Crystallized %d memories: %s",
                      len(crystals),
@@ -184,33 +187,101 @@ def maybe_crystallize():
         _crystal_lock.release()
 
 
-def get_crystals() -> list[dict]:
-    """Load all crystals, sorted by most recent first."""
+def get_crystals(min_importance: float = 0.2) -> list[dict]:
+    """Load active crystals with Ebbinghaus decay applied.
+
+    Crystals decay over time unless reinforced. Those below min_importance
+    are marked dormant and excluded from prompt injection.
+    """
+    import math
     crystals = []
+    archive_path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    total_turns = 0
+    try:
+        if os.path.exists(archive_path):
+            with open(archive_path) as f:
+                total_turns = sum(1 for _ in f)
+    except Exception:
+        pass
+
     try:
         if os.path.exists(_CRYSTAL_PATH):
             with open(_CRYSTAL_PATH) as f:
                 for line in f:
                     try:
-                        crystals.append(json.loads(line))
+                        c = json.loads(line)
+                        imp = c.get("importance", 0.5)
+                        last = c.get("last_reinforced", 0)
+                        count = c.get("reinforcement_count", 1)
+
+                        # Ebbinghaus decay: importance decays with turns since last reinforcement
+                        # More reinforcements → slower decay (consolidation)
+                        turns_since = max(0, total_turns - last)
+                        decay_rate = 0.02 / math.sqrt(count)  # slower with more reinforcements
+                        imp *= math.exp(-decay_rate * turns_since)
+
+                        c["current_importance"] = round(imp, 3)
+                        c["dormant"] = imp < 0.3
+                        crystals.append(c)
                     except Exception:
                         pass
     except Exception:
         pass
-    return list(reversed(crystals))
+    return sorted(crystals, key=lambda c: c.get("current_importance", 0), reverse=True)
+
+
+def reinforce_crystal(tag: str):
+    """Boost a crystal's importance when it's mentioned again.
+
+    Call this when semantic search or pattern matching finds
+    a user message relates to an existing crystal.
+    """
+    crystals = []
+    found = False
+    try:
+        if os.path.exists(_CRYSTAL_PATH):
+            with open(_CRYSTAL_PATH) as f:
+                for line in f:
+                    try:
+                        c = json.loads(line)
+                        if c.get("tag") == tag:
+                            c["importance"] = min(1.0, c.get("importance", 0.5) + 0.15)
+                            c["reinforcement_count"] = c.get("reinforcement_count", 1) + 1
+                            # Set last_reinforced to approximate current turn count
+                            archive_path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+                            try:
+                                if os.path.exists(archive_path):
+                                    with open(archive_path) as af:
+                                        c["last_reinforced"] = sum(1 for _ in af)
+                            except Exception:
+                                pass
+                            found = True
+                        crystals.append(c)
+                    except Exception:
+                        pass
+
+        if found:
+            with open(_CRYSTAL_PATH, "w") as f:
+                for c in crystals:
+                    f.write(json.dumps(c, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def get_crystal_context() -> str:
-    """Return crystal memories formatted for prompt injection.
+    """Return active crystal memories for prompt injection.
 
-    Use this in _build_context() to give the AI persistent memory
-    of recurring topics.
+    Filters out dormant crystals (those decayed below threshold).
+    Active crystals are sorted by current importance.
     """
     crystals = get_crystals()
-    if not crystals:
+    active = [c for c in crystals if not c.get("dormant", False)]
+    if not active:
         return ""
 
     lines = ["## 用户反复提及的话题（已牢记）"]
-    for c in crystals[:12]:  # cap at 12 to avoid prompt bloat
-        lines.append(f"- {c['tag']}：{c['crystal']}")
+    for c in active[:12]:
+        imp = c.get("current_importance", 0.5)
+        star = "*" * min(3, int(imp * 3))
+        lines.append(f"- {c['tag']}：{c['crystal']} [{star}]")
     return "\n".join(lines)
