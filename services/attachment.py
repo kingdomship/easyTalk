@@ -120,11 +120,15 @@ def analyze_attachment():
 
 def get_attachment_context() -> str:
     """Return attachment-aware interaction advice for prompt injection."""
+    style = None
     try:
         if os.path.exists(_STYLE_PATH):
             with open(_STYLE_PATH) as f:
                 style = json.load(f)
     except Exception:
+        pass
+
+    if not style:
         return ""
 
     conf = style.get("confidence", 0)
