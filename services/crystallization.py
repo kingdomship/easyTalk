@@ -137,19 +137,33 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
 
 
 def _save_crystals(crystals: list[dict]):
-    """Append new crystals to crystals.jsonl with importance metadata."""
+    """Append new crystals to crystals.jsonl with salience-weighted importance."""
     if not crystals:
         return
     os.makedirs(os.path.dirname(_CRYSTAL_PATH), exist_ok=True)
+
+    # Read current salience for importance weighting
+    sal_base = 0.5
+    try:
+        from services.salience import get_salience
+        s = get_salience()
+        if s:
+            # High surprise + high reward → more important memory
+            surprise = s.get("surprise", 0.1)
+            reward = s.get("reward", 0.1)
+            sal_base = 0.4 + (surprise * 0.3) + (reward * 0.3)
+    except Exception:
+        pass
+
     try:
         with open(_CRYSTAL_PATH, "a") as f:
             for c in crystals:
-                c["importance"] = 0.5  # initial importance score
+                c["importance"] = round(min(1.0, sal_base), 3)
                 c["reinforcement_count"] = 1
-                c["last_reinforced"] = 0  # turn count at last reinforcement
+                c["last_reinforced"] = 0
                 f.write(json.dumps(c, ensure_ascii=False) + "\n")
-        logger.info("Crystallized %d memories: %s",
-                     len(crystals),
+        logger.info("Crystallized %d memories (base_imp=%.2f): %s",
+                     len(crystals), sal_base,
                      [c["tag"] for c in crystals])
     except Exception:
         pass
@@ -245,7 +259,17 @@ def reinforce_crystal(tag: str):
                     try:
                         c = json.loads(line)
                         if c.get("tag") == tag:
-                            c["importance"] = min(1.0, c.get("importance", 0.5) + 0.15)
+                            # Weight boost by current salience
+                            boost = 0.12  # base boost
+                            try:
+                                from services.salience import get_salience
+                                s = get_salience()
+                                if s:
+                                    boost += s.get("reward", 0) * 0.08  # happy moments get stronger reinforcement
+                                    boost += s.get("surprise", 0) * 0.05
+                            except Exception:
+                                pass
+                            c["importance"] = min(1.0, c.get("importance", 0.5) + boost)
                             c["reinforcement_count"] = c.get("reinforcement_count", 1) + 1
                             # Set last_reinforced to approximate current turn count
                             archive_path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")

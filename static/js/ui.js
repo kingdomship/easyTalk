@@ -609,9 +609,30 @@ curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, mouth_curve:0,
 tgtParams = { ...curParams };
 requestAnimationFrame(loop);
 
-// Check for idle thoughts on load
-(async function checkIdleThought() {
+// Check for idle thoughts and missing-you on load
+(async function checkOnLoad() {
   try {
+    // First check if user was away for a long time
+    const myResp = await fetch('/api/missing-you');
+    const my = await myResp.json();
+    if (my.away && my.thoughts && my.thoughts.length > 0) {
+      setTimeout(() => {
+        if (state === STATE.STARFIELD) {
+          const days = Math.round(my.hours / 24);
+          const timeStr = my.hours < 48
+            ? Math.round(my.hours) + '个小时'
+            : days + '天';
+          const msg = '你回来了～已经过了' + timeStr
+            + '。你不在的时候，我在星空里想了一些事情...\n\n'
+            + my.thoughts.slice(0, 3).join('\n');
+          showDialog(msg, canvas.width / 2, canvas.height * 0.25);
+          setTimeout(() => { if (state === STATE.STARFIELD) hideDialog(); }, 10000);
+        }
+      }, 2500);
+      return;
+    }
+
+    // Otherwise check for recent idle thought
     const resp = await fetch('/api/idle-thought');
     const data = await resp.json();
     if (data.thought) {

@@ -39,6 +39,44 @@ def latest_idle_thought():
     return {"thought": thought}
 
 
+@router.get("/api/missing-you")
+def missing_you():
+    """Check if user has been away for >24h. Returns accumulated idle thoughts."""
+    _ensure_db()
+    last = q(
+        "SELECT user_msg, created_at FROM chat_history ORDER BY id DESC LIMIT 1",
+        fetch="one",
+    )
+    if not last:
+        return {"away": False}
+
+    row = q(
+        "SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1",
+        fetch="one",
+    )
+    secs = float(row["secs"]) if row and row["secs"] else 0
+    hours = secs / 3600.0
+
+    if hours < 12:
+        return {"away": False, "hours": round(hours, 1)}
+
+    # Fetch accumulated idle thoughts from during the absence
+    thoughts = q(
+        "SELECT content, created_at FROM idle_thoughts "
+        "WHERE EXTRACT(EPOCH FROM (NOW() - created_at)) < %s "
+        "ORDER BY id ASC",
+        [secs],
+    )
+    thought_texts = [t["content"] for t in thoughts[:8]]
+
+    return {
+        "away": True,
+        "hours": round(hours, 1),
+        "thoughts": thought_texts,
+        "last_msg": last["user_msg"][:60] if last else "",
+    }
+
+
 @router.get("/api/narrative/situations")
 def list_situations():
     """Return all detected conversation situations."""

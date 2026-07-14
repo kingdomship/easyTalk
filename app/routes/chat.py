@@ -26,6 +26,7 @@ from services.identity_guard import maybe_guard, get_drift_correction
 from services.narrative import detect_situations, distill_episode, get_narrative_context
 from services.salience import update_salience, get_salience_context
 from services.attachment import analyze_attachment, get_attachment_context
+from services.prediction import generate_prediction, check_prediction
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -602,6 +603,16 @@ async def chat(req: ChatRequest):
         return {"error": "empty message"}
 
     is_deep = _is_deep_question(msg)
+    pred_error = check_prediction(msg)
+    if pred_error > 0.4:
+        # Boost salience surprise for unexpected responses
+        from services.salience import get_salience, init_salience_db
+        init_salience_db()
+        s = get_salience()
+        execute(
+            "UPDATE salience_state SET value = %s WHERE dimension = 'surprise'",
+            [round(min(1.0, s.get("surprise", 0.1) + pred_error * 0.3), 4)],
+        )
     key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
 
     if not is_deep:
@@ -619,6 +630,7 @@ async def chat(req: ChatRequest):
             update_salience(msg, row["label"])
             adjust_expression_amplitude(msg)
             _archive_conversation(msg, row["reply"])
+            threading.Thread(target=generate_prediction, args=(msg, row["reply"]), daemon=True).start()
             threading.Thread(target=_maybe_condense, daemon=True).start()
             threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
             threading.Thread(target=maybe_crystallize, daemon=True).start()
@@ -657,6 +669,7 @@ async def chat(req: ChatRequest):
     update_salience(msg, parsed[0]["label"])
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, result["reply"], thinking)
+    threading.Thread(target=generate_prediction, args=(msg, result["reply"]), daemon=True).start()
     threading.Thread(target=_maybe_condense, daemon=True).start()
     threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
     threading.Thread(target=maybe_crystallize, daemon=True).start()
@@ -697,8 +710,10 @@ async def chat_stream(req: ChatRequest):
                 execute("INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s)", [msg, row["reply"], row["label"]])
                 update_affinity(msg, row["label"])
                 update_affect(msg)
+                update_salience(msg, row["label"])
                 adjust_expression_amplitude(msg)
                 _archive_conversation(msg, row["reply"])
+                threading.Thread(target=generate_prediction, args=(msg, row["reply"]), daemon=True).start()
                 threading.Thread(target=_maybe_condense, daemon=True).start()
                 threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
                 threading.Thread(target=maybe_crystallize, daemon=True).start()
@@ -753,6 +768,7 @@ async def chat_stream(req: ChatRequest):
         update_affect(msg)
         adjust_expression_amplitude(msg)
         _archive_conversation(msg, reply, thinking)
+        threading.Thread(target=generate_prediction, args=(msg, reply), daemon=True).start()
         threading.Thread(target=_maybe_condense, daemon=True).start()
         threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
         threading.Thread(target=maybe_crystallize, daemon=True).start()
