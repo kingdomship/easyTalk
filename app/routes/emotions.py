@@ -1,15 +1,14 @@
 """Emotion cache management."""
 
 from fastapi import APIRouter
-from app.db import q, execute
-from app.routes.chat import _ensure_db
+from app.db import q, execute, init_db
 
 router = APIRouter()
 
 
 @router.get("/api/emotions")
 def list_emotions():
-    _ensure_db()
+    init_db()
     return q("SELECT * FROM emotion_cache WHERE label NOT LIKE 'exact:%%' ORDER BY use_count DESC")
 
 

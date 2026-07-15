@@ -11,12 +11,15 @@ Valence tracking (Active Inference): tracks emotional direction
 """
 
 import json
+import logging
 import os
 
 from app.db import q, execute
 
-_PREV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                          "memory", "valence_prev.json")
+logger = logging.getLogger("emoji-chat")
+
+from app.config import VALENCE_PREV_PATH
+_PREV_PATH = VALENCE_PREV_PATH
 
 DIMENSIONS = ["seeking", "play", "care", "fear", "rage", "panic"]
 DEFAULTS = {"seeking": 0.35, "play": 0.25, "care": 0.2, "fear": 0.1, "rage": 0.05, "panic": 0.1}
@@ -139,6 +142,7 @@ def update_affect(user_msg: str):
         current = dict(DEFAULTS)
 
     new_scores = assess_affect(user_msg)
+    values = []
     for dim in DIMENSIONS:
         old_val = current.get(dim, DEFAULTS[dim])
         # EMA: smoothly track activation level
@@ -146,10 +150,15 @@ def update_affect(user_msg: str):
         # Natural decay toward baseline
         smooth += 0.002 * (DEFAULTS[dim] - smooth)
         smooth = max(0.0, min(1.0, smooth))
-        execute(
-            "UPDATE affect_state SET value = %s, updated_at = NOW() WHERE dimension = %s",
-            [round(smooth, 4), dim],
-        )
+        values.append(round(smooth, 4))
+
+    # Batch update: single CASE WHEN instead of N individual UPDATEs
+    cases = " ".join(f"WHEN '{d}' THEN %s" for d in DIMENSIONS)
+    dims = ", ".join(f"'{d}'" for d in DIMENSIONS)
+    execute(
+        f"UPDATE affect_state SET value = CASE dimension {cases} END, updated_at = NOW() WHERE dimension IN ({dims})",
+        values,
+    )
 
     # Save snapshot for next-turn valence comparison
     snapshot_for_valence()
@@ -244,7 +253,7 @@ def _save_prev_state(aff: dict):
         with open(_PREV_PATH, "w") as f:
             json.dump(aff, f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def _load_prev_state() -> dict | None:
@@ -254,7 +263,7 @@ def _load_prev_state() -> dict | None:
             with open(_PREV_PATH) as f:
                 return json.load(f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return None
 
 

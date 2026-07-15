@@ -1,31 +1,30 @@
 """Memory, affinity, and mood endpoints."""
 
 from fastapi import APIRouter
-from app.db import q
-from app.routes.chat import _ensure_db
-from services.affinity import init_affinity_db, get_affinity
+from app.db import q, init_db
+from services.emotion.affinity import init_affinity_db, get_affinity
 
 router = APIRouter()
 
 
 @router.get("/api/memory/persona")
 def get_persona():
-    from services.memory_loader import get_persona as _get_persona
+    from services.memory.loader import get_persona as _get_persona
     return {"content": _get_persona()}
 
 
 @router.get("/api/memory/profile")
 def get_user_profile():
-    from services.memory_loader import get_user_profile as _get_profile
+    from services.memory.loader import get_user_profile as _get_profile
     return {"content": _get_profile()}
 
 
 @router.get("/api/affinity")
 def show_affinity():
-    _ensure_db()
+    init_db()
     init_affinity_db()
     aff = get_affinity()
-    from services.affinity import get_milestones
+    from services.emotion.affinity import get_milestones
     aff["milestones"] = get_milestones()
     return aff
 
@@ -33,8 +32,8 @@ def show_affinity():
 @router.get("/api/idle-thought")
 def latest_idle_thought():
     """Return the most recent idle thought, if within the last hour."""
-    _ensure_db()
-    from services.consciousness_loop import get_latest_idle_thought
+    init_db()
+    from services.reflection.consciousness_loop import get_latest_idle_thought
     thought = get_latest_idle_thought()
     return {"thought": thought}
 
@@ -42,7 +41,7 @@ def latest_idle_thought():
 @router.get("/api/missing-you")
 def missing_you():
     """Check if user has been away for >24h. Returns accumulated idle thoughts."""
-    _ensure_db()
+    init_db()
     last = q(
         "SELECT user_msg, created_at FROM chat_history ORDER BY id DESC LIMIT 1",
         fetch="one",
@@ -77,23 +76,31 @@ def missing_you():
     }
 
 
+@router.get("/api/constellation")
+def constellation():
+    """Return memory constellation data for the star map visualization."""
+    init_db()
+    from services.memory.clustering import build_constellation
+    return build_constellation()
+
+
 @router.get("/api/narrative/situations")
 def list_situations():
     """Return all detected conversation situations."""
-    from services.narrative import get_situations
+    from services.memory.narrative import get_situations
     return get_situations()
 
 
 @router.get("/api/narrative/episodes")
 def list_episodes():
     """Return all distilled narrative episodes."""
-    from services.narrative import get_episodes
+    from services.memory.narrative import get_episodes
     return get_episodes()
 
 
 @router.get("/api/mood/calendar")
 def mood_calendar(days: int = 60):
-    _ensure_db()
+    init_db()
     rows = q(
         "SELECT date, chat_count, content FROM diary_entries ORDER BY date DESC LIMIT %s",
         [days],
@@ -111,3 +118,29 @@ def mood_calendar(days: int = 60):
             "mood_emoji": mood_emoji,
         })
     return result
+
+
+@router.get("/api/kg/entities")
+def kg_entities(limit: int = 50):
+    """List all known entities ordered by last_seen."""
+    init_db()
+    return q(
+        "SELECT id, name, type, first_seen, last_seen, metadata "
+        "FROM kg_entities ORDER BY last_seen DESC LIMIT %s",
+        [limit],
+    )
+
+
+@router.get("/api/kg/relationships")
+def kg_relationships(limit: int = 50):
+    """List current active relationships."""
+    init_db()
+    return q(
+        "SELECT r.id, e_src.name AS source, e_tgt.name AS target, "
+        "r.relation, r.strength, r.valid_at, r.invalid_at "
+        "FROM kg_relationships r "
+        "JOIN kg_entities e_src ON e_src.id = r.source_id "
+        "JOIN kg_entities e_tgt ON e_tgt.id = r.target_id "
+        "ORDER BY r.valid_at DESC LIMIT %s",
+        [limit],
+    )

@@ -15,8 +15,8 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-_BASE = os.path.dirname(os.path.dirname(__file__))
-_CRYSTAL_PATH = os.path.join(_BASE, "memory", "crystals.jsonl")
+from app.config import ARCHIVE_PATH, CRYSTAL_PATH, MEMORY_DIR
+
 _CHECK_EVERY = 10
 _crystal_lock = threading.Lock()
 _last_check_count = 0
@@ -44,7 +44,7 @@ _CRYSTALLIZE_PROMPT = """你是一个记忆分析助手。你需要从用户的�
 
 def _count_lines() -> int:
     try:
-        with open(_CRYSTAL_PATH) as f:
+        with open(CRYSTAL_PATH) as f:
             return sum(1 for _ in f)
     except FileNotFoundError:
         return 0
@@ -54,37 +54,38 @@ def _load_existing_tags() -> set[str]:
     """Load tag names from existing crystals to avoid duplicates."""
     tags = set()
     try:
-        if os.path.exists(_CRYSTAL_PATH):
-            with open(_CRYSTAL_PATH) as f:
+        if os.path.exists(CRYSTAL_PATH):
+            with open(CRYSTAL_PATH) as f:
                 for line in f:
                     try:
                         c = json.loads(line)
                         tags.add(c.get("tag", ""))
                     except Exception:
-                        pass
+                        logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return tags
 
 
 def _read_last_n_user_messages(n: int) -> list[str]:
     """Read the last N user messages from conversation archive."""
-    archive = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    archive = ARCHIVE_PATH
     messages = []
     try:
         if os.path.exists(archive):
+            from collections import deque
             with open(archive) as f:
-                lines = f.readlines()
-            for line in lines[-n * 2:]:  # roughly n*2 lines = n turns
+                last_lines = list(deque(f, maxlen=n * 2))
+            for line in last_lines:  # roughly n*2 lines = n turns
                 try:
                     rec = json.loads(line)
                     user = rec.get("user", "")
                     if user:
                         messages.append(user)
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return messages
 
 
@@ -96,8 +97,8 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
     if len(messages) < 5:
         return []
 
-    from app.routes.chat import _get_llm
-    client = _get_llm()
+    from app.utils import get_llm
+    client = get_llm()
 
     numbered = "\n".join(f"- {m}" for m in messages[-20:])
     try:
@@ -112,6 +113,7 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
         )
         raw = resp.choices[0].message.content.strip()
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
     if not raw or raw == "无":
@@ -140,12 +142,12 @@ def _save_crystals(crystals: list[dict]):
     """Append new crystals to crystals.jsonl with salience-weighted importance."""
     if not crystals:
         return
-    os.makedirs(os.path.dirname(_CRYSTAL_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(CRYSTAL_PATH), exist_ok=True)
 
     # Read current salience for importance weighting
     sal_base = 0.5
     try:
-        from services.salience import get_salience
+        from services.emotion.salience import get_salience
         s = get_salience()
         if s:
             # High surprise + high reward → more important memory
@@ -153,10 +155,10 @@ def _save_crystals(crystals: list[dict]):
             reward = s.get("reward", 0.1)
             sal_base = 0.4 + (surprise * 0.3) + (reward * 0.3)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
     try:
-        with open(_CRYSTAL_PATH, "a") as f:
+        with open(CRYSTAL_PATH, "a") as f:
             for c in crystals:
                 c["importance"] = round(min(1.0, sal_base), 3)
                 c["reinforcement_count"] = 1
@@ -166,7 +168,7 @@ def _save_crystals(crystals: list[dict]):
                      len(crystals), sal_base,
                      [c["tag"] for c in crystals])
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def maybe_crystallize():
@@ -179,7 +181,7 @@ def maybe_crystallize():
     if not _crystal_lock.acquire(blocking=False):
         return
     try:
-        archive = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+        archive = ARCHIVE_PATH
         if not os.path.exists(archive):
             return
         with open(archive) as f:
@@ -196,7 +198,7 @@ def maybe_crystallize():
         new_crystals = _crystallize_from_messages(messages, existing_tags)
         _save_crystals(new_crystals)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _crystal_lock.release()
 
@@ -209,18 +211,18 @@ def get_crystals(min_importance: float = 0.2) -> list[dict]:
     """
     import math
     crystals = []
-    archive_path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    archive_path = ARCHIVE_PATH
     total_turns = 0
     try:
         if os.path.exists(archive_path):
             with open(archive_path) as f:
                 total_turns = sum(1 for _ in f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
     try:
-        if os.path.exists(_CRYSTAL_PATH):
-            with open(_CRYSTAL_PATH) as f:
+        if os.path.exists(CRYSTAL_PATH):
+            with open(CRYSTAL_PATH) as f:
                 for line in f:
                     try:
                         c = json.loads(line)
@@ -238,9 +240,9 @@ def get_crystals(min_importance: float = 0.2) -> list[dict]:
                         c["dormant"] = imp < 0.3
                         crystals.append(c)
                     except Exception:
-                        pass
+                        logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return sorted(crystals, key=lambda c: c.get("current_importance", 0), reverse=True)
 
 
@@ -253,8 +255,8 @@ def reinforce_crystal(tag: str):
     crystals = []
     found = False
     try:
-        if os.path.exists(_CRYSTAL_PATH):
-            with open(_CRYSTAL_PATH) as f:
+        if os.path.exists(CRYSTAL_PATH):
+            with open(CRYSTAL_PATH) as f:
                 for line in f:
                     try:
                         c = json.loads(line)
@@ -262,38 +264,38 @@ def reinforce_crystal(tag: str):
                             # Weight boost by current salience
                             boost = 0.12  # base boost
                             try:
-                                from services.salience import get_salience
+                                from services.emotion.salience import get_salience
                                 s = get_salience()
                                 if s:
                                     boost += s.get("reward", 0) * 0.08  # happy moments get stronger reinforcement
                                     boost += s.get("surprise", 0) * 0.05
                             except Exception:
-                                pass
+                                logger.warning("Operation failed", exc_info=True)
                             c["importance"] = min(1.0, c.get("importance", 0.5) + boost)
                             c["reinforcement_count"] = c.get("reinforcement_count", 1) + 1
                             # Set last_reinforced to approximate current turn count
-                            archive_path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+                            archive_path = ARCHIVE_PATH
                             try:
                                 if os.path.exists(archive_path):
                                     with open(archive_path) as af:
                                         c["last_reinforced"] = sum(1 for _ in af)
                             except Exception:
-                                pass
+                                logger.warning("Operation failed", exc_info=True)
                             found = True
                         crystals.append(c)
                     except Exception:
-                        pass
+                        logger.warning("Operation failed", exc_info=True)
 
         if found:
             # Atomic write: write to temp, then rename
             import tempfile, shutil
-            tmp = _CRYSTAL_PATH + ".tmp"
+            tmp = CRYSTAL_PATH + ".tmp"
             with open(tmp, "w") as f:
                 for c in crystals:
                     f.write(json.dumps(c, ensure_ascii=False) + "\n")
-            shutil.move(tmp, _CRYSTAL_PATH)
+            shutil.move(tmp, CRYSTAL_PATH)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def get_crystal_context() -> str:

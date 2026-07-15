@@ -20,9 +20,10 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-_BASE = os.path.dirname(os.path.dirname(__file__))
-_SITUATIONS_PATH = os.path.join(_BASE, "memory", "situations.jsonl")
-_EPISODES_PATH = os.path.join(_BASE, "memory", "episodes.jsonl")
+from app.config import ARCHIVE_PATH, EPISODES_PATH, SITUATIONS_PATH
+
+_SITUATIONS_PATH = SITUATIONS_PATH
+_EPISODES_PATH = EPISODES_PATH
 
 _SITUATION_CHECK_EVERY = 10
 _EPISODE_CHECK_THRESHOLD = 5  # min situations before distilling episode
@@ -61,19 +62,19 @@ _EPISODE_PROMPT = """你是一个故事叙述助手。以下是最近对话中�
 
 
 def _count_archive_lines() -> int:
-    path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    path = ARCHIVE_PATH
     try:
         if os.path.exists(path):
             with open(path) as f:
                 return sum(1 for _ in f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return 0
 
 
 def _load_archive_range(start: int, count: int) -> list[dict]:
     """Load a range of turns from conversation archive."""
-    path = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    path = ARCHIVE_PATH
     turns = []
     try:
         if os.path.exists(path):
@@ -85,9 +86,9 @@ def _load_archive_range(start: int, count: int) -> list[dict]:
                     if rec.get("user") or rec.get("assistant"):
                         turns.append(rec)
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return turns
 
 
@@ -100,9 +101,9 @@ def _load_existing_situations() -> list[dict]:
                     try:
                         situations.append(json.loads(line))
                     except Exception:
-                        pass
+                        logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return situations
 
 
@@ -113,7 +114,7 @@ def _save_situations(situations: list[dict]):
             for s in situations:
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def detect_situations():
@@ -155,8 +156,8 @@ def detect_situations():
         if len(numbered) < 6:
             return
 
-        from app.routes.chat import _get_llm
-        client = _get_llm()
+        from app.utils import get_llm
+        client = get_llm()
 
         try:
             resp = client.chat.completions.create(
@@ -175,6 +176,7 @@ def detect_situations():
                 return
             parsed = json.loads(raw[start:end])
         except Exception:
+            logger.warning("Operation failed", exc_info=True)
             return
 
         if not isinstance(parsed, list):
@@ -204,7 +206,7 @@ def detect_situations():
                          len(new_situations),
                          [s["title"] for s in new_situations])
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _situation_lock.release()
 
@@ -218,9 +220,9 @@ def _load_existing_episodes() -> list[dict]:
                     try:
                         episodes.append(json.loads(line))
                     except Exception:
-                        pass
+                        logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return episodes
 
 
@@ -262,8 +264,8 @@ def distill_episode():
             for s in new_situations[-8:]  # take last 8 at most
         )
 
-        from app.routes.chat import _get_llm
-        client = _get_llm()
+        from app.utils import get_llm
+        client = get_llm()
 
         try:
             resp = client.chat.completions.create(
@@ -279,6 +281,7 @@ def distill_episode():
             )
             narrative = resp.choices[0].message.content.strip()
         except Exception:
+            logger.warning("Operation failed", exc_info=True)
             return
 
         if not narrative or len(narrative) < 20:
@@ -299,9 +302,9 @@ def distill_episode():
                 f.write(json.dumps(episode, ensure_ascii=False) + "\n")
             logger.info("Distilled episode: %s...", narrative[:60])
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _episode_lock.release()
 

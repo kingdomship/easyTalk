@@ -17,8 +17,9 @@ import os
 
 logger = logging.getLogger("emoji-chat")
 
-_BASE = os.path.dirname(os.path.dirname(__file__))
-_PREDICTION_PATH = os.path.join(_BASE, "memory", "prediction.json")
+from app.config import PREDICTION_PATH
+
+_PREDICTION_PATH = PREDICTION_PATH
 
 _PREDICT_PROMPT = """根据刚才的对话，猜测用户最可能回复什么。用一句话（10-20字）写出你的预期。直接输出，不要JSON。"""
 
@@ -32,8 +33,8 @@ def generate_prediction(user_msg: str, avatar_reply: str):
         return
 
     try:
-        from app.routes.chat import _get_llm
-        client = _get_llm()
+        from app.utils import get_llm
+        client = get_llm()
 
         resp = client.chat.completions.create(
             model="deepseek-chat",
@@ -52,7 +53,7 @@ def generate_prediction(user_msg: str, avatar_reply: str):
                 json.dump({"prediction": prediction, "user_msg": user_msg[:80]}, f)
             logger.info("Prediction: %s", prediction[:50])
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def check_prediction(user_msg: str) -> float:
@@ -90,6 +91,7 @@ def check_prediction(user_msg: str) -> float:
 
         return error
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return 0.0
 
 

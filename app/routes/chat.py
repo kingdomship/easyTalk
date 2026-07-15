@@ -13,20 +13,25 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.db import q, execute, init_db
+from app.utils import get_background_executor
 from app.models import ChatRequest
-from services.news import get_recent_news
-from services.memory_loader import build_user_context
-from services.memory_search import index_turn, build_memory_context
-from services.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
-from services.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
-from services.affect import update_affect, get_affect_context, get_regulation_strategy, get_valence_context
-from services.crystallization import maybe_crystallize, get_crystal_context
-from services.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
-from services.identity_guard import maybe_guard, get_drift_correction
-from services.narrative import detect_situations, distill_episode, get_narrative_context
-from services.salience import update_salience, get_salience_context
-from services.attachment import analyze_attachment, get_attachment_context
-from services.prediction import generate_prediction, check_prediction
+from services.info.news import get_recent_news
+from services.memory.loader import build_user_context
+from services.memory.search import index_turn, build_memory_context
+from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
+from services.identity.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
+from services.emotion.affect import update_affect, get_affect_context, get_regulation_strategy, get_valence_context
+from services.memory.crystallization import maybe_crystallize, get_crystal_context
+from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
+from services.identity.guard import maybe_guard, get_drift_correction
+from services.identity.drift_detector import check_and_intervene
+from services.memory.knowledge_graph import maybe_extract_kg
+from services.cognition.predictive_agent import pre_dialogue_analyze, preload_memories, feedback, get_prediction_context
+from services.cognition.dual_system import gate_decision
+from services.memory.narrative import detect_situations, distill_episode, get_narrative_context
+from services.emotion.salience import update_salience, get_salience_context
+from services.emotion.attachment import analyze_attachment, get_attachment_context
+from services.cognition.prediction import generate_prediction, check_prediction
 
 router = APIRouter()
 logger = logging.getLogger("emoji-chat")
@@ -34,14 +39,6 @@ logger = logging.getLogger("emoji-chat")
 _CONDENSE_EVERY = 50
 _condense_lock = threading.Lock()
 _last_condense_count = 0
-
-_init_done = False
-
-def _ensure_db():
-    global _init_done
-    if not _init_done:
-        init_db()
-        _init_done = True
 
 _client = None
 
@@ -53,13 +50,13 @@ def _get_llm():
             api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com",
         )
-        from services.memory_search import set_llm_client
+        from services.memory.search import set_llm_client
         set_llm_client(_client)
     return _client
 
-# Paths go up 3 levels: app/routes/chat.py → app/ → /app/
-_BASE = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-_ARCHIVE_PATH = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH
+
+_ARCHIVE_PATH = ARCHIVE_PATH
 
 
 def _strip_emoji(text: str) -> str:
@@ -106,7 +103,7 @@ def _archive_conversation(user_msg: str, avatar_reply: str, thinking: str | None
         with open(_ARCHIVE_PATH, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def _maybe_condense():
@@ -116,15 +113,12 @@ def _maybe_condense():
     try:
         if not os.path.exists(_ARCHIVE_PATH):
             return
-        with open(_ARCHIVE_PATH) as f:
-            line_count = sum(1 for _ in f)
-        if line_count - _last_condense_count < _CONDENSE_EVERY:
-            return
-        _last_condense_count = line_count
 
+        transcript_parts = []
+        line_count = 0
         with open(_ARCHIVE_PATH) as f:
-            transcript_parts = []
             for line in f:
+                line_count += 1
                 try:
                     rec = json.loads(line)
                     user = rec.get("user", "")
@@ -137,10 +131,15 @@ def _maybe_condense():
                     if assistant:
                         transcript_parts.append(f"AI：{assistant}")
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
+
+        if line_count - _last_condense_count < _CONDENSE_EVERY:
+            return
+        _last_condense_count = line_count
+
         transcript = "\n\n".join(transcript_parts)
 
-        from services.condense import CONDENSE_PROMPT
+        from services.memory.condense import CONDENSE_PROMPT
         client = _get_llm()
         resp = client.chat.completions.create(
             model="deepseek-chat",
@@ -153,11 +152,11 @@ def _maybe_condense():
         )
         summary = resp.choices[0].message.content
 
-        summary_path = os.path.join(_BASE, "memory", "conversation_summary.md")
+        summary_path = SUMMARY_PATH
         with open(summary_path, "w") as f:
             f.write(summary)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _condense_lock.release()
 
@@ -217,8 +216,8 @@ def _maybe_update_memory_files():
             line_count = sum(1 for _ in f)
 
         # Read current profile and persona
-        profile_path = os.path.join(_BASE, "memory", "user_profile.md")
-        persona_path = os.path.join(_BASE, "memory", "user_persona.md")
+        profile_path = PROFILE_PATH
+        persona_path = PERSONA_PATH
         current_profile = ""
         current_persona = ""
         if os.path.exists(profile_path):
@@ -230,9 +229,10 @@ def _maybe_update_memory_files():
 
         # Build recent transcript (last ~30 turns)
         recent_lines = []
+        from collections import deque
         with open(_ARCHIVE_PATH) as f:
-            all_lines = f.readlines()
-        for line in all_lines[-60:]:  # last 30 turns = 60 lines (user+assistant)
+            last_lines = list(deque(f, maxlen=60))
+        for line in last_lines:  # last 30 turns = 60 lines (user+assistant)
             try:
                 rec = json.loads(line)
                 user = rec.get("user", "")
@@ -245,7 +245,7 @@ def _maybe_update_memory_files():
                 if assistant:
                     recent_lines.append(f"AI：{assistant}")
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
         recent_transcript = "\n\n".join(recent_lines)
 
         if not recent_transcript:
@@ -275,7 +275,7 @@ def _maybe_update_memory_files():
                     f.write(new_profile)
                 updated = True
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
         # Update AI persona every N turns
         if line_count - _last_persona_count >= _PERSONA_UPDATE_EVERY and current_persona:
@@ -298,10 +298,10 @@ def _maybe_update_memory_files():
                     f.write(new_persona)
                 updated = True
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
 
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _memory_update_lock.release()
 
@@ -449,12 +449,23 @@ def _think(msg: str) -> str | None:
         )
         return resp.choices[0].message.content.strip()
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return None
 
 
 def _build_context(msg: str, thinking: str | None = None) -> list:
     time_context = build_time_context()
-    system_msg = SYSTEM_PROMPT + f"\n\n[当前时间节律]\n{time_context}"
+
+    # Use dynamic personality-based prompt if config exists, else fallback
+    try:
+        from services.identity.personality import build_dynamic_system_prompt, get_personality_context
+        system_msg = build_dynamic_system_prompt() + f"\n\n[当前时间节律]\n{time_context}"
+        personality_ctx = get_personality_context()
+        if personality_ctx:
+            system_msg += "\n\n" + personality_ctx
+    except Exception:
+        from services.identity.prompt import SYSTEM_PROMPT
+        system_msg = SYSTEM_PROMPT + f"\n\n[当前时间节律]\n{time_context}"
 
     user_context = build_user_context()
     if user_context:
@@ -511,13 +522,29 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
         )
 
     # MentalProcesses state machine mode
-    from services.affect import get_affect
+    from services.emotion.affect import get_affect
     mode = determine_mode(_is_deep_question(msg), get_affect())
     system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
 
     drift_correction = get_drift_correction()
     if drift_correction:
         system_msg += "\n\n" + drift_correction
+
+    try:
+        from services.memory.knowledge_graph import get_knowledge_graph_context
+        kg_ctx = get_knowledge_graph_context()
+        if kg_ctx:
+            system_msg += "\n\n" + kg_ctx
+    except Exception:
+        pass
+
+    # Predictive agent context
+    try:
+        pred_ctx = get_prediction_context()
+        if pred_ctx:
+            system_msg += "\n\n" + pred_ctx
+    except Exception:
+        pass
 
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
@@ -543,6 +570,10 @@ _FALLBACKS = [
 def _call_llm(messages: list) -> tuple:
     """Call DeepSeek and extract JSON from the response.
 
+    Returns (data, fallback, tags) — tags are semantic keywords from the
+    user's message, extracted by the LLM alongside the main response,
+    saving a separate API call for memory indexing.
+
     DeepSeek's response_format=json_object is buggy with conversation history
     (silently returns spaces). We skip it and instead use prompt instruction +
     brace-matching JSON extraction.
@@ -554,7 +585,7 @@ def _call_llm(messages: list) -> tuple:
     msgs[-1]["content"] += "\n（请以上述JSON格式回复）"
 
     try:
-        from services.affect import get_affect
+        from services.emotion.affect import get_affect
         affect = get_affect()
         rhythm_temp = get_rhythm_temperature(affect)
         # Extract user message (last in the list) for mode detection
@@ -567,10 +598,9 @@ def _call_llm(messages: list) -> tuple:
 
         arousal = determine_arousal(mode, affect, idle_min)
         temp = rhythm_temp + get_mode_temp_mod(mode) + get_arousal_temp_mod(arousal)
-        token_mod = get_arousal_token_mod(arousal)
         resp = client.chat.completions.create(
             model="deepseek-chat", messages=msgs,
-            temperature=temp, max_tokens=800 + token_mod,
+            temperature=temp, max_tokens=4096,
         )
         raw = resp.choices[0].message.content
         start = raw.find("{")
@@ -578,26 +608,30 @@ def _call_llm(messages: list) -> tuple:
         if start >= 0 and end > start:
             data = json.loads(raw[start:end])
             if "reply" in data and "emotions" in data:
-                return data, None
+                tags = data.pop("tags", []) if isinstance(data, dict) else []
+                if not isinstance(tags, list):
+                    tags = []
+                tags = [t for t in tags if isinstance(t, str)][:8]
+                return data, None, tags
         logger.warning("No valid JSON in response: %s", raw[:200])
-        return None, "嗯...刚刚组织语言出了点小岔子，再说一次？"
+        return None, "嗯...刚刚组织语言出了点小岔子，再说一次？", []
     except Exception as e:
         err = str(e).lower()
         logger.error("LLM call failed: %s", e)
         if "timeout" in err or "timed out" in err:
-            return None, "等我一下...星空信号不太好呢 ✨"
+            return None, "等我一下...星空信号不太好呢 ✨", []
         if "rate" in err or "429" in err:
-            return None, "说得太快啦，让我喘口气～"
+            return None, "说得太快啦，让我喘口气～", []
         if "auth" in err or "401" in err or "403" in err:
-            return None, "嗯...我的星空钥匙好像出了问题 🗝️"
+            return None, "嗯...我的星空钥匙好像出了问题 🗝️", []
         if "connection" in err or "refused" in err or "network" in err:
-            return None, "星空连接断了一下，再试试？"
-        return None, random.choice(_FALLBACKS)
+            return None, "星空连接断了一下，再试试？", []
+        return None, random.choice(_FALLBACKS), []
 
 
 @router.post("/api/chat")
 async def chat(req: ChatRequest):
-    _ensure_db()
+    init_db()
     msg = req.message.strip()
     if not msg:
         return {"error": "empty message"}
@@ -606,7 +640,7 @@ async def chat(req: ChatRequest):
     pred_error = check_prediction(msg)
     if pred_error > 0.4:
         # Boost salience surprise for unexpected responses
-        from services.salience import get_salience, init_salience_db
+        from services.emotion.salience import get_salience, init_salience_db
         init_salience_db()
         s = get_salience()
         execute(
@@ -615,7 +649,18 @@ async def chat(req: ChatRequest):
         )
     key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
 
-    if not is_deep:
+    # Dual-system gate: decide whether to engage System 2
+    from services.emotion.salience import get_salience, init_salience_db
+    from services.emotion.affect import get_affect
+    init_salience_db()
+    salience = get_salience()
+    affect = get_affect()
+    last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
+    idle_min = (float(last_row["secs"]) / 60.0) if last_row and last_row["secs"] else 0
+    gate = gate_decision(msg, affect, salience, pred_error, idle_min)
+    skip_cache = is_deep or gate == "system2"
+
+    if not skip_cache:
         row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
         if row:
             execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
@@ -624,20 +669,24 @@ async def chat(req: ChatRequest):
                 [msg, row["reply"], row["label"]], fetch="one",
             )
             if new_row:
-                threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
+                get_background_executor().submit(index_turn, new_row["id"], msg)
             update_affinity(msg, row["label"])
             update_affect(msg)
             update_salience(msg, row["label"])
             adjust_expression_amplitude(msg)
             _archive_conversation(msg, row["reply"])
-            threading.Thread(target=generate_prediction, args=(msg, row["reply"]), daemon=True).start()
-            threading.Thread(target=_maybe_condense, daemon=True).start()
-            threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-            threading.Thread(target=maybe_crystallize, daemon=True).start()
-            threading.Thread(target=maybe_guard, daemon=True).start()
-            threading.Thread(target=detect_situations, daemon=True).start()
-            threading.Thread(target=distill_episode, daemon=True).start()
-            threading.Thread(target=analyze_attachment, daemon=True).start()
+            get_background_executor().submit(generate_prediction, msg, row["reply"])
+            get_background_executor().submit(pre_dialogue_analyze)
+            get_background_executor().submit(feedback)
+            get_background_executor().submit(_maybe_condense)
+            get_background_executor().submit(_maybe_update_memory_files)
+            get_background_executor().submit(maybe_crystallize)
+            get_background_executor().submit(maybe_guard)
+            get_background_executor().submit(detect_situations)
+            get_background_executor().submit(distill_episode)
+            get_background_executor().submit(analyze_attachment)
+            get_background_executor().submit(check_and_intervene, row["reply"])
+            get_background_executor().submit(maybe_extract_kg, msg)
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(_jitter_frame(f))
@@ -647,7 +696,7 @@ async def chat(req: ChatRequest):
 
     thinking = _think(msg) if is_deep else None
     messages = _build_context(msg, thinking)
-    data, fallback = _call_llm(messages)
+    data, fallback, llm_tags = _call_llm(messages)
     if fallback:
         return {"emotions": _fallback_emotion(), "reply": fallback, "source": "fallback"}
 
@@ -656,24 +705,28 @@ async def chat(req: ChatRequest):
     for f in parsed:
         f.update(_jitter_frame(f))
         f.update(scale_emotion_params(f))
-    result = {"emotions": parsed, "reply": str(data.get("reply", "..."))[:150]}
+    result = {"emotions": parsed, "reply": str(data.get("reply", "..."))}
 
     new_row = q(
         "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
         [msg, result["reply"], parsed[0]["label"]], fetch="one",
     )
     if new_row:
-        threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
+        get_background_executor().submit(index_turn, new_row["id"], msg, llm_tags)
     update_affinity(msg, parsed[0]["label"])
     update_affect(msg)
     update_salience(msg, parsed[0]["label"])
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, result["reply"], thinking)
-    threading.Thread(target=generate_prediction, args=(msg, result["reply"]), daemon=True).start()
-    threading.Thread(target=_maybe_condense, daemon=True).start()
-    threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-    threading.Thread(target=maybe_crystallize, daemon=True).start()
-    threading.Thread(target=maybe_guard, daemon=True).start()
+    get_background_executor().submit(generate_prediction, msg, result["reply"])
+    get_background_executor().submit(pre_dialogue_analyze)
+    get_background_executor().submit(feedback)
+    get_background_executor().submit(_maybe_condense)
+    get_background_executor().submit(_maybe_update_memory_files)
+    get_background_executor().submit(maybe_crystallize)
+    get_background_executor().submit(maybe_guard)
+    get_background_executor().submit(check_and_intervene, result["reply"])
+    get_background_executor().submit(maybe_extract_kg, msg)
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -694,16 +747,27 @@ async def chat(req: ChatRequest):
 
 @router.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
-    _ensure_db()
+    init_db()
     msg = req.message.strip()
     if not msg:
         return {"error": "empty message"}
 
     async def generate():
         is_deep = _is_deep_question(msg)
+        pred_error = check_prediction(msg)
         key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
 
-        if not is_deep:
+        from services.emotion.salience import get_salience, init_salience_db
+        from services.emotion.affect import get_affect
+        init_salience_db()
+        salience = get_salience()
+        affect = get_affect()
+        last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
+        idle_min = (float(last_row["secs"]) / 60.0) if last_row and last_row["secs"] else 0
+        gate = gate_decision(msg, affect, salience, pred_error, idle_min)
+        skip_cache = is_deep or gate == "system2"
+
+        if not skip_cache:
             row = q("SELECT * FROM emotion_cache WHERE label = %s", [key], fetch="one")
             if row:
                 execute("UPDATE emotion_cache SET use_count = use_count + 1, updated_at = NOW() WHERE id = %s", [row["id"]])
@@ -713,11 +777,15 @@ async def chat_stream(req: ChatRequest):
                 update_salience(msg, row["label"])
                 adjust_expression_amplitude(msg)
                 _archive_conversation(msg, row["reply"])
-                threading.Thread(target=generate_prediction, args=(msg, row["reply"]), daemon=True).start()
-                threading.Thread(target=_maybe_condense, daemon=True).start()
-                threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-                threading.Thread(target=maybe_crystallize, daemon=True).start()
-                threading.Thread(target=maybe_guard, daemon=True).start()
+                get_background_executor().submit(generate_prediction, msg, row["reply"])
+                get_background_executor().submit(pre_dialogue_analyze)
+                get_background_executor().submit(feedback)
+                get_background_executor().submit(_maybe_condense)
+                get_background_executor().submit(_maybe_update_memory_files)
+                get_background_executor().submit(maybe_crystallize)
+                get_background_executor().submit(maybe_guard)
+                get_background_executor().submit(check_and_intervene, row["reply"])
+                get_background_executor().submit(maybe_extract_kg, msg)
                 r = _row_to_response(row)
                 for f in r.get("emotions", []):
                     f.update(_jitter_frame(f))
@@ -737,7 +805,7 @@ async def chat_stream(req: ChatRequest):
             thinking = None
 
         messages = _build_context(msg, thinking)
-        data, fallback = _call_llm(messages)
+        data, fallback, llm_tags = _call_llm(messages)
         if fallback:
             yield f"data: {json.dumps({'type': 'emotions', 'emotions': _fallback_emotion(), 'label': 'sheepish'}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'error', 'text': fallback}, ensure_ascii=False)}\n\n"
@@ -748,7 +816,7 @@ async def chat_stream(req: ChatRequest):
         for f in parsed:
             f.update(_jitter_frame(f))
             f.update(scale_emotion_params(f))
-        reply = str(data.get("reply", "..."))[:150]
+        reply = str(data.get("reply", "..."))
 
         lbl = parsed[0]["label"] if parsed else "neutral"
         yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl}, ensure_ascii=False)}\n\n"
@@ -763,19 +831,23 @@ async def chat_stream(req: ChatRequest):
             [msg, reply, parsed[0]["label"]], fetch="one",
         )
         if new_row:
-            threading.Thread(target=index_turn, args=(new_row["id"], msg), daemon=True).start()
+            get_background_executor().submit(index_turn, new_row["id"], msg, llm_tags)
         update_affinity(msg, parsed[0]["label"])
         update_affect(msg)
         adjust_expression_amplitude(msg)
         _archive_conversation(msg, reply, thinking)
-        threading.Thread(target=generate_prediction, args=(msg, reply), daemon=True).start()
-        threading.Thread(target=_maybe_condense, daemon=True).start()
-        threading.Thread(target=_maybe_update_memory_files, daemon=True).start()
-        threading.Thread(target=maybe_crystallize, daemon=True).start()
-        threading.Thread(target=maybe_guard, daemon=True).start()
-        threading.Thread(target=detect_situations, daemon=True).start()
-        threading.Thread(target=distill_episode, daemon=True).start()
-        threading.Thread(target=analyze_attachment, daemon=True).start()
+        get_background_executor().submit(generate_prediction, msg, reply)
+        get_background_executor().submit(pre_dialogue_analyze)
+        get_background_executor().submit(feedback)
+        get_background_executor().submit(_maybe_condense)
+        get_background_executor().submit(_maybe_update_memory_files)
+        get_background_executor().submit(maybe_crystallize)
+        get_background_executor().submit(maybe_guard)
+        get_background_executor().submit(detect_situations)
+        get_background_executor().submit(distill_episode)
+        get_background_executor().submit(analyze_attachment)
+        get_background_executor().submit(check_and_intervene, reply)
+        get_background_executor().submit(maybe_extract_kg, msg)
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -795,7 +867,7 @@ async def chat_stream(req: ChatRequest):
 
 @router.get("/api/chat/history")
 def chat_history(for_date: str = "", limit: int = 50):
-    _ensure_db()
+    init_db()
     if not for_date:
         from datetime import date
         for_date = date.today().isoformat()

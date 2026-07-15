@@ -9,8 +9,11 @@ Flow:
 
 import hashlib
 import json
+import logging
 
 from app.db import q, execute
+
+logger = logging.getLogger("emoji-chat")
 
 
 VEC_DIM = 256
@@ -70,29 +73,35 @@ def _llm_extract_tags(text: str) -> list[str]:
         data = json.loads(resp.choices[0].message.content)
         return data.get("tags", [])
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
 
-def _vec_to_halfvec(values: list[float]) -> str:
-    """Convert float list to pgvector halfvec literal."""
-    return f"'[{','.join(f'{v:.6f}' for v in values)}]'::halfvec"
 
 
-def index_turn(chat_id: int, message: str):
-    """Extract tags, hash to vector, and store in pgvector."""
-    tags = _llm_extract_tags(message)
+def index_turn(chat_id: int, message: str = "", tags: list[str] | None = None):
+    """Extract tags (or reuse provided), hash to vector, and store in pgvector.
+
+    When tags are provided (from the main LLM call), the separate
+    _llm_extract_tags API call is skipped entirely.
+    """
+    if tags is None:
+        tags = _llm_extract_tags(message)
     if not tags:
         return
     vec = _hash_to_vector(tags)
-    halfvec = _vec_to_halfvec(vec)
+    e_json = json.dumps(vec)
     execute(
-        f"INSERT INTO memory_vectors (chat_id, embedding) VALUES (%s, {halfvec})",
-        [chat_id],
+        "INSERT INTO memory_vectors (chat_id, embedding) VALUES (%s, %s::halfvec)",
+        [chat_id, e_json],
     )
 
 
-def search_similar(query: str, limit: int = 5) -> list[dict]:
+def search_similar(query: str, limit: int = 5, use_rerank: bool = True) -> list[dict]:
     """Find semantically similar past conversation turns.
+
+    When use_rerank=True, fetches top-20 via cosine search then passes
+    through cross-encoder reranker to select the best 5.
 
     Returns list of {chat_id, user_msg, avatar_reply, similarity}.
     """
@@ -100,19 +109,25 @@ def search_similar(query: str, limit: int = 5) -> list[dict]:
     if not tags:
         return []
     vec = _hash_to_vector(tags)
-    halfvec = _vec_to_halfvec(vec)
+    e_json = json.dumps(vec)
 
+    fetch_limit = 20 if use_rerank else limit
     rows = q(
-        f"""SELECT mv.chat_id, ch.user_msg, ch.avatar_reply,
-                   1 - (mv.embedding <=> {halfvec}) AS similarity
+        """SELECT mv.chat_id, ch.user_msg, ch.avatar_reply,
+                   1 - (mv.embedding <=> %s::halfvec) AS similarity
             FROM memory_vectors mv
             JOIN chat_history ch ON ch.id = mv.chat_id
-            WHERE 1 - (mv.embedding <=> {halfvec}) > 0.3
-            ORDER BY mv.embedding <=> {halfvec}
+            WHERE 1 - (mv.embedding <=> %s::halfvec) > 0.3
+            ORDER BY mv.embedding <=> %s::halfvec
             LIMIT %s""",
-        [limit],
+        [e_json, e_json, e_json, fetch_limit],
     )
-    return rows
+
+    if use_rerank and len(rows) > limit:
+        from services.memory.reranker import rerank_if_needed
+        return rerank_if_needed(query, rows)
+
+    return rows[:limit]
 
 
 def build_memory_context(user_msg: str, limit: int = 5) -> str:

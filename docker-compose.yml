@@ -17,7 +17,7 @@ services:
   app:
     build: .
     ports:
-      - "9010:8000"
+      - "8000:8000"
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DB_HOST=postgres

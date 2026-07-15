@@ -123,16 +123,21 @@ def update_affinity(user_msg: str, emotion_label: str):
     deltas["user_competence"] -= 0.001
     deltas["user_relatedness"] -= 0.002
 
-    # Apply EMA smoothing
+    # Apply EMA smoothing via batch update
+    values = []
     for dim in DIMENSIONS:
         old_val = current.get(dim, DEFAULTS[dim])
         new_val = old_val + deltas[dim]
         # Clamp 0-1
         new_val = max(0.0, min(1.0, new_val))
-        execute(
-            "UPDATE affinity SET value = %s, updated_at = NOW() WHERE dimension = %s",
-            [round(new_val, 4), dim],
-        )
+        values.append(round(new_val, 4))
+
+    cases = " ".join(f"WHEN '{d}' THEN %s" for d in DIMENSIONS)
+    dims = ", ".join(f"'{d}'" for d in DIMENSIONS)
+    execute(
+        f"UPDATE affinity SET value = CASE dimension {cases} END, updated_at = NOW() WHERE dimension IN ({dims})",
+        values,
+    )
 
     # Check for relationship milestones after updating
     check_milestones()
@@ -230,8 +235,8 @@ _MILESTONES = [
     ("user_relatedness", 0.5, "心之桥梁", "用户真正感受到了与你的情感联结"),
 ]
 
-_MILESTONE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                "memory", "milestones.jsonl")
+from app.config import MILESTONE_PATH
+_MILESTONE_PATH = MILESTONE_PATH
 
 
 def check_milestones() -> str | None:
@@ -249,7 +254,7 @@ def check_milestones() -> str | None:
                     m = json.loads(line)
                     triggered.add(m.get("name", ""))
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
 
     aff = get_affinity()
     if not aff:
@@ -273,7 +278,7 @@ def check_milestones() -> str | None:
                 logger = logging.getLogger("emoji-chat")
                 logger.info("Milestone reached: %s (%s=%.2f)", name, dim, aff[dim])
             except Exception:
-                pass
+                logger.warning("Operation failed", exc_info=True)
             return name
 
     return None
@@ -289,5 +294,5 @@ def get_milestones() -> list[dict]:
                 try:
                     milestones.append(json.loads(line))
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
     return milestones

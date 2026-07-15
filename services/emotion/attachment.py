@@ -19,8 +19,9 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-_BASE = os.path.dirname(os.path.dirname(__file__))
-_STYLE_PATH = os.path.join(_BASE, "memory", "attachment_style.json")
+from app.config import ARCHIVE_PATH, STYLE_PATH
+
+_STYLE_PATH = STYLE_PATH
 _CHECK_EVERY = 30
 _lock = threading.Lock()
 _last_check = 0
@@ -38,7 +39,7 @@ _STYLE_PROMPT = """你是一个关系心理学分析助手。分析以下用户�
 
 
 def _load_recent_user_messages(n: int = 20) -> list[str]:
-    archive = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+    archive = ARCHIVE_PATH
     messages = []
     try:
         if os.path.exists(archive):
@@ -51,9 +52,9 @@ def _load_recent_user_messages(n: int = 20) -> list[str]:
                     if user:
                         messages.append(user)
                 except Exception:
-                    pass
+                    logger.warning("Operation failed", exc_info=True)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return messages
 
 
@@ -66,7 +67,7 @@ def analyze_attachment():
     if not _lock.acquire(blocking=False):
         return
     try:
-        archive = os.path.join(_BASE, "memory", "conversation_archive.jsonl")
+        archive = ARCHIVE_PATH
         if not os.path.exists(archive):
             return
         with open(archive) as f:
@@ -79,8 +80,8 @@ def analyze_attachment():
         if len(messages) < 8:
             return
 
-        from app.routes.chat import _get_llm
-        client = _get_llm()
+        from app.utils import get_llm
+        client = get_llm()
 
         numbered = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(messages[-20:]))
         try:
@@ -94,13 +95,12 @@ def analyze_attachment():
                 max_tokens=300,
             )
             raw = resp.choices[0].message.content.strip()
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start >= 0 and end > start:
-                result = json.loads(raw[start:end])
-            else:
+            from app.utils import extract_json
+            result = extract_json(raw)
+            if not result:
                 return
         except Exception:
+            logger.warning("Operation failed", exc_info=True)
             return
 
         if not isinstance(result, dict) or "style" not in result:
@@ -113,7 +113,7 @@ def analyze_attachment():
         logger.info("Attachment style: %s (confidence=%.2f)",
                       result.get("style"), result.get("confidence", 0))
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     finally:
         _lock.release()
 
@@ -126,7 +126,7 @@ def get_attachment_context() -> str:
             with open(_STYLE_PATH) as f:
                 style = json.load(f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
     if not style:
         return ""

@@ -65,8 +65,8 @@ def _seconds_since_last_chat() -> float:
 
 
 def _get_llm_client():
-    from app.routes.chat import _get_llm
-    return _get_llm()
+    from app.utils import get_llm
+    return get_llm()
 
 
 def idle_thought():
@@ -106,7 +106,7 @@ def idle_thought():
             )
             logger.info("Idle thought: %s", content[:60])
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def mood_fluctuation():
@@ -114,7 +114,7 @@ def mood_fluctuation():
 
     Simulates the natural ebb and flow of mood when alone.
     """
-    from services.affinity import get_expression_amplitude
+    from services.emotion.affinity import get_expression_amplitude
     current = get_expression_amplitude()
 
     # Small random walk: ±0.03, biased toward neutral (1.0)
@@ -153,6 +153,16 @@ def diary_seed():
     # Simple: append thoughts as a "mood log" entry in diary
     # The main diary generation handles full narrative
     logger.info("Accumulated %d idle thoughts for diary seeding", len(thoughts))
+
+
+def system2_consolidation():
+    """Periodic integration of System 2 insights into System 1.
+
+    Runs every ~30 min from the scheduler. Reads unapplied System 2
+    insights and adjusts System 1 parameters accordingly.
+    """
+    from services.cognition.dual_system import system2_consolidation as _s2c
+    _s2c()
 
 
 def get_latest_idle_thought() -> str | None:

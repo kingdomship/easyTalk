@@ -16,17 +16,21 @@ logger = logging.getLogger("emoji-chat")
 
 from app.routes import router
 from app.db import init_db
-from services.news import fetch_all
-from services.diary import generate_diary
-from services.affinity import init_affinity_db
-from services.affect import init_affect_db
-from services.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed
-from services.salience import init_salience_db
+from app.utils import get_background_executor
+from services.info.news import fetch_all
+from services.reflection.diary import generate_diary
+from services.emotion.affinity import init_affinity_db
+from services.emotion.affect import init_affect_db
+from services.reflection.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed, system2_consolidation
+from services.emotion.salience import init_salience_db
+from app.cleanup import cleanup_old_data
+from services.cognition.predictive_agent import offline_analysis
+from app.config import MEMORY_DIR
 
 
 def _seed_memory():
     """If memory dir is empty, seed from the image's built-in defaults."""
-    mem_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory")
+    mem_dir = MEMORY_DIR
     seed_dir = "/app/memory_seed"
     if os.path.isdir(seed_dir) and (not os.path.isdir(mem_dir) or not os.listdir(mem_dir)):
         os.makedirs(mem_dir, exist_ok=True)
@@ -49,7 +53,7 @@ _OPTIONAL_FILES = {
 
 def _check_memory_files():
     """Verify memory files exist at startup, log warnings for missing ones."""
-    mem_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory")
+    mem_dir = MEMORY_DIR
 
     for fname, desc in _CRITICAL_FILES.items():
         path = os.path.join(mem_dir, fname)
@@ -77,9 +81,14 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(idle_thought, "cron", minute="*/5")
     scheduler.add_job(mood_fluctuation, "cron", minute="*/30")
     scheduler.add_job(diary_seed, "cron", minute="0")
+    scheduler.add_job(cleanup_old_data, "cron", hour=3, minute=7)
+    scheduler.add_job(offline_analysis, "cron", minute="*/7")
+    scheduler.add_job(system2_consolidation, "cron", minute="*/23")
     scheduler.start()
     yield
     scheduler.shutdown()
+    if _background_executor:
+        _background_executor.shutdown(wait=False)
 
 
 def generate_daily_diary():

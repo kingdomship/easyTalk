@@ -1,4 +1,6 @@
-"""Condense conversation history into a compact memory summary.
+"""Condense conversation history
+
+logger = logging.getLogger("emoji-chat") into a compact memory summary.
 
 Reads the full JSONL conversation history, extracts the transcript,
 and uses DeepSeek to generate a ~1-2KB summary capturing:
@@ -8,6 +10,7 @@ and uses DeepSeek to generate a ~1-2KB summary capturing:
 """
 
 import json
+import logging
 import os
 import sys
 
@@ -56,7 +59,7 @@ def extract_transcript(jsonl_path: str) -> str:
                     if isinstance(c, str) and len(c.strip()) > 10:
                         transcript.append(f"AI：{c.strip()}")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
     return "\n\n".join(transcript)
 
@@ -91,9 +94,9 @@ AI角色的人设是：风趣、幽默、知性的漂亮女性，主动找话题
 
 def condense(transcript: str, api_key: str) -> str:
     """Call DeepSeek to condense the transcript."""
-    from openai import OpenAI
+    from app.utils import get_llm
 
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    client = get_llm()
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[
@@ -107,8 +110,10 @@ def condense(transcript: str, api_key: str) -> str:
 
 
 def main():
-    jsonl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory", "conversation_archive.jsonl")
-    output_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory", "conversation_summary.md")
+    from app.config import ARCHIVE_PATH, SUMMARY_PATH
+
+    jsonl_path = ARCHIVE_PATH
+    output_path = SUMMARY_PATH
 
     if not os.path.exists(jsonl_path):
         print(f"File not found: {jsonl_path}")

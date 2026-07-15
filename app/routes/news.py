@@ -1,29 +1,28 @@
 """News endpoints."""
 
 from fastapi import APIRouter
-from app.db import q
-from app.routes.chat import _ensure_db
-from services.news import fetch_all
+from app.db import q, init_db
+from services.info.news import fetch_all
 
 router = APIRouter()
 
 
 @router.get("/api/news")
 def list_news(limit: int = 30):
-    _ensure_db()
+    init_db()
     return q("SELECT * FROM news_items ORDER BY rank ASC LIMIT %s", [limit])
 
 
 @router.post("/api/news/fetch")
 async def trigger_news_fetch():
-    _ensure_db()
+    init_db()
     count = await fetch_all()
     return {"ok": True, "count": count}
 
 
 @router.get("/api/news/topics")
 def news_topics(limit: int = 4):
-    _ensure_db()
+    init_db()
     rows = q("SELECT title, source FROM news_items ORDER BY rank ASC LIMIT %s", [limit])
     topics = []
     for r in rows:

@@ -1,10 +1,13 @@
 """Emotion database — connects to the `emotion` database on PostgreSQL."""
 
 import os
+import logging
 import re
 import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
+
+logger = logging.getLogger("emoji-chat")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "postgres"),
@@ -45,6 +48,7 @@ def q(sql, params=None, fetch="all"):
                 return dict(row) if row is not None else None
             return [dict(r) for r in cur.fetchall()]
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return [] if fetch == "all" else None
     finally:
         _get_pool().putconn(conn)
@@ -58,12 +62,19 @@ def execute(sql, params=None):
             cur.execute(sql, params or ())
             return True
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return False
     finally:
         _get_pool().putconn(conn)
 
 
+_init_done = False
+
+
 def init_db():
+    global _init_done
+    if _init_done:
+        return
     execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     execute("""
@@ -103,7 +114,7 @@ def init_db():
         try:
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
         except Exception:
-            pass
+            logger.warning("Operation failed", exc_info=True)
 
     # Chat history
     execute("""
@@ -162,3 +173,104 @@ def init_db():
             updated_at TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    # Performance indexes
+    execute("CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history (created_at)")
+    execute("CREATE INDEX IF NOT EXISTS idx_memory_vectors_chat_id ON memory_vectors (chat_id)")
+    execute("CREATE INDEX IF NOT EXISTS idx_emotion_cache_use_count ON emotion_cache (use_count DESC)")
+
+    # ── Drift detection tables (Mahalanobis + multi-level) ────────────
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS drift_baseline (
+            id SERIAL PRIMARY KEY,
+            mean_embedding halfvec(256),
+            covariance_diag halfvec(256),
+            built_at TIMESTAMP DEFAULT NOW(),
+            sample_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS drift_coreset (
+            id SERIAL PRIMARY KEY,
+            reply_text TEXT NOT NULL,
+            embedding halfvec(256),
+            weight REAL NOT NULL DEFAULT 1.0,
+            distance REAL NOT NULL DEFAULT 0.0,
+            recorded_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS drift_log (
+            id SERIAL PRIMARY KEY,
+            level VARCHAR(10) NOT NULL,
+            mahalanobis_distance REAL NOT NULL,
+            predicted_distance REAL,
+            turns_until_threshold REAL,
+            intervention TEXT,
+            details JSONB,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # ── Knowledge graph tables ───────────────────────────────────────
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS kg_entities (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(200) NOT NULL,
+            type VARCHAR(50) NOT NULL DEFAULT 'unknown',
+            first_seen TIMESTAMP DEFAULT NOW(),
+            last_seen TIMESTAMP DEFAULT NOW(),
+            metadata JSONB DEFAULT '{}',
+            UNIQUE(name, type)
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS kg_relationships (
+            id SERIAL PRIMARY KEY,
+            source_id INTEGER NOT NULL REFERENCES kg_entities(id),
+            target_id INTEGER NOT NULL REFERENCES kg_entities(id),
+            relation VARCHAR(100) NOT NULL,
+            valid_at TIMESTAMP DEFAULT NOW(),
+            invalid_at TIMESTAMP DEFAULT NULL,
+            strength REAL NOT NULL DEFAULT 0.5,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("CREATE INDEX IF NOT EXISTS idx_kg_entities_name ON kg_entities(name)")
+    execute("CREATE INDEX IF NOT EXISTS idx_kg_entities_last_seen ON kg_entities(last_seen)")
+
+    # ── Predictive agent table ───────────────────────────────────────
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS prediction_history (
+            id SERIAL PRIMARY KEY,
+            predicted_need VARCHAR(50),
+            predicted_emotion VARCHAR(50),
+            predicted_topic VARCHAR(200),
+            actual_need VARCHAR(50),
+            actual_emotion VARCHAR(50),
+            actual_topic VARCHAR(200),
+            prediction_error REAL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # ── Dual-system insights table ────────────────────────────────────
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS system2_insights (
+            id SERIAL PRIMARY KEY,
+            insight TEXT NOT NULL,
+            source_message TEXT,
+            category VARCHAR(50),
+            applied_to_system1 BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    _init_done = True

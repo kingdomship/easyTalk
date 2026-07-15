@@ -1,9 +1,12 @@
 """Multi-source hot-list fetcher — Bilibili, GitHub, Baidu, news aggregators."""
 
 import asyncio
+import logging
 import re
 import httpx
 from app.db import q, execute
+
+logger = logging.getLogger("emoji-chat")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -35,6 +38,7 @@ async def _fetch_bilibili(client: httpx.AsyncClient) -> list[dict]:
             })
         return items[:15]
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
 
@@ -69,6 +73,7 @@ async def _fetch_github(client: httpx.AsyncClient) -> list[dict]:
             })
         return items[:10]
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
 
@@ -106,6 +111,7 @@ async def _fetch_tophub(client: httpx.AsyncClient) -> list[dict]:
             })
         return items[:20]
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
 
@@ -138,6 +144,7 @@ async def _fetch_baidu(client: httpx.AsyncClient) -> list[dict]:
             })
         return items[:15]
     except Exception:
+        logger.warning("Operation failed", exc_info=True)
         return []
 
 

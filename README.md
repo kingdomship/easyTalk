@@ -1,4 +1,4 @@
-# emoji-chat
+# easyTalk
 
 LLM 驱动的像素风虚拟伴侣 —— 住在数字星空里的 AI 角色，通过文字 + 实时像素表情与用户互动。
 
@@ -18,51 +18,58 @@ open http://localhost:9010
 ## 项目结构
 
 ```
-emoji-chat/
+easytalk/
 ├── app/                          # FastAPI 核心
-│   ├── main.py                   # 入口 + lifespan 初始化 + 定时任务
+│   ├── main.py                   # 入口 + lifespan 初始化 + 5个定时任务
 │   ├── db.py                     # PostgreSQL (pgvector) 连接池 + 建表迁移
 │   ├── models.py                 # Pydantic ChatRequest
 │   └── routes/
 │       ├── __init__.py           # 聚合路由
 │       ├── chat.py               # /api/chat + SSE 流式 + 核心管线
 │       ├── diary.py              # /api/diary/* AI日记
-│       ├── emotions.py           # /api/emotions 表情缓存
+│       ├── emotions.py           # /api/emotions 表情缓存管理
 │       ├── memory.py             # /api/memory + affinity + mood + idle + missing-you
-│       └── news.py               # /api/news 热榜聚合
+│       └── news.py               # /api/news 热榜聚合 + 话题推荐
 ├── services/                     # 业务逻辑 (15个模块)
-│   ├── prompt.py                 # SYSTEM_PROMPT + 昼夜节律 + 呼吸节律temperature
+│   ├── prompt.py                 # SYSTEM_PROMPT + 昼夜节律 + temperature
 │   ├── memory_loader.py          # 记忆文件加载 (persona/profile/summary)
 │   ├── memory_search.py          # pgvector HNSW 语义向量搜索
 │   ├── condense.py               # 对话摘要压缩 (每50轮)
 │   ├── diary.py                  # AI 日记生成
-│   ├── news.py                   # 多源热榜抓取 (B站/GitHub/微博/知乎/百度)
-│   ├── affinity.py               # 10D 亲密度 + 表达幅度学习 + SDT需求 + 里程碑
-│   ├── affect.py                 # Panksepp七系统情绪评估 + Gross调节策略 + 效价追踪
-│   ├── salience.py               # SNARC显著性记忆 (Surprise/Novelty/Arousal/Reward/Conflict)
-│   ├── state_machine.py          # 5模式状态机 + 4唤醒态 (SAGE启发)
-│   ├── identity_guard.py         # 身份漂移检测 + 修正注入
+│   ├── news.py                   # 多源热榜抓取 (B站/GitHub/Tophub/百度)
+│   ├── affinity.py               # 10D 亲密度 + 表达幅度学习 + 关系里程碑
+│   ├── affect.py                 # Panksepp六系统情绪评估 + Gross调节 + 效价追踪
+│   ├── salience.py               # SNARC显著性 (Surprise/Novelty/Arousal/Reward/Conflict)
+│   ├── state_machine.py          # 5行为模式 + 4唤醒态
+│   ├── identity_guard.py         # 人设漂移检测 + 修正注入
 │   ├── crystallization.py        # 模式结晶 + Ebbinghaus遗忘曲线
 │   ├── narrative.py              # 叙事蒸馏 (Instant→Situation→Episode→Narrative)
 │   ├── prediction.py             # 预测误差学习 (Active Inference)
 │   ├── attachment.py             # 依恋风格识别 (焦虑/回避/安全)
-│   └── consciousness_loop.py     # 背景意识循环 (空闲独白 + 情绪波动)
+│   └── consciousness_loop.py     # 背景意识循环 (空闲独白 + 情绪波动 + 日记种子)
 ├── static/                       # 前端 (零构建 vanilla JS)
 │   ├── index.html                # SPA 骨架
 │   ├── style.css                 # 所有样式
 │   └── js/
-│       ├── engine.js             # 全局变量、工具函数、表情计算、音频
+│       ├── engine.js             # 全局状态、表情计算、音频引擎、调试面板
 │       ├── visuals.js            # 星空渲染、流星、记忆星点、像素头像绘制
-│       └── ui.js                 # 对话框、SSE流、面板、主循环
+│       ├── ui.js                 # 对话框、SSE流、面板、主循环
+│       └── globals.d.ts          # TypeScript 类型声明
 ├── memory/                       # 记忆数据 (volume 挂载)
 │   ├── user_persona.md           # AI 人设
 │   ├── user_profile.md           # 用户档案
-│   ├── conversation_summary.md   # 对话摘要
-│   └── conversation_archive.jsonl # 对话归档
+│   ├── conversation_summary.md   # 对话摘要 (自动生成)
+│   ├── conversation_archive.jsonl # 对话归档
+│   ├── crystals.jsonl            # 结晶记忆
+│   ├── situations.jsonl          # 叙事情景
+│   ├── episodes.jsonl            # 叙事章节
+│   ├── milestones.jsonl          # 关系里程碑
+│   └── attachment_style.json     # 依恋风格分析
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── README.md
+├── tsconfig.json
+└── .env.example
 ```
 
 ## 架构总览
@@ -72,11 +79,13 @@ emoji-chat/
   → _build_context(msg):
       SYSTEM_PROMPT + 昼夜节律
       + 记忆文件 (persona + profile + summary)
-      + 结晶记忆 (crystals.jsonl)
+      + 结晶记忆 (crystals.jsonl, Ebbinghaus衰减过滤)
       + 叙事上下文 (situations + episodes)
       + pgvector 语义搜索 (HNSW 余弦相似度)
-      + 亲密度 + 情绪状态 + 调节策略 + 效价
-      + 显著性信号 + 依恋风格建议
+      + 10D亲密度 + Panksepp情绪 + Gross调节策略 + 效价追踪
+      + SNARC显著性信号 + 依恋风格建议
+      + 人设漂移修正
+      + 今天的热门话题
       + 最近4轮对话历史
   → 状态机判断模式 (CHAT/DEEP/COMFORT/EXPLORE/PLAY)
   → 唤醒态判断 (WAKE/FOCUS/REST/CRISIS)
@@ -84,8 +93,9 @@ emoji-chat/
   → DeepSeek Chat API (temperature=节律+模式+唤醒)
   → 解析 JSON {emotions, reply}
   → _jitter_frame() + scale_emotion_params()
-  → SSE: emotions → text → done
-  → 后台: 归档、亲和力、情绪、显著性、预测生成、摘要、结晶、叙事、身份检查、依恋分析
+  → SSE: thinking → emotions → text → done
+  → 后台: 归档、亲密度、情绪、显著性、预测、摘要、结晶、情景检测、
+          情节蒸馏、人设检查、依恋分析、记忆文件更新
 ```
 
 ## 核心系统
@@ -110,20 +120,20 @@ emoji-chat/
 | head_tilt | -1~1 | 左歪头 → 右歪头 |
 | tear | 0~1 | 无 → 泪珠 |
 
-64×64像素网格程序化渲染，支持微表情(眨眼/脸红/泪光)、内感受呼吸动画(头微摆+星空呼吸调制)。
+64×64像素网格程序化渲染，支持微表情(眨眼/脸红/泪光)、多帧表情序列、内感受呼吸动画。
 
 ### 记忆系统 (四层)
 
 | 层 | 机制 | 触发 |
 |----|------|------|
 | **即时上下文** | 最近4轮对话直接注入 | 每轮 |
-| **语义检索** | LLM标签→MD5→256维向量→pgvector HNSN | 每轮 |
+| **语义检索** | LLM标签→MD5→256维向量→pgvector HNSW | 每轮 |
 | **叙事蒸馏** | Instant→Situation→Episode→Narrative | 每10/50轮 |
 | **模式结晶** | 重复话题→LLM蒸馏→持久记忆 + Ebbinghaus衰减 | 每10轮 |
 
 ### 情感系统
 
-- **Panksepp七系统**: SEEKING/PLAY/CARE/FEAR/RAGE/PANIC 维度评估
+- **Panksepp六系统**: SEEKING/PLAY/CARE/FEAR/RAGE/PANIC 维度评估
 - **Gross人际情绪调节**: 认知重评/共情回应/陪伴/幽默重构/深入探索
 - **Active Inference效价追踪**: 追踪情绪变化方向，评估策略有效性
 - **SNARC显著性**: Surprise/Novelty/Arousal/Reward/Conflict 五维追踪
@@ -134,15 +144,28 @@ emoji-chat/
 |----------|---------|------|
 | warmth, trust, intimacy, curiosity, patience, tension | user_autonomy, user_competence, user_relatedness | expression_amplitude |
 
-关系里程碑: 阈值跨越事件记录到 milestones.jsonl
+关系里程碑: 阈值跨越事件记录到 milestones.jsonl（温暖默契、信任分享、深刻联结、无话不谈、心之桥梁）
 
 ### 认知状态
 
-**行为模式** (MentalProcesses): CHAT → DEEP → COMFORT → EXPLORE → PLAY
+**行为模式** (Soul Engine MentalProcesses): CHAT → DEEP → COMFORT → EXPLORE → PLAY
 
 **唤醒状态** (SAGE): WAKE → FOCUS → REST → CRISIS
 
 每个状态独立调节 temperature、max_tokens、表情幅度
+
+### 背景意识循环
+
+| 任务 | 频率 | 说明 |
+|------|------|------|
+| 空闲思绪 | 每5分钟 | 用户离线时生成20-40字内心独白 |
+| 情绪波动 | 每30分钟 | 表达幅度随机游走(±0.03，趋近1.0) |
+| 日记种子 | 每小时 | 累积空闲思绪供日记使用 |
+
+### 人设维护
+
+- **身份免疫**: 每30轮LLM检查人设漂移，分数>0.5时注入修正提醒
+- **记忆文件演进**: 每20轮更新用户档案、每30轮更新AI人设 (LLM反思式更新)
 
 ## API 端点
 
@@ -151,18 +174,23 @@ emoji-chat/
 | POST | `/api/chat` | 发送消息，返回 {emotions, reply} |
 | POST | `/api/chat/stream` | SSE 流式: thinking → emotions → text → done |
 | GET | `/api/chat/history?for_date=&limit=50` | 对话历史 |
-| GET | `/api/affinity` | 10D亲密度 + 里程碑 |
-| GET | `/api/emotions` | 表情缓存列表 |
+| GET | `/api/affinity` | 10D亲密度 + 里程碑列表 |
+| GET | `/api/emotions` | 表情缓存列表 (按使用次数降序) |
+| DELETE | `/api/emotions/{label}` | 删除表情缓存项 |
 | GET | `/api/diary?limit=30` | 日记列表 |
+| GET | `/api/diary/{date}` | 指定日期日记 |
+| POST | `/api/diary/generate` | 手动触发生成日记 |
+| GET | `/api/diary/on-this-day` | 往年今日 |
 | GET | `/api/news?limit=30` | 新闻列表 |
-| GET | `/api/news/topics?limit=4` | 话题推荐 |
-| GET | `/api/mood/calendar?days=60` | 心情日历 |
+| GET | `/api/news/topics?limit=4` | 话题推荐 (用于对话启动) |
+| POST | `/api/news/fetch` | 手动触发新闻抓取 |
+| GET | `/api/mood/calendar?days=60` | 心情日历 (情绪emoji+聊天数) |
 | GET | `/api/memory/persona` | AI人设 |
 | GET | `/api/memory/profile` | 用户档案 |
 | GET | `/api/idle-thought` | 最新空闲独白 |
-| GET | `/api/missing-you` | 思念模式 (离>12h返回累积独白) |
-| GET | `/api/narrative/situations` | 叙事情景 |
-| GET | `/api/narrative/episodes` | 叙事章节 |
+| GET | `/api/missing-you` | 思念模式 (离线>12h返回累积独白) |
+| GET | `/api/narrative/situations` | 叙事情景列表 |
+| GET | `/api/narrative/episodes` | 叙事章节列表 |
 
 ## 环境变量
 
@@ -200,8 +228,8 @@ docker compose down
 - **后端**: Python 3.10 + FastAPI + uvicorn
 - **LLM**: DeepSeek Chat API (OpenAI 兼容协议)
 - **数据库**: PostgreSQL 15 + pgvector (HNSW 向量索引)
-- **前端**: 零构建 Vanilla JS + JSDoc @ts-check
-- **调度**: APScheduler (定时新闻/日记/意识循环)
+- **前端**: 零构建 Vanilla JS + JSDoc @ts-check + Canvas 2D
+- **调度**: APScheduler (5个定时任务)
 
 ## 设计原则
 
@@ -218,7 +246,7 @@ docker compose down
 - **Panksepp 情感神经科学** — 七原级情绪系统
 - **Gross 情绪调节过程模型** (2025 人际扩展)
 - **自我决定理论 SDT** (Ryan & Deci)
-- **依恋理论** (2025 AI依恋量表)
+- **依恋理论** (2025 AI依恋量表, Xie et al.)
 - **Active Inference / 自由能原理** (Friston)
 - **SAGE 意识循环 + SNARC 显著性**
 - **Echo 模式结晶**

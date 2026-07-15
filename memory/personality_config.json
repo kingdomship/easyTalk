@@ -1,0 +1,18 @@
+{
+  "ocean": {
+    "openness": 0.75,
+    "conscientiousness": 0.60,
+    "extraversion": 0.70,
+    "agreeableness": 0.80,
+    "neuroticism": 0.25
+  },
+  "mbti": "ENFP",
+  "archetype": "探索者",
+  "expression_modulation": {
+    "amplitude_baseline": 1.0,
+    "warmth_bias": 0.0,
+    "humor_bias": 0.1,
+    "formality": 0.2
+  },
+  "history": []
+}

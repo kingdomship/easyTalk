@@ -58,7 +58,7 @@ const soundToggle = document.getElementById('sound-toggle');
 // ═══════════════════════════════════════════
 // State machine
 // ═══════════════════════════════════════════
-const STATE = { STARFIELD:'starfield', CONVERGING:'converging', CHAT:'chat', AUXILIARY:'auxiliary' };
+const STATE = { STARFIELD:'starfield', CONVERGING:'converging', CHAT:'chat', AUXILIARY:'auxiliary', CONSTELLATION:'constellation' };
 let state = STATE.STARFIELD;
 
 // ═══════════════════════════════════════════

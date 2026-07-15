@@ -2,7 +2,9 @@
 
 import os
 
-_MEMORY_DIR = os.environ.get("MEMORY_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory"))
+from app.config import MEMORY_DIR
+
+_MEMORY_DIR = MEMORY_DIR
 
 
 def _read_file(path: str) -> str:

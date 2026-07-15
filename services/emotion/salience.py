@@ -11,13 +11,15 @@ Values decay toward 0 over time unless reinforced.
 """
 
 import json
+import logging
 import os
 import threading
 
 from app.db import q, execute
 
-_BASE = os.path.dirname(os.path.dirname(__file__))
-_PREV_USER_PATH = os.path.join(_BASE, "memory", "salience_prev.json")
+logger = logging.getLogger("emoji-chat")
+
+from app.config import SALIENCE_PREV_PATH as _PREV_USER_PATH
 
 EMA = 0.08
 DECAY = 0.003  # natural decay per turn toward 0
@@ -55,7 +57,7 @@ def _save_prev_msg(msg: str):
         with open(_PREV_USER_PATH, "w") as f:
             json.dump({"msg": msg}, f)
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
 
 
 def _load_prev_msg() -> str:
@@ -64,7 +66,7 @@ def _load_prev_msg() -> str:
             with open(_PREV_USER_PATH) as f:
                 return json.load(f).get("msg", "")
     except Exception:
-        pass
+        logger.warning("Operation failed", exc_info=True)
     return ""
 
 
@@ -95,7 +97,7 @@ def update_salience(user_msg: str, emotion_label: str):
         raw["novelty"] = 0.15
 
     # Arousal: emotional intensity from affect
-    from services.affect import assess_affect
+    from services.emotion.affect import assess_affect
     affect = assess_affect(user_msg)
     peak = max(affect.values()) if affect else 0
     raw["arousal"] = min(1.0, peak * 1.2)
@@ -110,6 +112,7 @@ def update_salience(user_msg: str, emotion_label: str):
                          "但我", "可是", "但我觉得", "你误会"]
     raw["conflict"] = min(1.0, sum(1 for s in conflict_signals if s in user_msg) * 0.3)
 
+    values = []
     for dim in DEFAULTS:
         old_val = current.get(dim, DEFAULTS[dim])
         new_raw = raw.get(dim, 0)
@@ -118,10 +121,15 @@ def update_salience(user_msg: str, emotion_label: str):
         # Natural decay toward baseline
         smooth += DECAY * (DEFAULTS.get(dim, 0.1) - smooth)
         smooth = max(0.0, min(1.0, smooth))
-        execute(
-            "UPDATE salience_state SET value = %s, updated_at = NOW() WHERE dimension = %s",
-            [round(smooth, 4), dim],
-        )
+        values.append(round(smooth, 4))
+
+    # Batch update: single CASE WHEN instead of N individual UPDATEs
+    cases = " ".join(f"WHEN '{d}' THEN %s" for d in DEFAULTS)
+    dims = ", ".join(f"'{d}'" for d in DEFAULTS)
+    execute(
+        f"UPDATE salience_state SET value = CASE dimension {cases} END, updated_at = NOW() WHERE dimension IN ({dims})",
+        values,
+    )
 
     _save_prev_msg(user_msg)
 

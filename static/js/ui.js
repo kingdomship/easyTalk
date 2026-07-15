@@ -186,10 +186,15 @@ document.querySelectorAll('.aux-tab').forEach(tab => {
 });
 
 function loadAuxContent() {
+  // Detach constellation canvas when switching away
+  if (auxTab !== 'constellation' && typeof Constellation !== 'undefined') {
+    Constellation.stop();
+  }
   if (auxTab === 'diary') loadDiaryContent();
   else if (auxTab === 'news') loadNewsContent();
   else if (auxTab === 'mood') loadMoodContent();
   else if (auxTab === 'memory') loadMemoryContent();
+  else if (auxTab === 'constellation') loadConstellationContent();
 }
 
 async function loadMemoryContent() {
@@ -217,6 +222,104 @@ async function loadMemoryContent() {
     `;
   } catch(e) {
     auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">加载失败</div>';
+  }
+}
+
+// ── Constellation star map (full-screen overlay) ──
+async function loadConstellationContent() {
+  auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#6a6a8a;">绘制星图中...</div>';
+  try {
+    const resp = await fetch('/api/constellation');
+    const data = await resp.json();
+
+    // Build full-screen overlay
+    const overlay = document.createElement("div");
+    overlay.className = "constellation-overlay";
+    overlay.innerHTML = `
+      <button class="constellation-overlay-close" title="关闭 (Esc)">✕</button>
+      <div class="constellation-overlay-legend">
+        ${(data.galaxies || []).map(g =>
+          `<span class="constellation-legend-item">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};"></span>
+            ${g.label}(${g.star_count})
+          </span>`
+        ).join('')}
+        <span style="margin-left:12px;opacity:0.4;font-size:0.65rem;">滚轮缩放 · 拖拽平移 · 拖动节点 · 双击复位</span>
+      </div>
+      <div class="constellation-overlay-canvas" id="constellationCanvas"></div>
+      <div class="constellation-bubble" id="constellationBubble" style="display:none;">
+        <div class="constellation-bubble-galaxy" id="bubbleGalaxy"></div>
+        <div class="constellation-bubble-tag" id="bubbleTag"></div>
+        <div class="constellation-bubble-body" id="bubbleBody"></div>
+        <div class="constellation-bubble-meta">
+          <span class="bubble-importance" id="bubbleImportance"></span>
+        </div>
+        <button class="constellation-bubble-close" id="bubbleClose">✕</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Close helpers
+    function closeOverlay() {
+      if (typeof Constellation !== 'undefined') Constellation.detach();
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener("keydown", onKey);
+    }
+    function onKey(e) { if (e.key === "Escape") closeOverlay(); }
+    document.addEventListener("keydown", onKey);
+
+    overlay.querySelector(".constellation-overlay-close").onclick = closeOverlay;
+    // Click background (not canvas) to close
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeOverlay();
+    });
+
+    // Star detail handlers — chat bubble style popup
+    window._onConstellationStarClick = function(star) {
+      const bubble = document.getElementById('constellationBubble');
+      if (!star) {
+        // Click on blank — close bubble
+        bubble.style.display = 'none';
+        return;
+      }
+      document.getElementById('bubbleGalaxy').textContent = '🌌 ' + (star.galaxyName || star.galaxy || '记忆');
+      document.getElementById('bubbleGalaxy').style.color = star.color || '#a78bfa';
+      document.getElementById('bubbleTag').textContent = star.tag;
+      document.getElementById('bubbleBody').textContent = star.summary || '(暂无详情)';
+      // Importance bar
+      const imp = star.importance || 0;
+      const pct = Math.round(imp * 100);
+      document.getElementById('bubbleImportance').innerHTML =
+        '⭐ 重要性 <b style="color:' + (star.color || '#a78bfa') + '">' + pct + '%</b>';
+      bubble.style.display = 'block';
+      // Click outside bubble to close
+      setTimeout(() => {
+        document.addEventListener('click', function _closeBubble(e) {
+          if (!bubble.contains(e.target) && e.target.tagName !== 'CANVAS') {
+            bubble.style.display = 'none';
+            document.removeEventListener('click', _closeBubble);
+            if (typeof Constellation !== 'undefined') Constellation.clearSelection();
+          }
+        });
+      }, 100);
+    };
+    document.getElementById('bubbleClose').onclick = function() {
+      document.getElementById('constellationBubble').style.display = 'none';
+      if (typeof Constellation !== 'undefined') Constellation.clearSelection();
+    };
+
+    // Attach canvas renderer
+    const container = document.getElementById('constellationCanvas');
+    if (container && typeof Constellation !== 'undefined') {
+      Constellation.init(data);
+      Constellation.attach(container);
+    }
+
+    // Restore sidebar neutral state
+    auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#6a6a8a;">🌌 星图已打开<br><small>关闭全屏窗口即可返回</small></div>';
+  } catch(e) {
+    console.error('[Constellation] load failed:', e);
+    auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">星图加载失败: ' + e.message + '</div>';
   }
 }
 
