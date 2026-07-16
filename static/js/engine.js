@@ -1,18 +1,31 @@
 // @ts-check
 function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ═══════════════════════════════════════════
 // DOM refs
 // ═══════════════════════════════════════════
-const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('c')), ctx = canvas.getContext('2d');
 const inputRow = document.getElementById('input-row');
-const input = document.getElementById('input'), sendBtn = document.getElementById('sendBtn');
+const input = /** @type {HTMLInputElement} */ (document.getElementById('input')), sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sendBtn'));
 const dialog = document.getElementById('dialog'), dlgBody = document.getElementById('dlgBody');
 const dlgClose = document.getElementById('dlgClose');
 const topicBubbles = document.getElementById('topic-bubbles');
 const auxPanel = document.getElementById('aux-panel'), auxContent = document.getElementById('auxContent');
+
+// Settings
+const settingsModal = document.getElementById('settings-modal');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsClose = document.getElementById('settingsClose');
+const settingsSave = document.getElementById('settingsSave');
+const settingsClear = document.getElementById('settingsClear');
+const providerSelect = /** @type {HTMLSelectElement} */ (document.getElementById('providerSelect'));
+const baseUrlInput = /** @type {HTMLInputElement} */ (document.getElementById('baseUrlInput'));
+const modelInput = /** @type {HTMLInputElement} */ (document.getElementById('modelInput'));
+const modelHint = /** @type {HTMLElement} */ (document.getElementById('modelHint'));
+const apiKeyInput = /** @type {HTMLInputElement} */ (document.getElementById('apiKeyInput'));
+const settingsStatus = /** @type {HTMLElement} */ (document.getElementById('settingsStatus'));
 
 // ═══════════════════════════════════════════
 // Typing sound engine (Web Audio API)
@@ -73,7 +86,7 @@ const ERROR_PATTERNS = {
   'HTTP 4': { cause: '请求参数错误或端点不存在', fix: '检查API路径和请求格式' },
   'timeout': { cause: '请求超时', fix: 'DeepSeek API 响应慢或网络延迟高，考虑降低max_tokens' },
   'rate': { cause: 'API 速率限制', fix: '等待几秒后重试，或检查API配额' },
-  'API key': { cause: 'DeepSeek API Key 无效或过期', fix: '检查 DEEPSEEK_API_KEY 环境变量' },
+  'API key': { cause: 'API Key 无效或过期', fix: '检查 ⚙️ 设置中的 API Key 配置' },
   '嗯...': { cause: 'LLM 返回异常或 JSON 解析失败', fix: '检查 DeepSeek 控制台是否有报错，尝试简化 system prompt' },
 };
 
@@ -124,7 +137,13 @@ window.addEventListener('unhandledrejection', e => {
 const _origConsoleError = console.error;
 console.error = function(...args) {
   _origConsoleError.apply(console, args);
-  addDebugLog('error', 'Console', args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0,200) : String(a)).join(' '));
+  addDebugLog('error', 'Console', args.map(a => {
+    if (typeof a === 'object') {
+      try { return JSON.stringify(a).slice(0, 200); }
+      catch (_) { return String(a); }
+    }
+    return String(a);
+  }).join(' '));
 };
 const _origConsoleWarn = console.warn;
 console.warn = function(...args) {
@@ -160,7 +179,7 @@ resize();
 // Face computation (ported from original)
 // ═══════════════════════════════════════════
 const GRID = 64;
-const FACE_COLORS = { face:'#ffeaa7', faceD:'#f0d67a', outline:'#d4b84c', dark:'#2d3436', light:'#ffffff', blush:'#ff7799' };
+const FACE_COLORS = { face:'#ffd54f', faceD:'#eec030', outline:'#c49818', dark:'#2d3436', light:'#ffffff', blush:'#ff8c69' };
 
 function fd(r, c) { return Math.sqrt((r-32)**2 + (c-32)**2); }
 function lerp(a,b,t) { return a+(b-a)*t; }
@@ -181,77 +200,136 @@ function getFacePixels(params) {
   const p = params;
   const pixels = [];
   // Face circle (radius 29, outline 27, darker edge 24)
+  const cheekPuff = p.cheek_puff || 0;
   for (let r = 0; r < GRID; r++)
     for (let cc = 0; cc < GRID; cc++) {
       const d = fd(r, cc);
-      if (d > 29) continue;
+      // Cheek puff: expand face in cheek regions
+      let cheekFactor = 0;
+      if (cheekPuff > 0) {
+        const lDist = Math.sqrt((r-27)**2 + (cc-11)**2);
+        const rDist = Math.sqrt((r-27)**2 + (cc-53)**2);
+        const cheekDist = Math.min(lDist, rDist);
+        if (cheekDist < 14) cheekFactor = Math.max(0, 1 - cheekDist/14);
+      }
+      const radius = 29 + cheekPuff * 3 * cheekFactor;
+      if (d > radius) continue;
       const color = d > 27 ? FACE_COLORS.outline : (d > 24 ? FACE_COLORS.faceD : FACE_COLORS.face);
       pixels.push({ r, c: cc, color });
     }
-  // Blush — distinct pink circles on cheeks, always slightly visible
+  // Blush — with cheek_raise shifting circles up and compressing vertically
   const blushVal = p.blush || 0;
+  const cheekRaise = p.cheek_raise || 0;
   const blushBlend = 0.08 + blushVal * 0.7;
   if (blushBlend > 0.02) {
     const blushColor = lerpH(FACE_COLORS.face, FACE_COLORS.blush, blushBlend);
-    // Left cheek: center ~(27, 11), radius 8
-    for (let r = 19; r <= 35; r++) {
+    const blushCenterR = Math.round(27 - cheekRaise * 5);
+    const blushVR = Math.round(8 - cheekRaise * 3);
+    // Left cheek
+    for (let r = blushCenterR - blushVR; r <= blushCenterR + blushVR; r++) {
       for (let cc = 3; cc <= 19; cc++) {
-        if (Math.sqrt((r-27)**2 + (cc-11)**2) < 8) pixels.push({ r, c: cc, color: blushColor });
+        const vrDist = (r - blushCenterR) / Math.max(1, blushVR);
+        if (Math.sqrt((r-blushCenterR)**2 + (cc-11)**2) < blushVR && vrDist > -1.2)
+          pixels.push({ r, c: cc, color: blushColor });
       }
     }
-    // Right cheek: center ~(27, 53), radius 8
-    for (let r = 19; r <= 35; r++) {
+    // Right cheek
+    for (let r = blushCenterR - blushVR; r <= blushCenterR + blushVR; r++) {
       for (let cc = 45; cc <= 61; cc++) {
-        if (Math.sqrt((r-27)**2 + (cc-53)**2) < 8) pixels.push({ r, c: cc, color: blushColor });
+        const vrDist = (r - blushCenterR) / Math.max(1, blushVR);
+        if (Math.sqrt((r-blushCenterR)**2 + (cc-53)**2) < blushVR && vrDist > -1.2)
+          pixels.push({ r, c: cc, color: blushColor });
       }
     }
   }
-  // Eyebrows (pixel blocks)
-  const baseR = Math.round(lerp(17, 8, p.brow_height));
+  // Nose wrinkle (AU9) — dark horizontal lines at nose bridge
+  const noseWrinkle = p.nose_wrinkle || 0;
+  if (noseWrinkle > 0.05) {
+    const nwColor = lerpH(FACE_COLORS.face, FACE_COLORS.dark, noseWrinkle * 0.6);
+    // Two short horizontal lines between eyes
+    for (let c = 30; c <= 33; c++) pixels.push({ r: 15, c, color: nwColor });
+    for (let c = 29; c <= 34; c++) pixels.push({ r: 16, c, color: nwColor });
+  }
+  // Eyebrows — 5px wide with visible arch peak
+  const baseR = Math.round(lerp(18, 10, p.brow_height));
   const asym = p.brow_asym || 0;
   const lOff = -Math.round(asym * 4), rOff = Math.round(asym * 4);
   for (let i = 0; i < 5; i++) {
-    const cc = 14 + i, isInner = i >= 2;
-    const rowOff = isInner ? -Math.round(p.brow_angle * 3) : Math.round(p.brow_angle * 3);
-    pixels.push({ r: baseR + rowOff + lOff, c: cc, color: FACE_COLORS.dark });
+    const cc = 14 + i;
+    const archOff = (i === 1 || i === 2) ? -1 : 0;
+    const tiltOff = Math.round((cc - 16) * (p.brow_angle||0) * 2);
+    pixels.push({ r: baseR + archOff + tiltOff + lOff, c: cc, color: FACE_COLORS.dark });
   }
   for (let i = 0; i < 5; i++) {
-    const cc = 43 + i, isInner = i <= 2;
-    const rowOff = isInner ? -Math.round(p.brow_angle * 3) : Math.round(p.brow_angle * 3);
-    pixels.push({ r: baseR + rowOff + rOff, c: cc, color: FACE_COLORS.dark });
+    const cc = 45 + i;
+    const archOff = (i === 1 || i === 2) ? -1 : 0;
+    const tiltOff = Math.round((cc - 47) * (p.brow_angle||0) * 2);
+    pixels.push({ r: baseR + archOff + tiltOff + rOff, c: cc, color: FACE_COLORS.dark });
   }
-  // Eyes (pixel blocks, wink support)
+  // Eyes — with eye_curve, eye_tension, iris_size
   function eyePx(cc) {
     const px = [], bR = 20;
     let eyeOpen = p.eye_open;
     const wink = p.eye_wink || 0;
     if (wink < -0.5 && cc === 20) eyeOpen = 0.05;
     if (wink > 0.5 && cc === 43) eyeOpen = 0.05;
-    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 3);
+    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 4);
+    const outerDir = cc < 30 ? 1 : -1;
+    const ec = p.eye_curve || 0;       // eyelid curvature
+    const tension = p.eye_tension || 0; // horizontal narrowing
+    const t = Math.round(tension * 2); // 0..2 px shrink per side
     if (rows === 1) {
-      for (let c = cc - 5; c <= cc + 5 && px.length < 10; c++) px.push({ r: bR, c, color: FACE_COLORS.dark });
+      // Closed: thin line arched up at outer corner (smiling squint)
+      for (let c = cc - 2; c <= cc + 1; c++) px.push({ r: bR, c, color: FACE_COLORS.dark });
+      px.push({ r: bR - 1, c: cc + outerDir * 2, color: FACE_COLORS.dark });
+      // eye_curve in closed eyes: shift the arch
+      if (ec > 0.3) px.push({ r: bR - 1, c: cc + outerDir * 3, color: FACE_COLORS.dark });
     } else if (rows === 2) {
-      for (let c = cc - 3; c <= cc + 3; c++) px.push({ r: bR - 2, c, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(-p.eye_curve * 4), c: cc - 3, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(p.eye_curve * 2), c: cc, color: FACE_COLORS.dark });
-      px.push({ r: bR + Math.round(-p.eye_curve * 4), c: cc + 3, color: FACE_COLORS.dark });
+      // Half open: upper bar + thin lower line
+      const tw = Math.round(tension * 1.5); // 0..2 px shrink
+      for (let c = cc - 3 + tw; c <= cc + 2 - tw; c++) px.push({ r: bR - 2, c, color: FACE_COLORS.dark });
+      for (let c = cc - 2; c <= cc + 1; c++) px.push({ r: bR, c, color: FACE_COLORS.dark });
     } else {
-      px.push({ r: bR - 4, c: cc - 4, color: FACE_COLORS.dark });
-      px.push({ r: bR - 4, c: cc + 3, color: FACE_COLORS.dark });
-      px.push({ r: bR - 2, c: cc - 4, color: FACE_COLORS.dark });
-      px.push({ r: bR - 2, c: cc + 3, color: FACE_COLORS.dark });
-      px.push({ r: bR, c: cc - 4, color: FACE_COLORS.dark });
-      px.push({ r: bR, c: cc + 3, color: FACE_COLORS.dark });
+      // Full open: oval eye with eye_curve and eye_tension
+      const tTop = Math.round(tension); // top row less affected
+      // Top row (bR-4): narrowest, eye_curve affects vertical
+      const tcOff = ec > 0 ? Math.round(ec) : 0;
+      const bcOff = ec < 0 ? Math.round(-ec) : 0;
+      for (let c = cc - 2 + tTop; c <= cc + 1 - tTop; c++) {
+        const rowOff = (ec > 0 && (c === cc-2 || c === cc+1)) ? tcOff : 0;
+        px.push({ r: bR - 4 + rowOff, c, color: FACE_COLORS.dark });
+      }
+      // Middle rows (bR-3, bR-2): widest, tension narrows
+      for (let c = cc - 4 + t; c <= cc + 3 - t; c++) px.push({ r: bR - 3, c, color: FACE_COLORS.dark });
+      for (let c = cc - 4 + t; c <= cc + 3 - t; c++) px.push({ r: bR - 2, c, color: FACE_COLORS.dark });
+      // Bottom row (bR-1): slightly narrower, eye_curve affects
+      for (let c = cc - 3 + t; c <= cc + 2 - t; c++) {
+        const rowOff = (ec < 0 && (c === cc-3 || c === cc+2)) ? bcOff : 0;
+        px.push({ r: bR - 1 + rowOff, c, color: FACE_COLORS.dark });
+      }
     }
-    const ps = Math.round((p.eye_pupil || 0) * 3.5);
+    const ps = Math.round((p.eye_pupil || 0) * 3);
     for (let k = 0; k < px.length; k++) px[k].c += ps;
-    const hlR = rows === 1 ? bR : bR - 2;
-    px.push({ r: hlR, c: cc + 3 + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, p.sparkle) });
+    // Iris size controls highlight spread
+    const iris = p.iris_size != null ? p.iris_size : 0.5;
+    const sparkle = p.sparkle || 0;
+    const hlR = rows === 1 ? bR : (rows === 2 ? bR - 2 : bR - 3);
+    // Main highlight
+    px.push({ r: hlR, c: cc + 2 + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle) });
+    // Secondary highlight — spread increases with iris_size
+    if (rows >= 2) {
+      const hlSpread = Math.round(iris * 2);
+      px.push({ r: hlR + 1, c: cc + 2 + hlSpread + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle * 0.5 * iris) });
+    }
+    // Third highlight for large iris (excited/attracted)
+    if (rows >= 3 && iris > 0.6) {
+      px.push({ r: hlR, c: cc + 4 + ps, color: lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle * 0.25 * iris) });
+    }
     return px;
   }
   pixels.push(...eyePx(20));
   pixels.push(...eyePx(43));
-  // Tear
+  // Tear — left eye (cc=20 area)
   if ((p.tear || 0) > 0.05) {
     const tearColor = lerpH('#ffffff', '#88ccff', p.tear);
     const tearR = 23 + Math.round(p.tear * 2);
@@ -260,23 +338,97 @@ function getFacePixels(params) {
     pixels.push({ r: tearR, c: 19, color: tearColor });
     pixels.push({ r: tearR + 1, c: 19, color: tearColor });
   }
-  // Mouth (pixel blocks, asymmetric)
-  const mcc = 32, hw = Math.round(lerp(4, 11, p.mouth_width));
-  const cs = mcc - hw, ce = mcc + hw;
+  // Sweat drop — left temple (anime style)
+  const sweat = p.sweat_drop || 0;
+  if (sweat > 0.05) {
+    const sweatColor = lerpH(FACE_COLORS.face, '#ccddff', sweat);
+    pixels.push({ r: 9, c: 7, color: sweatColor });
+    pixels.push({ r: 10, c: 6, color: sweatColor });
+    pixels.push({ r: 10, c: 7, color: sweatColor });
+    pixels.push({ r: 10, c: 8, color: sweatColor });
+    pixels.push({ r: 11, c: 7, color: sweatColor });
+  }
+  // Vein pop — temple cross/cruciform (anime anger marker)
+  const vein = p.vein_pop || 0;
+  if (vein > 0.05) {
+    const veinColor = lerpH(FACE_COLORS.face, '#8b0000', vein * 0.8);
+    // Cross shape: horizontal + vertical bar
+    for (let c = 7; c <= 9; c++) pixels.push({ r: 9, c, color: veinColor });
+    for (let r = 8; r <= 10; r++) pixels.push({ r, c: 8, color: veinColor });
+  }
+  // Mouth — with lip_pout, lip_stretch, lip_bite, jaw_drop, tongue_out
+  const mcc = 32;
+  const lipStretch = p.lip_stretch || 0;
+  const mouthW = p.mouth_width || 0.6;
+  let hw = Math.round(lerp(3, 9, mouthW));
+  const stretchExtra = Math.round(lipStretch * 3);
+  const cs = mcc - hw - stretchExtra, ce = mcc + hw + stretchExtra;
   const ma = p.mouth_asym || 0;
-  if (p.mouth_open < 0.25) {
+  const jawDrop = p.jaw_drop || 0;
+  const lipPout = p.lip_pout || 0;
+  const lipBite = p.lip_bite || 0;
+  const tongueOut = p.tongue_out || 0;
+
+  // Effective mouth_open: base + auto-open when tongue out
+  const effMouthOpen = Math.max(p.mouth_open || 0, tongueOut > 0.3 ? 0.2 : 0);
+
+  if (effMouthOpen < 0.25) {
+    // Closed mouth: apply lip_bite (shift r up), lip_pout (add below), stretch
+    const biteShift = Math.round(lipBite * 3);
+    const baseR = 39;
     for (let c = cs; c <= ce && pixels.length < 2000; c++) {
       const t = (c - cs) / (ce - cs || 1), edgeF = Math.abs(t - 0.5) * 2;
       const asymOffset = Math.round(ma * (c - mcc) * 0.4);
-      pixels.push({ r: 39 + Math.round(-p.mouth_curve * edgeF * 4) + asymOffset, c, color: FACE_COLORS.dark });
+      // Stretch attenuates curve (stretched mouth = flat, not arched)
+      const curveAtten = Math.max(0, 1 - lipStretch * 0.7);
+      pixels.push({ r: baseR + Math.round(-p.mouth_curve * edgeF * 4 * curveAtten) + asymOffset - biteShift, c, color: FACE_COLORS.dark });
+    }
+    // Lip bite: add white "tooth" marks above the shifted lip
+    if (lipBite > 0.2) {
+      const toothColor = lerpH(FACE_COLORS.dark, FACE_COLORS.light, 0.6);
+      pixels.push({ r: baseR - 2 - biteShift, c: mcc, color: toothColor });
+      pixels.push({ r: baseR - 2 - biteShift, c: mcc + 1, color: toothColor });
+    }
+    // Lip pout (closed): add thickness below lip line
+    if (lipPout > 0.1) {
+      const poutRows = Math.round(lipPout * 2);
+      for (let c = cs + 1; c <= ce - 1 && pixels.length < 2000; c++) {
+        for (let pr = 1; pr <= poutRows; pr++) {
+          pixels.push({ r: baseR + pr - biteShift, c, color: FACE_COLORS.dark });
+        }
+      }
     }
   } else {
-    const topR = 37 - Math.round(p.mouth_open * 1.6), botR = 39 + Math.round(p.mouth_open * 1.6);
-    for (let c = 31; c <= 34; c++) pixels.push({ r: topR, c, color: FACE_COLORS.dark });
+    // Open mouth
+    const topR = 37 - Math.round(effMouthOpen * 1.6) - Math.round(jawDrop * 2);
+    const botR = 39 + Math.round(effMouthOpen * 1.6) + Math.round(jawDrop * 5);
+    // Upper lip
+    for (let c = cs + 1; c <= ce - 1; c++) pixels.push({ r: topR, c, color: FACE_COLORS.dark });
+    // Lower lip with jaw_drop and lip_pout
     for (let c = cs + 1; c <= ce - 1 && pixels.length < 2000; c++) {
       const isE = (c === cs + 1 || c === ce - 1);
       const asymOffset = Math.round(ma * (c - mcc) * 0.4);
-      pixels.push({ r: botR + (isE ? Math.round(-p.mouth_curve * 2) : Math.round(p.mouth_curve * 0.7)) + asymOffset, c, color: FACE_COLORS.dark });
+      const curveAtten = Math.max(0, 1 - lipStretch * 0.7);
+      pixels.push({ r: botR + (isE ? Math.round(-p.mouth_curve * 2 * curveAtten) : Math.round(p.mouth_curve * 0.7 * curveAtten)) + asymOffset, c, color: FACE_COLORS.dark });
+      // Lip pout (open): add thickness below lower lip
+      if (lipPout > 0.1 && !isE) {
+        const poutRows = Math.round(lipPout * 2);
+        for (let pr = 1; pr <= poutRows; pr++) {
+          pixels.push({ r: botR + pr + asymOffset, c, color: FACE_COLORS.dark });
+        }
+      }
+    }
+    // Tongue out: pink oval below lower lip center
+    if (tongueOut > 0.1) {
+      const tongueColor = lerpH('#ff7799', '#ff5577', tongueOut);
+      const tongueBase = botR + 2;
+      const tongueW = Math.round(lerp(1, 3, tongueOut));
+      for (let rr = 0; rr <= Math.round(tongueOut * 3); rr++) {
+        const rw = tongueW - (rr > 0 ? Math.round(rr * 0.5) : 0);
+        for (let c = mcc - rw; c <= mcc + rw; c++) {
+          pixels.push({ r: tongueBase + rr, c, color: tongueColor });
+        }
+      }
     }
   }
   return pixels;
@@ -285,17 +437,21 @@ function getFacePixels(params) {
 // ═══════════════════════════════════════════
 // Face parameters
 // ═══════════════════════════════════════════
-let curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, blush:0.15, head_tilt:0, tear:0 };
+let curParams = { eye_curve:0, eye_open:0.7, eye_pupil:0, eye_wink:0, eye_tension:0, iris_size:0.5, mouth_curve:0.15, mouth_open:0, mouth_width:0.6, mouth_asym:0, lip_pout:0, lip_stretch:0, lip_bite:0, jaw_drop:0, tongue_out:0, sparkle:0.6, brow_angle:0.2, brow_height:0.65, brow_asym:0, nose_wrinkle:0, cheek_raise:0, cheek_puff:0, blush:0.1, head_tilt:0, tear:0, sweat_drop:0, vein_pop:0 };
 let tgtParams = { ...curParams };
 
 // Mood-driven atmosphere
 let moodColor = { r: 13, g: 13, b: 36 };
 let moodTarget = { r: 13, g: 13, b: 36 };
+
+// AI-controlled color fields (Rothko-style abstract color regions)
+let colorFields = [];
+let colorFieldsTarget = [];
 let pokeActive = false, pokeTimer = 0, pokeSparkles = [];
 const POKE_EXPRESSIONS = [
-  { eye_open:0.9, mouth_open:0.5, mouth_curve:0.7, sparkle:1, brow_height:0.9, duration_ms:400 },
-  { eye_curve:0.8, mouth_curve:0.9, sparkle:0.9, brow_height:0.6, duration_ms:300 },
-  { eye_open:0.3, mouth_open:0.3, mouth_curve:0.5, sparkle:0.7, brow_asym:0.6, duration_ms:350 },
+  { eye_open:0.9, mouth_open:0.5, mouth_curve:0.7, sparkle:1, brow_height:0.9, iris_size:0.8, cheek_raise:0.3, duration_ms:400 },
+  { eye_curve:0.8, mouth_curve:0.9, sparkle:0.9, brow_height:0.6, iris_size:0.7, cheek_raise:0.5, blush:0.2, duration_ms:300 },
+  { eye_open:0.3, mouth_open:0.3, mouth_curve:0.5, sparkle:0.7, brow_asym:0.6, lip_pout:0.3, duration_ms:350 },
 ];
 
 // Sequence player
@@ -306,9 +462,15 @@ function setSequence(emotions, reply) {
   sequence = emotions.map(e => ({
     params: {
       eye_curve:e.eye_curve, eye_open:e.eye_open, eye_pupil:e.eye_pupil||0, eye_wink:e.eye_wink||0,
+      eye_tension:e.eye_tension||0, iris_size:e.iris_size??0.5,
       mouth_curve:e.mouth_curve, mouth_open:e.mouth_open, mouth_width:e.mouth_width, mouth_asym:e.mouth_asym||0,
+      lip_pout:e.lip_pout||0, lip_stretch:e.lip_stretch||0, lip_bite:e.lip_bite||0,
+      jaw_drop:e.jaw_drop||0, tongue_out:e.tongue_out||0,
       sparkle:e.sparkle, brow_angle:e.brow_angle, brow_height:e.brow_height, brow_asym:e.brow_asym||0,
-      blush:e.blush??curParams.blush, head_tilt:e.head_tilt||0, tear:e.tear||0,
+      nose_wrinkle:e.nose_wrinkle||0,
+      cheek_raise:e.cheek_raise||0, cheek_puff:e.cheek_puff||0,
+      blush:e.blush??curParams.blush, head_tilt:e.head_tilt||0,
+      tear:e.tear||0, sweat_drop:e.sweat_drop||0, vein_pop:e.vein_pop||0,
     },
     duration: e.duration_ms || 3000,
     label: e.label || '',
@@ -370,16 +532,59 @@ function triggerPokeReaction(cx, cy) {
   }
 }
 
+let currentAffect = null;
+let emaAffect = null;  // EMA-smoothed Panksepp 6D vector
+
+// Panksepp 6D → RGB color mapping
+const AFFECT_COLORS = {
+  seeking: { r: 58, g: 48, b: 32 },  // warm gold-brown
+  play:    { r: 42, g: 26, b: 48 },  // pink-purple
+  care:    { r: 42, g: 24, b: 40 },  // soft pink
+  fear:    { r: 10, g: 22, b: 40 },  // cold blue
+  rage:    { r: 32, g: 16, b: 24 },  // dark red
+  panic:   { r: 26, g: 16, b: 48 },  // deep purple
+};
+
+function updateMoodFromAffect(affect) {
+  if (!affect) return;
+  currentAffect = affect;
+
+  // EMA smoothing: blend new affect into running average to prevent color flicker
+  const alpha = 0.3;  // 30% new, 70% history — single spike fades to 2.7% after 3 updates
+  if (!emaAffect) {
+    emaAffect = { ...affect };
+  } else {
+    for (const dim of Object.keys(AFFECT_COLORS)) {
+      emaAffect[dim] = emaAffect[dim] * (1 - alpha) + (affect[dim] || 0) * alpha;
+    }
+  }
+
+  // Compute moodTarget from smoothed affect
+  let r = 0, g = 0, b = 0, totalWeight = 0;
+  for (const [dim, color] of Object.entries(AFFECT_COLORS)) {
+    const w = Math.max(0, emaAffect[dim] || 0);
+    r += color.r * w; g += color.g * w; b += color.b * w;
+    totalWeight += w;
+  }
+  if (totalWeight > 0) {
+    r /= totalWeight; g /= totalWeight; b /= totalWeight;
+    const maxAffect = Math.max(...Object.values(emaAffect));
+    const brightness = 0.85 + maxAffect * 0.15;
+    r = Math.round(r * brightness); g = Math.round(g * brightness); b = Math.round(b * brightness);
+    moodTarget = { r, g, b };
+  }
+}
+
+// Legacy fallback: emotion label → color for when affect data not available
 function updateMoodFromEmotion(label) {
-  // Map emotion labels to color shifts
+  if (currentAffect) return; // prefer affect-based if available
   const warmLabels = ['开心','惊喜','喜欢','幸福','温暖','兴奋','感动','得意','满足'];
   const coolLabels = ['难过','悲伤','生气','愤怒','害怕','紧张','疲惫','失落','委屈'];
   const labelLower = (label || '').toLowerCase();
   const isWarm = warmLabels.some(w => labelLower.includes(w));
   const isCool = coolLabels.some(c => labelLower.includes(c));
-  if (isWarm) moodTarget = { r: 22, g: 16, b: 40 };  // warm purple-gold
-  else if (isCool) moodTarget = { r: 8, g: 12, b: 32 }; // cool deep blue
-  // else stay neutral
+  if (isWarm) moodTarget = { r: 22, g: 16, b: 40 };
+  else if (isCool) moodTarget = { r: 8, g: 12, b: 32 };
 }
 
 function circadianBaseColor() {
@@ -401,6 +606,76 @@ function circadianBrightness() {
   return 0.35;
 }
 
+// ── Mood → CSS variable sync ──
+let _lastMoodCSS = { r: 0, g: 0, b: 0 };
+
+function updateMoodCSS() {
+  const r = Math.round(moodColor.r);
+  const g = Math.round(moodColor.g);
+  const b = Math.round(moodColor.b);
+  if (r === _lastMoodCSS.r && g === _lastMoodCSS.g && b === _lastMoodCSS.b) return;
+  _lastMoodCSS = { r, g, b };
+
+  const root = document.documentElement;
+  root.style.setProperty('--mood-r', String(r));
+  root.style.setProperty('--mood-g', String(g));
+  root.style.setProperty('--mood-b', String(b));
+
+  // Shift accent color based on mood warmth
+  // Warm (r > b) → shift toward warmer purple; Cool (b > r) → shift toward blue
+  const warmth = (moodColor.r - moodColor.b) / 60;
+  const clampedWarmth = Math.max(-0.5, Math.min(0.5, warmth));
+  const accentR = Math.round(Math.min(255, Math.max(100, 124 + clampedWarmth * 50)));
+  const accentG = Math.round(Math.min(255, Math.max(110, 131 - Math.abs(clampedWarmth) * 30)));
+  const accentB = Math.round(Math.min(255, Math.max(180, 255 - clampedWarmth * 50)));
+  root.style.setProperty('--accent', `rgb(${accentR},${accentG},${accentB})`);
+}
+
+// ── AI-controlled color fields (Rothko-style) ──
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return { r: isNaN(r) ? 255 : r, g: isNaN(g) ? 255 : g, b: isNaN(b) ? 255 : b };
+}
+
+function updateColorFields(dt) {
+  if (colorFieldsTarget.length === 0 && colorFields.length === 0) return;
+
+  const speed = 0.03;
+  // Align array lengths: add new fields or mark removed ones for fade-out
+  while (colorFields.length < colorFieldsTarget.length) {
+    // New field fades in from center
+    const tgt = colorFieldsTarget[colorFields.length];
+    colorFields.push({
+      r: hexToRgb(tgt.color).r, g: hexToRgb(tgt.color).g, b: hexToRgb(tgt.color).b,
+      cx: tgt.cx, cy: tgt.cy, radius: tgt.radius,
+      alpha: 0, // fade in
+    });
+  }
+  while (colorFields.length > colorFieldsTarget.length) {
+    // Fade out extra field
+    const cf = colorFields[colorFields.length - 1];
+    cf.alpha = lerp(cf.alpha, 0, speed * 2);
+    if (cf.alpha < 0.01) { colorFields.pop(); }
+    else break; // only fade one at a time
+  }
+
+  // Lerp existing fields toward target
+  for (let i = 0; i < Math.min(colorFields.length, colorFieldsTarget.length); i++) {
+    const cf = colorFields[i];
+    const tgt = colorFieldsTarget[i];
+    const tgtColor = hexToRgb(tgt.color);
+    cf.r = lerp(cf.r, tgtColor.r, speed);
+    cf.g = lerp(cf.g, tgtColor.g, speed);
+    cf.b = lerp(cf.b, tgtColor.b, speed);
+    cf.cx = lerp(cf.cx, tgt.cx, speed);
+    cf.cy = lerp(cf.cy, tgt.cy, speed);
+    cf.radius = lerp(cf.radius, tgt.radius, speed);
+    cf.alpha = lerp(cf.alpha, 1, speed); // fade in to full
+  }
+}
+
 function updateAtmosphere(dt) {
   // Blend circadian base color with mood color
   const circ = circadianBaseColor();
@@ -414,6 +689,12 @@ function updateAtmosphere(dt) {
   moodTarget.r = lerp(moodTarget.r, circ.r, 0.005);
   moodTarget.g = lerp(moodTarget.g, circ.g, 0.005);
   moodTarget.b = lerp(moodTarget.b, circ.b, 0.005);
+
+  // Sync mood color to CSS variables for global UI linkage
+  updateMoodCSS();
+
+  // Lerp color fields toward target
+  updateColorFields(dt);
 
   // Poke timer
   if (pokeActive) {

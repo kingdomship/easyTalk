@@ -398,7 +398,7 @@ const Constellation = (() => {
   }
 
   function attach(parentEl) {
-    if (canvas) stop();
+    if (canvas) detach();
     canvas = document.createElement("canvas");
     canvas.style.width = "100%";
     canvas.style.height = "100%";

@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 
+from app.llm_config import load_llm_config, LLMConfig
+
 logger = logging.getLogger("emoji-chat")
 
 _background_executor: ThreadPoolExecutor | None = None
@@ -25,17 +27,53 @@ def get_background_executor() -> ThreadPoolExecutor:
     return _background_executor
 
 _llm_client = None
+_current_config_hash: str | None = None
+
+
+def _config_fingerprint(config: LLMConfig) -> str:
+    """Stable fingerprint of LLM config for singleton invalidation."""
+    return f"{config.base_url}|{config.model}|{config.api_key[-8:]}"
+
+
+def get_llm_model() -> str:
+    """Return the configured model name for use in LLM calls."""
+    return load_llm_config().model
 
 
 def get_llm():
-    """Get or create the shared DeepSeek client singleton."""
-    global _llm_client
-    if _llm_client is None:
+    """Get or create the shared OpenAI-compatible client singleton.
+
+    Returns None if no API key is configured.
+    Automatically rebuilds the client when config changes.
+    """
+    global _llm_client, _current_config_hash
+    config = load_llm_config()
+    fp = _config_fingerprint(config)
+
+    if _llm_client is None or _current_config_hash != fp:
+        if not config.api_key:
+            logger.warning("No API key configured — LLM calls will be skipped")
+            _llm_client = None
+            _current_config_hash = None
+            return None
         _llm_client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com",
+            api_key=config.api_key,
+            base_url=config.base_url,
         )
+        _current_config_hash = fp
     return _llm_client
+
+
+def reset_llm():
+    """Reset the LLM client so the next call re-reads config."""
+    global _llm_client, _current_config_hash
+    _llm_client = None
+    _current_config_hash = None
+
+
+def read_api_key() -> str | None:
+    """Resolve API key from config. Returns None if not set."""
+    return load_llm_config().api_key or None
 
 
 def extract_json(raw: str) -> dict | None:

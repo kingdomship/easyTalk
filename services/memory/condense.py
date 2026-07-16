@@ -1,6 +1,4 @@
-"""Condense conversation history
-
-logger = logging.getLogger("emoji-chat") into a compact memory summary.
+"""Condense conversation history into a compact memory summary.
 
 Reads the full JSONL conversation history, extracts the transcript,
 and uses DeepSeek to generate a ~1-2KB summary capturing:
@@ -14,6 +12,10 @@ import logging
 import os
 import sys
 
+logger = logging.getLogger("emoji-chat")
+
+from app.config import archive_lock
+
 
 def extract_transcript(jsonl_path: str) -> str:
     """Extract user/assistant dialogue from archive JSONL.
@@ -21,8 +23,9 @@ def extract_transcript(jsonl_path: str) -> str:
     Supports both the current format ({timestamp, user, assistant})
     and the legacy format ({type, message, ...}).
     """
-    with open(jsonl_path) as f:
-        lines = f.readlines()
+    with archive_lock:
+        with open(jsonl_path) as f:
+            lines = list(f)
 
     transcript = []
     for line in lines:
@@ -94,11 +97,14 @@ AI角色的人设是：风趣、幽默、知性的漂亮女性，主动找话题
 
 def condense(transcript: str, api_key: str) -> str:
     """Call DeepSeek to condense the transcript."""
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
 
     client = get_llm()
+    if client is None:
+        logger.warning("No API key configured — skipping condensation")
+        return transcript
     resp = client.chat.completions.create(
-        model="deepseek-chat",
+        model=get_llm_model(),
         messages=[
             {"role": "system", "content": CONDENSE_PROMPT},
             {"role": "user", "content": f"以下是完整对话记录：\n\n{transcript}"},

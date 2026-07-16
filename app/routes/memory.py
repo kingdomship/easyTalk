@@ -99,23 +99,34 @@ def list_episodes():
 
 
 @router.get("/api/mood/calendar")
-def mood_calendar(days: int = 60):
+def mood_calendar(days: int = 60, date_from: str = "", date_to: str = ""):
     init_db()
-    rows = q(
-        "SELECT date, chat_count, content FROM diary_entries ORDER BY date DESC LIMIT %s",
-        [days],
-    )
+    if date_from or date_to:
+        where = []
+        params = []
+        if date_from:
+            where.append("date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("date <= %s")
+            params.append(date_to)
+        clause = "WHERE " + " AND ".join(where)
+        rows = q(
+            f"SELECT date, chat_count, mood_emoji, content FROM diary_entries {clause} ORDER BY date DESC",
+            params,
+        )
+    else:
+        rows = q(
+            "SELECT date, chat_count, mood_emoji, content FROM diary_entries ORDER BY date DESC LIMIT %s",
+            [days],
+        )
     result = []
     for r in rows:
-        mood_emoji = "✨"
-        for ch in (r.get("content") or ""):
-            if ord(ch) > 127 and 0x1F300 <= ord(ch) <= 0x1F9FF:
-                mood_emoji = ch
-                break
         result.append({
             "date": str(r["date"]),
             "chat_count": r["chat_count"],
-            "mood_emoji": mood_emoji,
+            "mood_emoji": r.get("mood_emoji") or "✨",
+            "has_diary": bool(r.get("content")),
         })
     return result
 

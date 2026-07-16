@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from app.db import q, execute
-from app.config import ARCHIVE_PATH
+from app.config import ARCHIVE_PATH, archive_lock
 
 logger = logging.getLogger("emoji-chat")
 
@@ -75,11 +75,12 @@ def _cleanup_conversation_archive(max_lines: int, keep_lines: int):
     if not os.path.exists(ARCHIVE_PATH):
         return
     try:
-        with open(ARCHIVE_PATH) as f:
-            lines = f.readlines()
-        if len(lines) > max_lines:
-            with open(ARCHIVE_PATH, "w") as f:
-                f.writelines(lines[-keep_lines:])
-            logger.info("Archive truncated: %d → %d lines", len(lines), keep_lines)
+        with archive_lock:
+            with open(ARCHIVE_PATH) as f:
+                lines = f.readlines()
+            if len(lines) > max_lines:
+                with open(ARCHIVE_PATH, "w") as f:
+                    f.writelines(lines[-keep_lines:])
+                logger.info("Archive truncated: %d → %d lines", len(lines), keep_lines)
     except Exception:
         logger.warning("Archive truncation failed", exc_info=True)

@@ -33,11 +33,13 @@ def generate_prediction(user_msg: str, avatar_reply: str):
         return
 
     try:
-        from app.utils import get_llm
+        from app.utils import get_llm, get_llm_model
         client = get_llm()
+        if client is None:
+            return
 
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _PREDICT_PROMPT},
                 {"role": "user", "content": f"用户说：{user_msg[:100]}"},
@@ -96,6 +98,5 @@ def check_prediction(user_msg: str) -> float:
 
 
 def get_prediction_context() -> str:
-    """If previous prediction had large error, return a hint for the AI."""
-    error = check_prediction("")  # can't compute without current msg here
-    return ""  # context is injected via salience boost instead
+    """Prediction error is injected via salience boost during _build_context."""
+    return ""

@@ -110,6 +110,18 @@ def init_db():
         ("tear", "REAL NOT NULL DEFAULT 0"),
         ("mouth_asym", "REAL NOT NULL DEFAULT 0"),
         ("eye_wink", "REAL NOT NULL DEFAULT 0"),
+        ("eye_tension", "REAL NOT NULL DEFAULT 0"),
+        ("iris_size", "REAL NOT NULL DEFAULT 0.5"),
+        ("lip_pout", "REAL NOT NULL DEFAULT 0"),
+        ("lip_stretch", "REAL NOT NULL DEFAULT 0"),
+        ("lip_bite", "REAL NOT NULL DEFAULT 0"),
+        ("jaw_drop", "REAL NOT NULL DEFAULT 0"),
+        ("tongue_out", "REAL NOT NULL DEFAULT 0"),
+        ("nose_wrinkle", "REAL NOT NULL DEFAULT 0"),
+        ("cheek_raise", "REAL NOT NULL DEFAULT 0"),
+        ("cheek_puff", "REAL NOT NULL DEFAULT 0"),
+        ("sweat_drop", "REAL NOT NULL DEFAULT 0"),
+        ("vein_pop", "REAL NOT NULL DEFAULT 0"),
     ]:
         try:
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
@@ -151,6 +163,18 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    # Diary entries — dual-perspective columns
+    for col, typ in [
+        ("user_content", "TEXT DEFAULT ''"),
+        ("mood_emoji", "VARCHAR(10) DEFAULT '✨'"),
+        ("user_mood_emoji", "VARCHAR(10) DEFAULT ''"),
+        ("has_user_diary", "BOOLEAN DEFAULT FALSE"),
+    ]:
+        try:
+            execute(f"ALTER TABLE diary_entries ADD COLUMN IF NOT EXISTS {col} {typ}")
+        except Exception:
+            pass
 
     # News items
     execute("""

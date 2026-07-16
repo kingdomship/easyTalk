@@ -100,10 +100,12 @@ def llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
         cand_lines.append(f"[{i}] 用户: {user}")
 
     try:
-        from app.utils import get_llm
+        from app.utils import get_llm, get_llm_model
         client = get_llm()
+        if client is None:
+            return candidates[:10]
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _RERANK_PROMPT.format(
                     query=query,

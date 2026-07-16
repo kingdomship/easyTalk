@@ -18,6 +18,7 @@ import random
 from datetime import datetime, timezone
 
 from app.db import q, execute
+from app.utils import get_llm_model
 
 logger = logging.getLogger("emoji-chat")
 
@@ -65,7 +66,7 @@ def _seconds_since_last_chat() -> float:
 
 
 def _get_llm_client():
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
     return get_llm()
 
 
@@ -89,8 +90,10 @@ def idle_thought():
 
     try:
         client = _get_llm_client()
+        if client is None:
+            return
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _IDLE_THOUGHT_PROMPT},
                 {"role": "user", "content": "（星空安静地闪烁...）"},
@@ -134,25 +137,56 @@ def mood_fluctuation():
 
 
 def diary_seed():
-    """If idle thoughts have accumulated, generate a diary draft entry.
+    """Merge accumulated idle thoughts into an inspiration seed for diary.
 
-    Runs hourly. Only generates if there are new thoughts since last diary.
+    Runs hourly. When enough idle thoughts have accumulated, uses LLM to
+    merge them into a 30-60 word inspiration snippet that can later be
+    injected into the no-chat diary prompt.
     """
-    # Check if we have idle thoughts since last diary
-    last_diary = q(
-        "SELECT MAX(date) AS last_date FROM diary_entries",
-        fetch="one",
-    )
-
+    # Collect idle thoughts from the last 2 hours
     thoughts = q(
-        "SELECT content FROM idle_thoughts ORDER BY id DESC LIMIT 10"
+        "SELECT content FROM idle_thoughts "
+        "WHERE EXTRACT(EPOCH FROM (NOW() - created_at)) < 7200 "
+        "AND content NOT LIKE '[灵感]%' "
+        "ORDER BY id DESC"
     )
-    if not thoughts:
+    if len(thoughts) < 3:
         return
 
-    # Simple: append thoughts as a "mood log" entry in diary
-    # The main diary generation handles full narrative
-    logger.info("Accumulated %d idle thoughts for diary seeding", len(thoughts))
+    # Check if we already seeded recently (within last 2 hours)
+    last_seed = q(
+        "SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs "
+        "FROM idle_thoughts WHERE content LIKE '[灵感]%' "
+        "ORDER BY id DESC LIMIT 1",
+        fetch="one",
+    )
+    if last_seed and last_seed["secs"] and float(last_seed["secs"]) < 7200:
+        return
+
+    combined = "\n".join([t["content"][:80] for t in thoughts[:5]])
+
+    try:
+        client = _get_llm_client()
+        if client is None:
+            return
+        resp = client.chat.completions.create(
+            model=get_llm_model(),
+            messages=[
+                {"role": "system", "content": "将以下零散的思绪合并成一段30-60字的灵感片段，像一个写日记前的随手笔记。用第一人称，自然口语化。直接输出，不要引号。"},
+                {"role": "user", "content": combined},
+            ],
+            temperature=0.7,
+            max_tokens=100,
+        )
+        seed = resp.choices[0].message.content.strip()
+        if seed:
+            execute(
+                "INSERT INTO idle_thoughts (content) VALUES (%s)",
+                [f"[灵感] {seed[:150]}"],
+            )
+            logger.info("Diary seed: %s", seed[:60])
+    except Exception:
+        logger.warning("Diary seed generation failed", exc_info=True)
 
 
 def system2_consolidation():

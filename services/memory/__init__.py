@@ -1,7 +1,7 @@
 """Memory system — storage, retrieval, clustering, and narrative distillation."""
 
 from services.memory.loader import build_user_context
-from services.memory.search import index_turn, search_similar, build_memory_context, set_llm_client
+from services.memory.search import index_turn, search_similar, build_memory_context
 from services.memory.clustering import build_constellation
 from services.memory.crystallization import maybe_crystallize, get_crystal_context, get_crystals, reinforce_crystal
 from services.memory.narrative import detect_situations, distill_episode, get_narrative_context, get_situations, get_episodes

@@ -15,6 +15,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
+from app.utils import get_llm_model
 
 logger = logging.getLogger("emoji-chat")
 
@@ -55,7 +56,7 @@ def _get_user_entity_id() -> int:
 
 
 def _get_llm():
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
     return get_llm()
 
 
@@ -107,8 +108,10 @@ def extract_from_message(msg: str) -> list[dict]:
         return []
     try:
         client = _get_llm()
+        if client is None:
+            return []
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _EXTRACT_PROMPT},
                 {"role": "user", "content": msg},

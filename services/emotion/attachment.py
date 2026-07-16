@@ -19,7 +19,7 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-from app.config import ARCHIVE_PATH, STYLE_PATH
+from app.config import ARCHIVE_PATH, STYLE_PATH, archive_lock
 
 _STYLE_PATH = STYLE_PATH
 _CHECK_EVERY = 30
@@ -43,8 +43,9 @@ def _load_recent_user_messages(n: int = 20) -> list[str]:
     messages = []
     try:
         if os.path.exists(archive):
-            with open(archive) as f:
-                lines = f.readlines()
+            with archive_lock:
+                with open(archive) as f:
+                    lines = f.readlines()
             for line in lines[-n * 3:]:
                 try:
                     rec = json.loads(line)
@@ -70,8 +71,9 @@ def analyze_attachment():
         archive = ARCHIVE_PATH
         if not os.path.exists(archive):
             return
-        with open(archive) as f:
-            line_count = sum(1 for _ in f)
+        with archive_lock:
+            with open(archive) as f:
+                line_count = sum(1 for _ in f)
         if line_count - _last_check < _CHECK_EVERY:
             return
         _last_check = line_count
@@ -80,13 +82,15 @@ def analyze_attachment():
         if len(messages) < 8:
             return
 
-        from app.utils import get_llm
+        from app.utils import get_llm, get_llm_model
         client = get_llm()
+        if client is None:
+            return
 
         numbered = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(messages[-20:]))
         try:
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=get_llm_model(),
                 messages=[
                     {"role": "system", "content": _STYLE_PROMPT},
                     {"role": "user", "content": f"用户最近的发言：\n\n{numbered}"},

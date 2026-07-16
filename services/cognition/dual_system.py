@@ -13,6 +13,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
+from app.utils import get_llm_model
 
 logger = logging.getLogger("emoji-chat")
 
@@ -115,7 +116,7 @@ def gate_decision(msg: str, affect: dict | None = None,
 
 
 def _get_llm():
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
     return get_llm()
 
 
@@ -131,8 +132,10 @@ def detect_contradictions(user_msg: str) -> dict | None:
             return None
 
         client = _get_llm()
+        if client is None:
+            return None
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _CONTRADICT_PROMPT.format(
                     kg_context=kg_ctx[:800],
@@ -164,8 +167,10 @@ def assess_impact(user_msg: str, avatar_reply: str) -> dict | None:
         return None
     try:
         client = _get_llm()
+        if client is None:
+            return None
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _IMPACT_PROMPT.format(
                     user_msg=user_msg[:200],

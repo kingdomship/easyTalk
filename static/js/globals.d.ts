@@ -1,9 +1,14 @@
-// ── Expression system ──
+// ── Expression system (27 params) ──
 
 interface ExpressionParams {
-  eye_curve: number; eye_open: number; eye_pupil: number;
-  mouth_curve: number; mouth_open: number; mouth_width: number;
+  eye_curve: number; eye_open: number; eye_pupil: number; eye_wink: number;
+  eye_tension: number; iris_size: number;
+  mouth_curve: number; mouth_open: number; mouth_width: number; mouth_asym: number;
+  lip_pout: number; lip_stretch: number; lip_bite: number; jaw_drop: number; tongue_out: number;
   sparkle: number; brow_angle: number; brow_height: number; brow_asym: number;
+  nose_wrinkle: number;
+  cheek_raise: number; cheek_puff: number; blush: number;
+  head_tilt: number; tear: number; sweat_drop: number; vein_pop: number;
 }
 
 interface EmotionFrame {
@@ -13,9 +18,14 @@ interface EmotionFrame {
 }
 
 interface RawEmotion {
-  eye_curve?: number; eye_open?: number; eye_pupil?: number;
-  mouth_curve?: number; mouth_open?: number; mouth_width?: number;
+  eye_curve?: number; eye_open?: number; eye_pupil?: number; eye_wink?: number;
+  eye_tension?: number; iris_size?: number;
+  mouth_curve?: number; mouth_open?: number; mouth_width?: number; mouth_asym?: number;
+  lip_pout?: number; lip_stretch?: number; lip_bite?: number; jaw_drop?: number; tongue_out?: number;
   sparkle?: number; brow_angle?: number; brow_height?: number; brow_asym?: number;
+  nose_wrinkle?: number;
+  cheek_raise?: number; cheek_puff?: number; blush?: number;
+  head_tilt?: number; tear?: number; sweat_drop?: number; vein_pop?: number;
   duration_ms?: number; label?: string;
   duration?: number;
 }
@@ -50,6 +60,29 @@ interface MemoryStar {
   color: string;
 }
 
+// ── Constellation ──
+
+interface GraphNode {
+  id: string; label: string; x: number; y: number;
+  vx: number; vy: number; radius: number; color: string;
+  isCore: boolean; galaxy: string | null;
+  tag: string; summary: string; importance: number;
+  galaxyName?: string; clusterSize?: number; opacity?: number;
+  onClick?: () => void;
+}
+
+interface GraphEdge {
+  source: string; target: string; weight: number;
+}
+
+interface ConstellationAPI {
+  init(data: { nodes: GraphNode[]; edges: GraphEdge[]; coreId?: string; galaxies?: Array<{ id: string; label: string; color: string }> }): void;
+  attach(canvas: HTMLCanvasElement): void;
+  detach(): void;
+  stop(): void;
+  clearSelection(): void;
+}
+
 interface PokeSparkle {
   x: number; y: number;
   vx: number; vy: number;
@@ -69,6 +102,11 @@ interface RGB {
   r: number; g: number; b: number;
 }
 
+interface PankseppAffect {
+  seeking: number; play: number; care: number;
+  fear: number; rage: number; panic: number;
+}
+
 // ── API ──
 
 interface ChatResponse {
@@ -80,16 +118,29 @@ interface ChatResponse {
 }
 
 interface SSEEvent {
-  type: 'emotions' | 'text' | 'done' | 'error';
+  type: 'emotions' | 'text' | 'done' | 'error' | 'thinking';
   emotions?: RawEmotion[];
   text?: string;
   source?: string;
   label?: string;
+  affect?: PankseppAffect;
+  color_fields?: ColorField[];
+}
+
+interface ColorField {
+  color: string;
+  cx: number;
+  cy: number;
+  radius: number;
 }
 
 interface DiaryEntry {
   date: string; content: string;
   chat_count: number;
+  user_content?: string;
+  mood_emoji?: string;
+  user_mood_emoji?: string;
+  has_user_diary?: boolean;
 }
 
 interface NewsItem {
@@ -100,70 +151,17 @@ interface FacePixel {
   r: number; c: number; color: string;
 }
 
-// ── Global DOM refs (declared in engine.js) ──
+// ── Window extension (ui.js / constellation.js) ──
 
-declare const canvas: HTMLCanvasElement;
-declare const ctx: CanvasRenderingContext2D;
-declare const inputRow: HTMLDivElement;
-declare const input: HTMLInputElement;
-declare const sendBtn: HTMLButtonElement;
-declare const dialog: HTMLDivElement;
-declare const dlgBody: HTMLDivElement;
-declare const dlgClose: HTMLButtonElement;
-declare const topicBubbles: HTMLDivElement;
-declare const auxPanel: HTMLDivElement;
-declare const auxContent: HTMLDivElement;
-declare const auxBack: HTMLButtonElement;
-declare const soundToggle: HTMLButtonElement;
-declare const debugTrigger: HTMLDivElement;
-declare const debugPanel: HTMLDivElement;
+interface ConstellationStarClick {
+  id: string; tag: string; summary: string; importance: number;
+  color: string; galaxy: string | null; galaxyName?: string;
+}
 
-// ── Global state (declared in engine.js) ──
+interface Window {
+  _onConstellationStarClick?: (star: ConstellationStarClick | null) => void;
+}
 
-declare const STATE: { readonly STARFIELD: 'starfield'; readonly CONVERGING: 'converging'; readonly CHAT: 'chat'; readonly AUXILIARY: 'auxiliary' };
-declare let state: 'starfield' | 'converging' | 'chat' | 'auxiliary';
-declare let curParams: ExpressionParams;
-declare let tgtParams: ExpressionParams;
-declare let moodColor: RGB;
-declare let moodTarget: RGB;
-declare let pokeActive: boolean;
-declare let pokeTimer: number;
-declare let pokeSparkles: PokeSparkle[];
-declare let sequence: EmotionFrame[];
-declare let seqIdx: number;
-declare let seqElapsed: number;
-declare let replyText: string;
-declare let microTimer: number | null;
-declare let blinkTimer: number;
-declare let isBlinking: boolean;
-declare let faceBob: number;
-declare let faceFrame: number;
-declare let faceCS: number;
-declare let faceOx: number;
-declare let faceOy: number;
-declare let chatFadeIn: number;
-declare let sparkleParticles: SparkleParticle[];
-declare let soundOn: boolean;
-declare let audioCtx: AudioContext | null;
-declare let meteorShowerTimer: number;
-declare let meteorShowerActive: boolean;
-declare let meteors: Meteor[];
-declare let memoryStars: MemoryStar[];
-declare let stars: Star[];
-declare let functionalPoints: Array<{ star: Star; type: 'diary' | 'news'; data: Record<string, unknown> }>;
-declare let cursorX: number | null;
-declare let cursorY: number | null;
-declare let dlgText: string;
-declare let dlgDisplayed: number;
-declare let dlgTyping: boolean;
-declare let clickCount: number;
-declare let clickTimer: ReturnType<typeof setTimeout> | null;
-declare let pressTimer: ReturnType<typeof setTimeout> | null;
-declare let pressStartX: number;
-declare let pressStartY: number;
-declare let pending: boolean;
-declare let lastT: number;
-declare let convergeStart: number;
 // ── Global functions (declared across files) ──
 
 // engine.js
@@ -177,10 +175,12 @@ declare function setSequence(emotions: RawEmotion[], reply: string): void;
 declare function updateSequence(dt: number): void;
 declare function triggerPokeReaction(cx: number, cy: number): void;
 declare function updateMoodFromEmotion(label: string): void;
+declare function updateMoodFromAffect(affect: PankseppAffect): void;
+declare function updateMoodCSS(): void;
+declare function updateColorFields(dt: number): void;
 declare function circadianBaseColor(): RGB;
 declare function circadianBrightness(): number;
 declare function updateAtmosphere(dt: number): void;
-declare function playTypingSound(): void;
 declare function playTypingSound(): void;
 declare function addDebugLog(level: string, title: string, msg: string, analysis?: string): void;
 declare function escapeHtml(s: string): string;
@@ -208,6 +208,8 @@ declare function initSparkleParticles(): void;
 declare function drawSparkleOverlay(oy: number): void;
 declare function drawStar(s: Star, alpha?: number): void;
 declare function drawConstellations(mx: number | null, my: number | null): void;
+declare function moodStarTint(): string;
+declare function drawColorFields(): void;
 
 // ui.js
 declare function showDialog(text: string, x?: number, y?: number): void;
@@ -215,15 +217,3 @@ declare function checkChoices(text: string): void;
 declare function openAuxiliary(tab?: string): void;
 declare function closeAuxiliary(): void;
 declare function sendMessage(): Promise<void>;
-
-// ── Constants ──
-
-declare const GRID: 32;
-declare const FACE_COLORS: { face: string; faceD: string; outline: string; dark: string; light: string };
-declare const NUM_STARS: 180;
-declare const NUM_SPARKLES: 55;
-declare const CONVERGE_DURATION: 1.5;
-declare const LONG_PRESS_DURATION: 1000;
-declare const MOVE_THRESHOLD: 10;
-declare const POKE_EXPRESSIONS: Array<Partial<ExpressionParams> & { duration_ms: number }>;
-declare const ERROR_PATTERNS: Record<string, { cause: string; fix: string }>;

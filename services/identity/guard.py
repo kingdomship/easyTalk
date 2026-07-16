@@ -14,7 +14,7 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-from app.config import ARCHIVE_PATH
+from app.config import ARCHIVE_PATH, archive_lock
 
 _CHECK_EVERY = 30
 _guard_lock = threading.Lock()
@@ -27,8 +27,9 @@ def _load_recent_replies(n: int = 5) -> list[str]:
     try:
         if os.path.exists(ARCHIVE_PATH):
             from collections import deque
-            with open(ARCHIVE_PATH) as f:
-                last_lines = list(deque(f, maxlen=n * 6))
+            with archive_lock:
+                with open(ARCHIVE_PATH) as f:
+                    last_lines = list(deque(f, maxlen=n * 6))
             for line in reversed(last_lines):
                 try:
                     rec = json.loads(line)
@@ -57,16 +58,17 @@ def maybe_guard():
     try:
         if not os.path.exists(ARCHIVE_PATH):
             return
-        with open(ARCHIVE_PATH) as f:
-            line_count = sum(1 for _ in f)
+        with archive_lock:
+            with open(ARCHIVE_PATH) as f:
+                line_count = sum(1 for _ in f)
         if line_count - _last_check_count < _CHECK_EVERY:
             return
-        _last_check_count = line_count
 
         from services.identity.drift_detector import check_and_intervene
         replies = _load_recent_replies(5)
         for reply in replies:
             check_and_intervene(reply)
+        _last_check_count = line_count
     except Exception:
         logger.warning("Operation failed", exc_info=True)
     finally:

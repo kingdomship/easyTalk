@@ -28,13 +28,17 @@ function makeStar(overrides = {}) {
   };
 }
 
+let _starfieldGen = 0;
+
 function initStarfield() {
   stars = [];
   for (let i = 0; i < NUM_STARS; i++) stars.push(makeStar());
-  // Assign functional points
   functionalPoints = [];
+  // Generation counter prevents race condition on rapid re-init
+  const gen = ++_starfieldGen;
   // Fetch diary and news data to create functional points
   fetch('/api/diary').then(r=>r.json()).then(diaries => {
+    if (_starfieldGen !== gen) return;
     if (!Array.isArray(diaries) || diaries.length === 0) return;
     const recent = diaries.slice(0, 4);
     recent.forEach((d, i) => {
@@ -51,6 +55,7 @@ function initStarfield() {
     });
   }).catch(()=>{});
   fetch('/api/news').then(r=>r.json()).then(news => {
+    if (_starfieldGen !== gen) return;
     if (!Array.isArray(news) || news.length === 0) return;
     const top = news.slice(0, 7);
     top.forEach((n, i) => {
@@ -79,7 +84,11 @@ function updateFacePixelTargets() {
   recomputeFaceLayout();
   const facePixels = getFacePixels(curParams);
   // Shuffle and assign to stars
-  const shuffled = [...facePixels].sort(() => Math.random() - 0.5);
+  const shuffled = [...facePixels];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
   const count = Math.min(stars.length, shuffled.length);
   for (let i = 0; i < stars.length; i++) {
     if (i < count) {
@@ -119,6 +128,37 @@ function drawStar(s, alpha = 1) {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+}
+
+// Mood-driven star color temperature — warm mood → warmer white, cool mood → cooler white
+function moodStarTint() {
+  const warmth = (moodColor.r - moodColor.b) / 255;
+  const strength = 0.12;
+  const tr = Math.round(255 + warmth * 255 * strength);
+  const tg = Math.round(255 - Math.abs(warmth) * 255 * strength * 0.5);
+  const tb = Math.round(255 - warmth * 255 * strength);
+  return 'rgb(' + Math.min(255, Math.max(220, tr)) + ',' + Math.min(255, Math.max(220, tg)) + ',' + Math.min(255, Math.max(220, tb)) + ')';
+}
+
+// Render AI-controlled color fields as soft radial glows (Rothko-style)
+function drawColorFields() {
+  if (colorFields.length === 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  for (const cf of colorFields) {
+    if (cf.alpha < 0.01) continue;
+    const x = cf.cx * canvas.width;
+    const y = cf.cy * canvas.height;
+    const r = cf.radius * Math.max(canvas.width, canvas.height) * 0.7;
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const cr = Math.round(cf.r), cg = Math.round(cf.g), cb = Math.round(cf.b);
+    grad.addColorStop(0, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (cf.alpha * 0.35).toFixed(2) + ')');
+    grad.addColorStop(0.5, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (cf.alpha * 0.12).toFixed(2) + ')');
+    grad.addColorStop(1, 'rgba(' + cr + ',' + cg + ',' + cb + ',0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════
@@ -270,19 +310,8 @@ function checkMemoryStarClick(cx, cy) {
   for (const ms of memoryStars) {
     const dx = cx - ms.x, dy = cy - ms.y;
     if (Math.sqrt(dx*dx + dy*dy) < ms.baseSize * 4) {
+      window._pendingDiaryDate = ms.date;
       openAuxiliary('diary');
-      // Scroll to that date if possible
-      setTimeout(() => {
-        const cards = auxContent.querySelectorAll('.card');
-        for (const card of cards) {
-          if (card.textContent.includes(ms.date)) {
-            card.scrollIntoView({ behavior: 'smooth' });
-            card.style.borderColor = '#ffd700';
-            setTimeout(() => { card.style.borderColor = ''; }, 2000);
-            break;
-          }
-        }
-      }, 500);
       return true;
     }
   }
@@ -366,13 +395,22 @@ function drawStarfield() {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // Overlay AI-controlled color fields (Rothko-style abstract regions)
+  drawColorFields();
+
   const t = performance.now() / 1000;
   const breathe = 1 + 0.06 * Math.sin(t * 0.52); // ~12s breathing cycle
   const circBright = circadianBrightness();
+  const starTint = moodStarTint();
   for (const s of stars) {
     const twinkle = 0.5 + 0.5 * Math.sin(t * s.speed + s.phase);
-    s.brightness = (0.3 + twinkle * 0.7) * circBright * breathe;
-    if (s.isFunctional) s.brightness = (0.6 + twinkle * 0.4) * circBright * breathe;
+    if (s.isFunctional) {
+      s.brightness = (0.6 + twinkle * 0.4) * circBright * breathe;
+      // Keep identity color (gold/cyan) — don't override
+    } else {
+      s.brightness = (0.3 + twinkle * 0.7) * circBright * breathe;
+      s.color = starTint;  // mood-tinted white
+    }
     drawStar(s);
   }
   drawConstellations(cursorX, cursorY);
@@ -476,6 +514,9 @@ function drawConvergence() {
 // ═══════════════════════════════════════════
 let blinkTimer = 0, isBlinking = false;
 let microTimer = null; // micro-expression cooldown
+let microExprKey = '';  // key being micro-expressed
+let microExprOffset = 0;  // offset amount
+let microExprRemaining = 0;  // seconds remaining
 let faceBob = 0, faceFrame = 0;
 
 let sparkleParticles = [];
@@ -509,16 +550,24 @@ function updateChat(dt) {
   }
 
   // Micro-expressions: subtle idle movements when no active sequence
+  // Use time-based decay instead of setTimeout to avoid conflicts with lerp
+  if (microExprRemaining > 0) {
+    microExprRemaining -= dt;
+    if (microExprRemaining <= 0) {
+      // Decay complete — apply final blend back to neutral
+      tgtParams[microExprKey] = (tgtParams[microExprKey] || 0) - microExprOffset * 0.5;
+      microExprKey = '';
+      microExprOffset = 0;
+    }
+  }
   if (microTimer !== null) microTimer -= dt;
   if (microTimer === null || microTimer <= 0) {
     microTimer = 2 + Math.random() * 4; // every 2-6 seconds
-    // Brief micro-movement on a random param
-    const microKeys = ['eye_pupil', 'brow_asym', 'mouth_width', 'blush', 'head_tilt'];
-    const key = microKeys[Math.floor(Math.random() * microKeys.length)];
-    const orig = tgtParams[key];
-    const offset = (Math.random() - 0.5) * 0.04;
-    tgtParams[key] = orig + offset;
-    setTimeout(() => { tgtParams[key] = orig; }, 300 + Math.random() * 200);
+    const microKeys = ['eye_pupil', 'brow_asym', 'mouth_width', 'blush', 'head_tilt', 'cheek_raise', 'eye_tension', 'iris_size'];
+    microExprKey = microKeys[Math.floor(Math.random() * microKeys.length)];
+    microExprOffset = (Math.random() - 0.5) * 0.04;
+    microExprRemaining = 0.3 + Math.random() * 0.2; // 300-500ms
+    tgtParams[microExprKey] = (tgtParams[microExprKey] || 0) + microExprOffset;
   }
 
   // Lerp params — faster speed since tgtParams already has eased interpolation
@@ -545,79 +594,132 @@ function drawFaceOnCanvas(params, oy) {
   ctx.ellipse(shx, shy, 25 * faceCS, 10 * faceCS, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Face circle (radius 29, outline 27, darker edge 24)
+  // Face circle (radius 29, outline 27, darker edge 24) — with cheek_puff
+  const cheekPuff = params.cheek_puff || 0;
   for (let r = 0; r < GRID; r++)
     for (let cc = 0; cc < GRID; cc++) {
       const d = fd(r, cc);
-      if (d > 29) continue;
+      let cheekFactor = 0;
+      if (cheekPuff > 0) {
+        const lDist = Math.sqrt((r-27)**2 + (cc-11)**2);
+        const rDist = Math.sqrt((r-27)**2 + (cc-53)**2);
+        const cheekDist = Math.min(lDist, rDist);
+        if (cheekDist < 14) cheekFactor = Math.max(0, 1 - cheekDist/14);
+      }
+      const radius = 29 + cheekPuff * 3 * cheekFactor;
+      if (d > radius) continue;
       ctx.fillStyle = d > 27 ? FACE_COLORS.outline : (d > 24 ? FACE_COLORS.faceD : FACE_COLORS.face);
       ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
     }
 
-  // Blush — semi-transparent pink overlay, always slightly visible
+  // Blush — with cheek_raise shifting circles up
   const blushVal = params.blush || 0;
+  const cheekRaise = params.cheek_raise || 0;
   const blushAlpha = 0.08 + blushVal * 0.7;
   if (blushAlpha > 0.02) {
     ctx.globalAlpha = blushAlpha;
     ctx.fillStyle = FACE_COLORS.blush;
-    for (let r = 19; r <= 35; r++) {
+    const blushCenterR = Math.round(27 - cheekRaise * 5);
+    const blushVR = Math.round(8 - cheekRaise * 3);
+    for (let r = blushCenterR - blushVR; r <= blushCenterR + blushVR; r++) {
       for (let cc = 3; cc <= 19; cc++) {
-        if (Math.sqrt((r-27)**2 + (cc-11)**2) < 8)
+        const vrDist = (r - blushCenterR) / Math.max(1, blushVR);
+        if (Math.sqrt((r-blushCenterR)**2 + (cc-11)**2) < blushVR && vrDist > -1.2)
           ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
       }
     }
-    for (let r = 19; r <= 35; r++) {
+    for (let r = blushCenterR - blushVR; r <= blushCenterR + blushVR; r++) {
       for (let cc = 45; cc <= 61; cc++) {
-        if (Math.sqrt((r-27)**2 + (cc-53)**2) < 8)
+        const vrDist = (r - blushCenterR) / Math.max(1, blushVR);
+        if (Math.sqrt((r-blushCenterR)**2 + (cc-53)**2) < blushVR && vrDist > -1.2)
           ctx.fillRect(ox + cc * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
       }
     }
     ctx.globalAlpha = 1;
   }
 
-  // Eyebrows — pixel blocks, 5 wide
-  const baseR = Math.round(lerp(17, 8, params.brow_height));
+  // Nose wrinkle (AU9) — dark lines at nose bridge
+  const noseWrinkle = params.nose_wrinkle || 0;
+  if (noseWrinkle > 0.05) {
+    ctx.globalAlpha = noseWrinkle * 0.6;
+    ctx.fillStyle = FACE_COLORS.dark;
+    for (let c = 30; c <= 33; c++) ctx.fillRect(ox + c * faceCS, faceOy + 15 * faceCS + oy, faceCS, faceCS);
+    for (let c = 29; c <= 34; c++) ctx.fillRect(ox + c * faceCS, faceOy + 16 * faceCS + oy, faceCS, faceCS);
+    ctx.globalAlpha = 1;
+  }
+
+  // Eyebrows — 5px wide with visible arch peak
+  const baseR = Math.round(lerp(18, 10, params.brow_height));
   const asym = params.brow_asym || 0;
   const lOff = -Math.round(asym * 4), rOff = Math.round(asym * 4);
   ctx.fillStyle = FACE_COLORS.dark;
   for (let i = 0; i < 5; i++) {
-    const cc = 14 + i, isInner = i >= 2;
-    const rowOff = isInner ? -Math.round(params.brow_angle * 3) : Math.round(params.brow_angle * 3);
-    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + rowOff + lOff) * faceCS + oy, faceCS, faceCS);
+    const cc = 14 + i;
+    const archOff = (i === 1 || i === 2) ? -1 : 0;
+    const tiltOff = Math.round((cc - 16) * (params.brow_angle||0) * 2);
+    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + archOff + tiltOff + lOff) * faceCS + oy, faceCS, faceCS);
   }
   for (let i = 0; i < 5; i++) {
-    const cc = 43 + i, isInner = i <= 2;
-    const rowOff = isInner ? -Math.round(params.brow_angle * 3) : Math.round(params.brow_angle * 3);
-    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + rowOff + rOff) * faceCS + oy, faceCS, faceCS);
+    const cc = 45 + i;
+    const archOff = (i === 1 || i === 2) ? -1 : 0;
+    const tiltOff = Math.round((cc - 47) * (params.brow_angle||0) * 2);
+    ctx.fillRect(ox + cc * faceCS, faceOy + (baseR + archOff + tiltOff + rOff) * faceCS + oy, faceCS, faceCS);
   }
 
-  // Eyes — pixel blocks, wink support
+  // Eyes — with eye_curve, eye_tension, iris_size
   function drawEye(cc) {
     const bR = 20;
     let eyeOpen = params.eye_open;
     const wink = params.eye_wink || 0;
     if (wink < -0.5 && cc === 20) eyeOpen = 0.05;
     if (wink > 0.5 && cc === 43) eyeOpen = 0.05;
-    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 3);
+    const rows = eyeOpen < 0.2 ? 1 : (eyeOpen < 0.6 ? 2 : 4);
+    const outerDir = cc < 30 ? 1 : -1;
+    const ec = params.eye_curve || 0;
+    const tension = params.eye_tension || 0;
+    const tc = Math.round(tension * 2); // 0..2 px shrink
     const px = [];
     if (rows === 1) {
-      for (let c = cc - 5; c <= cc + 5 && px.length < 10; c++) px.push({ r: bR, c });
+      for (let c = cc - 2; c <= cc + 1; c++) px.push({ r: bR, c });
+      px.push({ r: bR - 1, c: cc + outerDir * 2 });
+      if (ec > 0.3) px.push({ r: bR - 1, c: cc + outerDir * 3 });
     } else if (rows === 2) {
-      for (let c = cc - 3; c <= cc + 3; c++) px.push({ r: bR - 2, c });
-      px.push({ r: bR + Math.round(-params.eye_curve * 4), c: cc - 3 });
-      px.push({ r: bR + Math.round(params.eye_curve * 2), c: cc });
-      px.push({ r: bR + Math.round(-params.eye_curve * 4), c: cc + 3 });
+      const tw = Math.round(tension * 1.5);
+      for (let c = cc - 3 + tw; c <= cc + 2 - tw; c++) px.push({ r: bR - 2, c });
+      for (let c = cc - 2; c <= cc + 1; c++) px.push({ r: bR, c });
     } else {
-      px.push({ r: bR - 4, c: cc - 4 }); px.push({ r: bR - 4, c: cc + 3 });
-      px.push({ r: bR - 2, c: cc - 4 }); px.push({ r: bR - 2, c: cc + 3 });
-      px.push({ r: bR, c: cc - 4 }); px.push({ r: bR, c: cc + 3 });
+      const tTop = Math.round(tension);
+      const ecUp = ec > 0 ? Math.round(ec) : 0;
+      const ecDn = ec < 0 ? Math.round(-ec) : 0;
+      for (let c = cc - 2 + tTop; c <= cc + 1 - tTop; c++) {
+        const rowOff = (ec > 0 && (c === cc-2 || c === cc+1)) ? ecUp : 0;
+        px.push({ r: bR - 4 + rowOff, c });
+      }
+      for (let c = cc - 4 + tc; c <= cc + 3 - tc; c++) px.push({ r: bR - 3, c });
+      for (let c = cc - 4 + tc; c <= cc + 3 - tc; c++) px.push({ r: bR - 2, c });
+      for (let c = cc - 3 + tc; c <= cc + 2 - tc; c++) {
+        const rowOff = (ec < 0 && (c === cc-3 || c === cc+2)) ? ecDn : 0;
+        px.push({ r: bR - 1 + rowOff, c });
+      }
     }
-    const ps = Math.round((params.eye_pupil || 0) * 3.5);
+    const ps = Math.round((params.eye_pupil || 0) * 3);
     for (let k = 0; k < px.length; k++) px[k].c += ps;
-    const hlR = rows === 1 ? bR : bR - 2;
-    px.push({ r: hlR, c: cc + 3 + ps, hl: true });
+    const iris = params.iris_size != null ? params.iris_size : 0.5;
+    const sparkle = params.sparkle || 0;
+    const hlR = rows === 1 ? bR : (rows === 2 ? bR - 2 : bR - 3);
+    px.push({ r: hlR, c: cc + 2 + ps, hl: true });
+    if (rows >= 2) {
+      const hlSpread = Math.round(iris * 2);
+      px.push({ r: hlR + 1, c: cc + 2 + hlSpread + ps, hl: true, hl2: true });
+    }
+    if (rows >= 3 && iris > 0.6) {
+      px.push({ r: hlR, c: cc + 4 + ps, hl: true, hl3: true });
+    }
     for (const ep of px) {
-      ctx.fillStyle = ep.hl ? lerpH(FACE_COLORS.dark, FACE_COLORS.light, params.sparkle) : FACE_COLORS.dark;
+      if (ep.hl3) ctx.fillStyle = lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle * 0.25 * iris);
+      else if (ep.hl2) ctx.fillStyle = lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle * 0.5 * iris);
+      else if (ep.hl) ctx.fillStyle = lerpH(FACE_COLORS.dark, FACE_COLORS.light, sparkle);
+      else ctx.fillStyle = FACE_COLORS.dark;
       ctx.fillRect(ox + ep.c * faceCS, faceOy + ep.r * faceCS + oy, faceCS, faceCS);
     }
   }
@@ -634,24 +736,89 @@ function drawFaceOnCanvas(params, oy) {
     ctx.fillRect(ox + 19 * faceCS, faceOy + (tearR + 1) * faceCS + oy, faceCS, faceCS);
   }
 
-  // Mouth — pixel blocks, asymmetric
-  const mcc = 32, hw = Math.round(lerp(4, 11, params.mouth_width));
-  const cs = mcc - hw, ce = mcc + hw;
+  // Sweat drop — left temple (anime style)
+  const sweat = params.sweat_drop || 0;
+  if (sweat > 0.05) {
+    ctx.fillStyle = lerpH(FACE_COLORS.face, '#ccddff', sweat);
+    ctx.fillRect(ox + 7 * faceCS, faceOy + 9 * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 6 * faceCS, faceOy + 10 * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 7 * faceCS, faceOy + 10 * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 8 * faceCS, faceOy + 10 * faceCS + oy, faceCS, faceCS);
+    ctx.fillRect(ox + 7 * faceCS, faceOy + 11 * faceCS + oy, faceCS, faceCS);
+  }
+
+  // Vein pop — temple cross/cruciform
+  const vein = params.vein_pop || 0;
+  if (vein > 0.05) {
+    ctx.globalAlpha = vein * 0.8;
+    ctx.fillStyle = '#8b0000';
+    for (let c = 7; c <= 9; c++) ctx.fillRect(ox + c * faceCS, faceOy + 9 * faceCS + oy, faceCS, faceCS);
+    for (let r = 8; r <= 10; r++) ctx.fillRect(ox + 8 * faceCS, faceOy + r * faceCS + oy, faceCS, faceCS);
+    ctx.globalAlpha = 1;
+  }
+
+  // Mouth — with lip_pout, lip_stretch, lip_bite, jaw_drop, tongue_out
+  const mcc = 32;
+  const lipStretch = params.lip_stretch || 0;
+  let hw = Math.round(lerp(4, 11, params.mouth_width || 0.6));
+  const stretchExtra = Math.round(lipStretch * 3);
+  const cs = mcc - hw - stretchExtra, ce = mcc + hw + stretchExtra;
   const ma = params.mouth_asym || 0;
+  const jawDrop = params.jaw_drop || 0;
+  const lipPout = params.lip_pout || 0;
+  const lipBite = params.lip_bite || 0;
+  const tongueOut = params.tongue_out || 0;
+  const effMouthOpen = Math.max(params.mouth_open || 0, tongueOut > 0.3 ? 0.2 : 0);
+
   ctx.fillStyle = FACE_COLORS.dark;
-  if (params.mouth_open < 0.25) {
+  if (effMouthOpen < 0.25) {
+    const biteShift = Math.round(lipBite * 3);
+    const baseR = 39;
     for (let c = cs; c <= ce; c++) {
       const t = (c - cs) / (ce - cs || 1), edgeF = Math.abs(t - 0.5) * 2;
       const asymOffset = Math.round(ma * (c - mcc) * 0.4);
-      ctx.fillRect(ox + c * faceCS, faceOy + (39 + Math.round(-params.mouth_curve * edgeF * 4) + asymOffset) * faceCS + oy, faceCS, faceCS);
+      const curveAtten = Math.max(0, 1 - lipStretch * 0.7);
+      ctx.fillRect(ox + c * faceCS, faceOy + (baseR + Math.round(-(params.mouth_curve||0) * edgeF * 4 * curveAtten) + asymOffset - biteShift) * faceCS + oy, faceCS, faceCS);
+    }
+    // Lip bite tooth marks
+    if (lipBite > 0.2) {
+      ctx.fillStyle = lerpH(FACE_COLORS.dark, FACE_COLORS.light, 0.6);
+      ctx.fillRect(ox + mcc * faceCS, faceOy + (baseR - 2 - biteShift) * faceCS + oy, faceCS, faceCS);
+      ctx.fillRect(ox + (mcc+1) * faceCS, faceOy + (baseR - 2 - biteShift) * faceCS + oy, faceCS, faceCS);
+      ctx.fillStyle = FACE_COLORS.dark;
+    }
+    // Lip pout (closed)
+    if (lipPout > 0.1) {
+      const poutRows = Math.round(lipPout * 2);
+      for (let c = cs + 1; c <= ce - 1; c++)
+        for (let pr = 1; pr <= poutRows; pr++)
+          ctx.fillRect(ox + c * faceCS, faceOy + (baseR + pr - biteShift) * faceCS + oy, faceCS, faceCS);
     }
   } else {
-    const topR = 37 - Math.round(params.mouth_open * 1.6), botR = 39 + Math.round(params.mouth_open * 1.6);
-    for (let c = 31; c <= 34; c++) ctx.fillRect(ox + c * faceCS, faceOy + topR * faceCS + oy, faceCS, faceCS);
+    const topR = 37 - Math.round(effMouthOpen * 1.6) - Math.round(jawDrop * 2);
+    const botR = 39 + Math.round(effMouthOpen * 1.6) + Math.round(jawDrop * 5);
+    for (let c = cs + 1; c <= ce - 1; c++) ctx.fillRect(ox + c * faceCS, faceOy + topR * faceCS + oy, faceCS, faceCS);
     for (let c = cs + 1; c <= ce - 1; c++) {
       const isE = (c === cs + 1 || c === ce - 1);
       const asymOffset = Math.round(ma * (c - mcc) * 0.4);
-      ctx.fillRect(ox + c * faceCS, faceOy + (botR + (isE ? Math.round(-params.mouth_curve * 2) : Math.round(params.mouth_curve * 0.7)) + asymOffset) * faceCS + oy, faceCS, faceCS);
+      const curveAtten = Math.max(0, 1 - lipStretch * 0.7);
+      ctx.fillRect(ox + c * faceCS, faceOy + (botR + (isE ? Math.round(-(params.mouth_curve||0) * 2 * curveAtten) : Math.round((params.mouth_curve||0) * 0.7 * curveAtten)) + asymOffset) * faceCS + oy, faceCS, faceCS);
+      if (lipPout > 0.1 && !isE) {
+        const poutRows = Math.round(lipPout * 2);
+        for (let pr = 1; pr <= poutRows; pr++)
+          ctx.fillRect(ox + c * faceCS, faceOy + (botR + pr + asymOffset) * faceCS + oy, faceCS, faceCS);
+      }
+    }
+    // Tongue out
+    if (tongueOut > 0.1) {
+      ctx.fillStyle = lerpH('#ff7799', '#ff5577', tongueOut);
+      const tongueBase = botR + 2;
+      const tongueW = Math.round(lerp(1, 3, tongueOut));
+      for (let rr = 0; rr <= Math.round(tongueOut * 3); rr++) {
+        const rw = tongueW - (rr > 0 ? Math.round(rr * 0.5) : 0);
+        for (let c = mcc - rw; c <= mcc + rw; c++)
+          ctx.fillRect(ox + c * faceCS, faceOy + (tongueBase + rr) * faceCS + oy, faceCS, faceCS);
+      }
     }
   }
 }
@@ -662,6 +829,7 @@ function drawSparkleOverlay(oy) {
   const tiltX = ((curParams.head_tilt || 0) + headBob) * 3 * faceCS;
   const ox = faceOx + tiltX;
   const facePixels = getFacePixels(curParams);
+  if (!facePixels.length) return;
   const fps = facePixels;
   for (const sp of sparkleParticles) {
     const fpIdx = Math.floor(sp.idx / NUM_SPARKLES * fps.length) % fps.length;
@@ -678,15 +846,27 @@ function drawSparkleOverlay(oy) {
 }
 
 function drawChat() {
-  ctx.fillStyle = '#0a0a1e';
+  // Mood-driven radial gradient centered near face position
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const mr = Math.round(moodColor.r), mg = Math.round(moodColor.g), mb = Math.round(moodColor.b);
+  const grad = ctx.createRadialGradient(cx, cy * 0.65, 0, cx, cy, Math.max(canvas.width, canvas.height) * 0.65);
+  grad.addColorStop(0, 'rgb(' + mr + ',' + mg + ',' + mb + ')');
+  grad.addColorStop(0.5, 'rgb(' + Math.round(mr * 0.8) + ',' + Math.round(mg * 0.8) + ',' + Math.round(mb * 0.82) + ')');
+  grad.addColorStop(1, 'rgb(' + Math.round(mr * 0.35) + ',' + Math.round(mg * 0.35) + ',' + Math.round(mb * 0.38) + ')');
+  ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Draw dim background stars
+  // Overlay AI-controlled color fields (Rothko-style abstract regions)
+  drawColorFields();
+
+  // Draw dim background stars with mood-tinted color
   const t = performance.now() / 1000;
+  const starTint = moodStarTint();
   for (let i = 0; i < 25; i++) {
     const s = stars[i];
     const twinkle = 0.5 + 0.5 * Math.sin(t * 1.5 + s.phase);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = starTint;
     ctx.globalAlpha = 0.05 + twinkle * 0.08;
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.size * 0.5, 0, Math.PI * 2);

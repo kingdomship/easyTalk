@@ -1,6 +1,7 @@
 """Centralized path configuration for easyTalk."""
 
 import os
+import threading
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MEMORY_DIR = os.environ.get("MEMORY_DIR", os.path.join(BASE_DIR, "memory"))
@@ -19,3 +20,7 @@ PREDICTION_PATH = os.path.join(MEMORY_DIR, "prediction.json")
 SALIENCE_PREV_PATH = os.path.join(MEMORY_DIR, "salience_prev.json")
 VALENCE_PREV_PATH = os.path.join(MEMORY_DIR, "valence_prev.json")
 PERSONALITY_CONFIG_PATH = os.path.join(MEMORY_DIR, "personality_config.json")
+APIKEY_PATH = os.path.join(MEMORY_DIR, "api_key.txt")
+
+# Lock for thread-safe archive file access
+archive_lock = threading.Lock()

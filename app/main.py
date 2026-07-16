@@ -4,8 +4,9 @@ import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(
@@ -18,7 +19,7 @@ from app.routes import router
 from app.db import init_db
 from app.utils import get_background_executor
 from services.info.news import fetch_all
-from services.reflection.diary import generate_diary
+from services.reflection.diary import generate_diary, generate_user_diary
 from services.emotion.affinity import init_affinity_db
 from services.emotion.affect import init_affect_db
 from services.reflection.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed, system2_consolidation
@@ -85,17 +86,34 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(offline_analysis, "cron", minute="*/7")
     scheduler.add_job(system2_consolidation, "cron", minute="*/23")
     scheduler.start()
+
+    # ── Catch-up: fill gaps from downtime ──────────────────────
+    from app.catchup import catchup_mood
+    catchup_mood()                                          # fast: inline
+    get_background_executor().submit(_run_diary_catchup)    # slow: thread
+    # ────────────────────────────────────────────────────────────
+
     yield
     scheduler.shutdown()
-    if _background_executor:
-        _background_executor.shutdown(wait=False)
+    executor = get_background_executor()
+    executor.shutdown(wait=False)
+
+
+def _run_diary_catchup():
+    """Fire-and-forget diary catch-up for background thread."""
+    from app.catchup import catchup_diaries
+    try:
+        catchup_diaries()
+    except Exception:
+        logger.warning("[catchup] Diary bg task failed", exc_info=True)
 
 
 def generate_daily_diary():
-    """Generate diary for yesterday."""
+    """Generate diaries for yesterday — AI + user perspectives."""
     from datetime import date, timedelta
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     generate_diary(yesterday)
+    generate_user_diary(yesterday)
 
 
 async def fetch_all_news():
@@ -104,4 +122,16 @@ async def fetch_all_news():
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)
+
+
+class CacheControlMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
+app.add_middleware(CacheControlMiddleware)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

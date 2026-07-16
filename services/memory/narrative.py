@@ -20,7 +20,7 @@ import threading
 
 logger = logging.getLogger("emoji-chat")
 
-from app.config import ARCHIVE_PATH, EPISODES_PATH, SITUATIONS_PATH
+from app.config import ARCHIVE_PATH, EPISODES_PATH, SITUATIONS_PATH, archive_lock
 
 _SITUATIONS_PATH = SITUATIONS_PATH
 _EPISODES_PATH = EPISODES_PATH
@@ -65,8 +65,9 @@ def _count_archive_lines() -> int:
     path = ARCHIVE_PATH
     try:
         if os.path.exists(path):
-            with open(path) as f:
-                return sum(1 for _ in f)
+            with archive_lock:
+                with open(path) as f:
+                    return sum(1 for _ in f)
     except Exception:
         logger.warning("Operation failed", exc_info=True)
     return 0
@@ -78,8 +79,9 @@ def _load_archive_range(start: int, count: int) -> list[dict]:
     turns = []
     try:
         if os.path.exists(path):
-            with open(path) as f:
-                lines = f.readlines()
+            with archive_lock:
+                with open(path) as f:
+                    lines = f.readlines()
             for line in lines[start:start + count]:
                 try:
                     rec = json.loads(line)
@@ -130,7 +132,6 @@ def detect_situations():
         total = _count_archive_lines()
         if total - _last_situation_check < _SITUATION_CHECK_EVERY:
             return
-        _last_situation_check = total
 
         # Check how many turns we've already analyzed
         existing = _load_existing_situations()
@@ -156,12 +157,14 @@ def detect_situations():
         if len(numbered) < 6:
             return
 
-        from app.utils import get_llm
+        from app.utils import get_llm, get_llm_model
         client = get_llm()
+        if client is None:
+            return
 
         try:
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=get_llm_model(),
                 messages=[
                     {"role": "system", "content": _SITUATION_PROMPT},
                     {"role": "user", "content": "\n".join(numbered)},
@@ -202,6 +205,7 @@ def detect_situations():
 
         if new_situations:
             _save_situations(new_situations)
+            _last_situation_check = total
             logger.info("Detected %d situations: %s",
                          len(new_situations),
                          [s["title"] for s in new_situations])
@@ -246,7 +250,7 @@ def distill_episode():
                 covered.add(sid)
 
         new_situations = [
-            s for i, s in enumerate(situations)
+            (i, s) for i, s in enumerate(situations)
             if str(i) not in covered
         ]
 
@@ -256,20 +260,22 @@ def distill_episode():
         # Only process if we haven't checked recently
         if len(new_situations) - _last_episode_check < _EPISODE_CHECK_THRESHOLD:
             return
-        _last_episode_check = len(new_situations)
 
-        # Build situation text for the LLM
+        # Take last 8 at most, tracking original indices
+        recent = new_situations[-8:]
         sit_text = "\n".join(
             f"- {s['title']}：{s['summary']}"
-            for s in new_situations[-8:]  # take last 8 at most
+            for _, s in recent
         )
 
-        from app.utils import get_llm
+        from app.utils import get_llm, get_llm_model
         client = get_llm()
+        if client is None:
+            return
 
         try:
             resp = client.chat.completions.create(
-                model="deepseek-chat",
+                model=get_llm_model(),
                 messages=[
                     {"role": "system", "content": _EPISODE_PROMPT.format(
                         situations_text=sit_text,
@@ -289,10 +295,7 @@ def distill_episode():
 
         episode = {
             "narrative": narrative,
-            "situation_ids": [
-                str(len(situations) - len(new_situations) + i)
-                for i in range(min(8, len(new_situations)))
-            ],
+            "situation_ids": [str(idx) for idx, _ in recent],
             "situation_count": len(new_situations),
         }
 
@@ -300,6 +303,7 @@ def distill_episode():
         try:
             with open(_EPISODES_PATH, "a") as f:
                 f.write(json.dumps(episode, ensure_ascii=False) + "\n")
+            _last_episode_check = len(new_situations)
             logger.info("Distilled episode: %s...", narrative[:60])
         except Exception:
             logger.warning("Operation failed", exc_info=True)

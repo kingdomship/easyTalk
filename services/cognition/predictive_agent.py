@@ -18,6 +18,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
+from app.utils import get_llm_model
 
 logger = logging.getLogger("emoji-chat")
 
@@ -39,7 +40,7 @@ _ANALYZE_PROMPT = """分析以下对话上下文，预测用户接下来最可�
 
 
 def _get_llm():
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
     return get_llm()
 
 
@@ -98,8 +99,10 @@ def pre_dialogue_analyze() -> dict | None:
 
     try:
         client = _get_llm()
+        if client is None:
+            return None
         resp = client.chat.completions.create(
-            model="deepseek-chat",
+            model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _ANALYZE_PROMPT},
                 {"role": "user", "content": f"时间背景：{time_ctx}\n\n最近对话：\n{history}\n\n请预测用户接下来最可能的需求、情绪和话题。"},
@@ -174,13 +177,26 @@ def feedback(actual_need: str = "", actual_emotion: str = "",
     if not pred:
         return
 
-    # Simple error score: how many dimensions matched
+    # Count how many dimensions we have actual values for
     matches = 0
-    if actual_need and pred["need"] == actual_need:
-        matches += 1
-    if actual_emotion and pred["emotion"] == actual_emotion:
-        matches += 1
-    error = 1.0 - (matches / 3.0)
+    provided = 0
+    if actual_need:
+        provided += 1
+        if pred["need"] == actual_need:
+            matches += 1
+    if actual_emotion:
+        provided += 1
+        if pred["emotion"] == actual_emotion:
+            matches += 1
+    if actual_topic:
+        provided += 1
+        if pred["topic"] == actual_topic:
+            matches += 1
+
+    if provided == 0:
+        return  # nothing to compare — don't write bogus data
+
+    error = 1.0 - (matches / provided)
 
     try:
         execute(
