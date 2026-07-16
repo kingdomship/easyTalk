@@ -24,6 +24,7 @@ from services.memory.loader import build_user_context
 from services.memory.search import index_turn, build_memory_context
 from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
 from services.identity.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
+from services.identity.sprite_prompt import SPRITE_SYSTEM_PROMPT, build_sprite_user_prompt
 from services.emotion.affect import update_affect, get_affect_context, get_regulation_strategy, get_valence_context
 from services.memory.crystallization import maybe_crystallize, get_crystal_context
 from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
@@ -311,24 +312,25 @@ def _fallback_emotion():
     return [f]
 
 
-def _upsert(label: str, frame: dict, reply: str, seq: str | None):
+def _upsert(label: str, frame: dict, reply: str, seq: str | None, color_fields: list | None = None):
     values = frame_to_db_values(frame)
     col_names = list(EMOTION_PARAMS.keys())
+    cf_json = json.dumps(color_fields, ensure_ascii=False) if color_fields else None
     existing = q("SELECT id FROM emotion_cache WHERE label = %s", [label], fetch="one")
     if existing:
         set_clause = ", ".join(f"{c}=%s" for c in col_names)
         execute(
             f"UPDATE emotion_cache SET {set_clause}, reply=%s, sequence_data=%s, "
-            f"use_count=use_count+1, updated_at=NOW() WHERE id=%s",
-            values + [reply, seq, existing["id"]],
+            f"color_fields=%s, use_count=use_count+1, updated_at=NOW() WHERE id=%s",
+            values + [reply, seq, cf_json, existing["id"]],
         )
     else:
         cols = ", ".join(col_names)
         phs = ", ".join(["%s"] * len(col_names))
         execute(
-            f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data) "
-            f"VALUES (%s, {phs}, %s, %s)",
-            [label] + values + [reply, seq],
+            f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data, color_fields) "
+            f"VALUES (%s, {phs}, %s, %s, %s)",
+            [label] + values + [reply, seq, cf_json],
         )
 
 
@@ -343,6 +345,8 @@ def _row_to_response(row):
                 f["duration_ms"] = 3000
     else:
         result["emotions"] = [{**result, "duration_ms": 3000}]
+    cf = row.get("color_fields")
+    result["color_fields"] = json.loads(cf) if isinstance(cf, str) else (cf or [])
     return result
 
 
@@ -576,6 +580,42 @@ def _call_llm(messages: list) -> tuple:
         return None, random.choice(_FALLBACKS), []
 
 
+def _generate_sprites(keywords: list) -> list:
+    """Second-stage LLM call: generate pixel sprites from keywords.
+
+    Runs synchronously (called via asyncio.to_thread). Uses a focused
+    short prompt so the call completes quickly, often during text streaming.
+    """
+    if not keywords:
+        return []
+    client = get_llm()
+    if client is None:
+        return []
+    messages = [
+        {"role": "system", "content": SPRITE_SYSTEM_PROMPT},
+        {"role": "user", "content": build_sprite_user_prompt(keywords)},
+    ]
+    try:
+        resp = client.chat.completions.create(
+            model=get_llm_model(), messages=messages,
+            temperature=0.7, max_tokens=4096,
+        )
+        raw = resp.choices[0].message.content
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            sprites = json.loads(raw[start:end])
+            if isinstance(sprites, list):
+                valid = [s for s in sprites if isinstance(s, dict) and s.get("grid")]
+                logger.info("_generate_sprites: %d sprites generated for %s", len(valid), keywords)
+                return valid
+        logger.warning("_generate_sprites: no valid JSON array in response: %s", raw[:200])
+        return []
+    except Exception as e:
+        logger.error("_generate_sprites failed: %s", e)
+        return []
+
+
 @router.post("/api/chat")
 async def chat(req: ChatRequest):
     init_db()
@@ -646,12 +686,14 @@ async def chat(req: ChatRequest):
     if fallback:
         return {"emotions": _fallback_emotion(), "reply": fallback, "source": "fallback"}
 
-    emotions = data.get("emotions", []) or [make_default_frame()]
+    emotions = data.get("emotions", [])
+    if not isinstance(emotions, list) or not emotions:
+        emotions = [make_default_frame()]
     parsed = [clamp_frame(f) for f in emotions]
     for f in parsed:
         f.update(jitter_frame(f))
         f.update(scale_emotion_params(f))
-    result = {"emotions": parsed, "reply": str(data.get("reply", "...")), "color_fields": data.get("color_fields") or []}
+    result = {"emotions": parsed, "reply": str(data.get("reply", "...")), "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or []}
 
     new_row = q(
         "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
@@ -679,8 +721,8 @@ async def chat(req: ChatRequest):
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
-    _upsert(key, first, result["reply"], seq)
-    _upsert(first["label"], first, result["reply"], seq)
+    _upsert(key, first, result["reply"], seq, result.get("color_fields"))
+    _upsert(first["label"], first, result["reply"], seq, result.get("color_fields"))
 
     result["source"] = "llm"
     return result
@@ -739,7 +781,7 @@ async def chat_stream(req: ChatRequest):
                 for f in r.get("emotions", []):
                     f.update(jitter_frame(f))
                     f.update(scale_emotion_params(f))
-                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': row.get('color_fields') or []}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': r.get('color_fields') or []}, ensure_ascii=False)}\n\n"
                 reply = row["reply"]
                 for i in range(0, len(reply), 2):
                     yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
@@ -760,7 +802,9 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'text': fallback}, ensure_ascii=False)}\n\n"
             return
 
-        emotions = data.get("emotions", []) or [make_default_frame()]
+        emotions = data.get("emotions", [])
+        if not isinstance(emotions, list) or not emotions:
+            emotions = [make_default_frame()]
         parsed = [clamp_frame(f) for f in emotions]
         for f in parsed:
             f.update(jitter_frame(f))
@@ -794,16 +838,56 @@ async def chat_stream(req: ChatRequest):
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
-        _upsert(key, first, reply, seq)
-        _upsert(first["label"], first, reply, seq)
+        _upsert(key, first, reply, seq, data.get("color_fields"))
+        _upsert(first["label"], first, reply, seq, data.get("color_fields"))
 
         lbl = parsed[0]["label"] if parsed else "neutral"
         cf = data.get("color_fields") or []
         yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf}, ensure_ascii=False)}\n\n"
 
+        # Start background sprite generation if keywords present
+        raw_keywords = data.get("sprite_keywords") or []
+        # Handle both string and list formats from LLM
+        if isinstance(raw_keywords, str):
+            sprite_keywords = [raw_keywords]
+        elif isinstance(raw_keywords, list):
+            sprite_keywords = [k for k in raw_keywords if isinstance(k, str)]
+        else:
+            sprite_keywords = []
+        if sprite_keywords:
+            logger.info("Sprite keywords: %s", sprite_keywords)
+        sprite_task = None
+        if sprite_keywords:
+            sprite_task = asyncio.create_task(
+                asyncio.to_thread(_generate_sprites, sprite_keywords)
+            )
+
+        sprites_sent = False
         for i in range(0, len(reply), 2):
             yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
+            # Check if sprites finished during text streaming
+            if sprite_task and not sprites_sent and sprite_task.done():
+                try:
+                    sprites = sprite_task.result()
+                    if sprites:
+                        logger.info("Sending %d sprites during text streaming", len(sprites))
+                        yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
+                    sprites_sent = True
+                except Exception as e:
+                    logger.error("Sprite task failed (during stream): %s", e)
+                    sprites_sent = True
             await asyncio.sleep(0.03)
+
+        # If sprites not ready yet, wait for them
+        if sprite_task and not sprites_sent:
+            try:
+                sprites = await sprite_task
+                if sprites:
+                    logger.info("Sending %d sprites after text streaming", len(sprites))
+                    yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.error("Sprite task failed (after stream): %s", e)
+
         yield f"data: {json.dumps({'type': 'done', 'source': 'llm'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

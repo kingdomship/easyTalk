@@ -553,7 +553,7 @@ const Constellation = (() => {
       }
     }, { passive: false });
 
-    canvas.addEventListener("touchend", () => {
+    function onTouchEnd() {
       if (dragNode && !pointerMoved) {
         // Tap on node — select and show bubble
         selectedId = dragNode.id;
@@ -576,7 +576,9 @@ const Constellation = (() => {
       dragNode = null;
       dragBg = false;
       touchDist0 = 0;
-    });
+    }
+    canvas.addEventListener("touchend", onTouchEnd);
+    canvas.addEventListener("touchcancel", onTouchEnd);
 
     // Double-click to reset view
     canvas.addEventListener("dblclick", () => {

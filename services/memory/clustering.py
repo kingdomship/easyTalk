@@ -593,8 +593,19 @@ def build_constellation() -> dict:
                         continue
                     if in_frontmatter:
                         continue
-                    if "名字" in stripped:
-                        ai_label = stripped.split("：", 1)[-1].strip()[:8]
+                    if "名字" in stripped and ("：" in stripped or ":" in stripped):
+                        for sep in ("：", ":"):
+                            parts = stripped.split(sep, 1)
+                            if "名字" in parts[0] and len(parts) > 1:
+                                ai_label = parts[1].strip()[:8]
+                                break
+                        if ai_label != "AI":
+                            break
+                    if ai_label == "AI" and "我是" in stripped:
+                        rest = stripped.split("我是", 1)[1]
+                        for sep in ("，", ",", "。", ".", "、", " "):
+                            rest = rest.split(sep, 1)[0]
+                        ai_label = rest.strip()[:8]
                         break
                     if "身份" in stripped:
                         role = stripped.split("：", 1)[-1].split("、")

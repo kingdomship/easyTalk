@@ -122,6 +122,7 @@ def init_db():
         ("cheek_puff", "REAL NOT NULL DEFAULT 0"),
         ("sweat_drop", "REAL NOT NULL DEFAULT 0"),
         ("vein_pop", "REAL NOT NULL DEFAULT 0"),
+        ("color_fields", "TEXT"),
     ]:
         try:
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")

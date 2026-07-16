@@ -140,25 +140,178 @@ function moodStarTint() {
   return 'rgb(' + Math.min(255, Math.max(220, tr)) + ',' + Math.min(255, Math.max(220, tg)) + ',' + Math.min(255, Math.max(220, tb)) + ')';
 }
 
+// Subtle dot-grid pattern overlay — adds warmth without competing with content
+let _patternCanvas = null;
+
+function getDotPattern() {
+  if (_patternCanvas) return _patternCanvas;
+  _patternCanvas = document.createElement('canvas');
+  _patternCanvas.width = 32;
+  _patternCanvas.height = 32;
+  const pctx = _patternCanvas.getContext('2d');
+  pctx.fillStyle = '#ffffff';
+  pctx.beginPath();
+  pctx.arc(16, 16, 0.5, 0, Math.PI * 2);
+  pctx.fill();
+  return _patternCanvas;
+}
+
+function drawSubtlePattern() {
+  if (!canvas || canvas.width === 0) return;
+  const pattern = ctx.createPattern(getDotPattern(), 'repeat');
+  if (!pattern) return;
+  ctx.save();
+  ctx.fillStyle = pattern;
+  const brightness = (moodColor.r + moodColor.g + moodColor.b) / (3 * 255);
+  const alpha = 0.015 + brightness * 0.025;
+  ctx.globalAlpha = alpha;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
 // Render AI-controlled color fields as soft radial glows (Rothko-style)
 function drawColorFields() {
   if (colorFields.length === 0) return;
-  ctx.save();
-  ctx.globalCompositeOperation = 'screen';
+  const t = performance.now() / 1000;
   for (const cf of colorFields) {
     if (cf.alpha < 0.01) continue;
-    const x = cf.cx * canvas.width;
-    const y = cf.cy * canvas.height;
-    const r = cf.radius * Math.max(canvas.width, canvas.height) * 0.7;
+    ctx.save();
+
+    // Per-field blend mode
+    ctx.globalCompositeOperation = cf.blend || 'soft-light';
+
+    // Gaussian blur for soft atmospheric edges
+    const blurPx = cf.blur || 0;
+    if (blurPx > 0.5) ctx.filter = 'blur(' + blurPx.toFixed(1) + 'px)';
+
+    // Drift offset — slow autonomous movement
+    let dx = 0, dy = 0;
+    if (cf.drift) {
+      const range = (cf.drift.range || 0.06) * Math.max(canvas.width, canvas.height);
+      dx = Math.sin(t * (cf.drift.speed || 0.3) + (cf._driftPhase || 0)) * range;
+      dy = Math.cos(t * (cf.drift.speed || 0.3) * 0.73 + (cf._driftPhase || 0)) * range;
+    }
+
+    const x = cf.cx * canvas.width + dx;
+    const y = cf.cy * canvas.height + dy;
+    const r = cf.radius * Math.max(canvas.width, canvas.height);
+
     const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
     const cr = Math.round(cf.r), cg = Math.round(cf.g), cb = Math.round(cf.b);
-    grad.addColorStop(0, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (cf.alpha * 0.35).toFixed(2) + ')');
-    grad.addColorStop(0.5, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (cf.alpha * 0.12).toFixed(2) + ')');
+
+    // Base opacity from cf.opacity (AI-controlled), modulate with pulse
+    let baseAlpha = cf.alpha * (cf.opacity != null ? cf.opacity : 0.9);
+    if (cf.pulse) {
+      const p = cf.pulse;
+      baseAlpha *= 1 + Math.sin(t * (p.speed || 0.5) + (cf._pulsePhase || 0)) * (p.amplitude || 0.1);
+      baseAlpha = Math.max(0, Math.min(1, baseAlpha));
+    }
+
+    grad.addColorStop(0, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (baseAlpha * 0.50).toFixed(3) + ')');
+    grad.addColorStop(0.35, 'rgba(' + cr + ',' + cg + ',' + cb + ',' + (baseAlpha * 0.25).toFixed(3) + ')');
     grad.addColorStop(1, 'rgba(' + cr + ',' + cg + ',' + cb + ',0)');
+
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
   }
-  ctx.restore();
+}
+
+// ═══════════════════════════════════════════
+// Pixel Sprites — AI-generated pixel art that flies out from the face
+// Uses offscreen-canvas pre-render for GPU-accelerated drawImage (not fillRect loops)
+// ═══════════════════════════════════════════
+
+function spawnPixelSprites(data) {
+  const spawnX = 0.5, spawnY = 0.35;
+  for (const s of data) {
+    if (!s.grid || !s.palette || s.grid.length === 0) continue;
+    const gridSize = s.size || 16;
+    const spread = s.spread != null ? s.spread : 0.8;
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread;
+    const baseSpeed = 0.08 + Math.random() * 0.12;
+    const baseDuration = s.duration || 3;
+
+    // Pre-render sprite to offscreen canvas (once, not per frame)
+    const texSize = gridSize * 4; // internal resolution, 4px per cell
+    const oc = document.createElement('canvas');
+    oc.width = texSize;
+    oc.height = texSize;
+    const octx = oc.getContext('2d');
+    const texCell = texSize / gridSize;
+    for (let row = 0; row < gridSize; row++) {
+      const line = s.grid[row] || '';
+      for (let col = 0; col < line.length; col++) {
+        const idx = parseInt(line[col], 10);
+        if (idx === 0 || isNaN(idx) || idx >= s.palette.length) continue;
+        const color = s.palette[idx];
+        if (color === 'transparent' || color === 'rgba(0,0,0,0)') continue;
+        octx.fillStyle = color;
+        octx.fillRect(col * texCell, row * texCell, texCell, texCell);
+      }
+    }
+
+    pixelSprites.push({
+      _tex: oc,
+      gridSize: gridSize,
+      cellScale: s.cell_scale || 1,
+      name: s.name || '',
+      x: spawnX, y: spawnY,
+      vx: Math.cos(angle) * baseSpeed,
+      vy: Math.sin(angle) * baseSpeed,
+      life: 0,
+      duration: baseDuration + Math.random() * baseDuration * 0.5,
+      rotation: (Math.random() - 0.5) * 0.6,
+      rotSpeed: (Math.random() - 0.5) * 0.4,
+      wobble: Math.random() * Math.PI * 2,
+    });
+  }
+}
+
+function updatePixelSprites(dt) {
+  for (let i = pixelSprites.length - 1; i >= 0; i--) {
+    const s = pixelSprites[i];
+    s.life += dt / s.duration;
+    if (s.life >= 1) { pixelSprites.splice(i, 1); continue; }
+    s.x += s.vx * dt;
+    s.y += s.vy * dt - Math.sin(s.life * 8 + s.wobble) * 0.008;
+    s.vx *= 0.995;
+    s.vy *= 0.995;
+  }
+}
+
+function drawPixelSprites() {
+  if (pixelSprites.length === 0) return;
+  const prevSmoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false; // crisp pixel art scaling
+  for (const s of pixelSprites) {
+    let scale, alpha;
+    if (s.life < 0.15) {
+      scale = s.life / 0.15;
+      alpha = scale;
+    } else if (s.life > 0.85) {
+      const fade = (s.life - 0.85) / 0.15;
+      scale = 1 - fade * 0.4;
+      alpha = 1 - fade;
+    } else {
+      scale = 1;
+      alpha = 1;
+    }
+
+    const px = s.x * canvas.width;
+    const py = s.y * canvas.height;
+    const cellSize = Math.max(canvas.width, canvas.height) * 0.005 * scale * (s.cellScale || 1);
+    const totalW = s.gridSize * cellSize;
+    const totalH = s.gridSize * cellSize;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(px, py);
+    ctx.rotate(s.rotation + s.rotSpeed * s.life * 5);
+    ctx.drawImage(s._tex, -totalW / 2, -totalH / 2, totalW, totalH);
+    ctx.restore();
+  }
+  ctx.imageSmoothingEnabled = prevSmoothing;
 }
 
 // ═══════════════════════════════════════════
@@ -388,15 +541,17 @@ let cursorX = null, cursorY = null;
 function drawStarfield() {
   // Mood-driven gradient — shifts warm/cool based on conversation sentiment
   const r = Math.round(moodColor.r), g = Math.round(moodColor.g), b = Math.round(moodColor.b);
-  const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/3, 0, canvas.width/2, canvas.height, canvas.height);
+  const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/3.5, 0, canvas.width/2, canvas.height*0.8, canvas.height * 0.75);
   grad.addColorStop(0, `rgb(${r},${g},${b})`);
-  grad.addColorStop(0.5, `rgb(${Math.round(r*0.6)},${Math.round(g*0.6)},${Math.round(b*0.7)})`);
-  grad.addColorStop(1, `rgb(${Math.round(r*0.15)},${Math.round(g*0.15)},${Math.round(b*0.15)})`);
+  grad.addColorStop(0.35, `rgb(${Math.round(r*0.72)},${Math.round(g*0.70)},${Math.round(b*0.74)})`);
+  grad.addColorStop(0.65, `rgb(${Math.round(r*0.40)},${Math.round(g*0.38)},${Math.round(b*0.44)})`);
+  grad.addColorStop(1, `rgb(${Math.round(r*0.10)},${Math.round(g*0.08)},${Math.round(b*0.15)})`);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Overlay AI-controlled color fields (Rothko-style abstract regions)
   drawColorFields();
+  drawSubtlePattern();
 
   const t = performance.now() / 1000;
   const breathe = 1 + 0.06 * Math.sin(t * 0.52); // ~12s breathing cycle
@@ -416,6 +571,9 @@ function drawStarfield() {
   drawConstellations(cursorX, cursorY);
   drawMeteors();
   drawMemoryStars();
+
+  // AI pixel sprites
+  drawPixelSprites();
 }
 
 // ═══════════════════════════════════════════
@@ -850,15 +1008,17 @@ function drawChat() {
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
   const mr = Math.round(moodColor.r), mg = Math.round(moodColor.g), mb = Math.round(moodColor.b);
-  const grad = ctx.createRadialGradient(cx, cy * 0.65, 0, cx, cy, Math.max(canvas.width, canvas.height) * 0.65);
+  const grad = ctx.createRadialGradient(cx, cy * 0.6, 0, cx, cy * 0.3, Math.max(canvas.width, canvas.height) * 0.72);
   grad.addColorStop(0, 'rgb(' + mr + ',' + mg + ',' + mb + ')');
-  grad.addColorStop(0.5, 'rgb(' + Math.round(mr * 0.8) + ',' + Math.round(mg * 0.8) + ',' + Math.round(mb * 0.82) + ')');
-  grad.addColorStop(1, 'rgb(' + Math.round(mr * 0.35) + ',' + Math.round(mg * 0.35) + ',' + Math.round(mb * 0.38) + ')');
+  grad.addColorStop(0.3, 'rgb(' + Math.round(mr * 0.88) + ',' + Math.round(mg * 0.86) + ',' + Math.round(mb * 0.90) + ')');
+  grad.addColorStop(0.6, 'rgb(' + Math.round(mr * 0.55) + ',' + Math.round(mg * 0.52) + ',' + Math.round(mb * 0.58) + ')');
+  grad.addColorStop(1, 'rgb(' + Math.round(mr * 0.20) + ',' + Math.round(mg * 0.18) + ',' + Math.round(mb * 0.25) + ')');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Overlay AI-controlled color fields (Rothko-style abstract regions)
   drawColorFields();
+  drawSubtlePattern();
 
   // Draw dim background stars with mood-tinted color
   const t = performance.now() / 1000;
@@ -880,4 +1040,7 @@ function drawChat() {
 
   // Overlay sparkle particles
   drawSparkleOverlay(faceBob);
+
+  // AI pixel sprites flying out from face
+  drawPixelSprites();
 }

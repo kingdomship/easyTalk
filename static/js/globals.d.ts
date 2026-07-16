@@ -72,7 +72,7 @@ interface GraphNode {
 }
 
 interface GraphEdge {
-  source: string; target: string; weight: number;
+  from: number; to: number;
 }
 
 interface ConstellationAPI {
@@ -118,13 +118,14 @@ interface ChatResponse {
 }
 
 interface SSEEvent {
-  type: 'emotions' | 'text' | 'done' | 'error' | 'thinking';
+  type: 'emotions' | 'text' | 'done' | 'error' | 'thinking' | 'pixel_sprites';
   emotions?: RawEmotion[];
   text?: string;
   source?: string;
   label?: string;
   affect?: PankseppAffect;
   color_fields?: ColorField[];
+  sprites?: PixelSprite[];
 }
 
 interface ColorField {
@@ -132,6 +133,23 @@ interface ColorField {
   cx: number;
   cy: number;
   radius: number;
+  blend?: string;
+  opacity?: number;
+  blur?: number;
+  pulse?: { speed: number; amplitude: number };
+  drift?: { speed: number; range: number };
+}
+
+interface PixelSprite {
+  grid?: string[];
+  palette?: string[];
+  size?: number;
+  name?: string;
+  cell_scale?: number;
+  duration?: number;
+  spread?: number;
+  _tex?: HTMLCanvasElement;
+  gridSize?: number;
 }
 
 interface DiaryEntry {
@@ -162,6 +180,8 @@ interface Window {
   _onConstellationStarClick?: (star: ConstellationStarClick | null) => void;
   _closeBubbleHandler?: ((e: MouseEvent) => void) | null;
   _pendingDiaryDate?: string | null;
+  saveVisualState?: () => void;
+  loadVisualState?: () => boolean;
 }
 
 interface HTMLElement {

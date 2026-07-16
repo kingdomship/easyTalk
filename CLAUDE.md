@@ -16,7 +16,7 @@ easytalk/
 │   ├── emotion_params.py   # 27维情感参数权威定义 (default/min/max/jitter)
 │   └── routes/             # API 路由（thin layer）
 │       ├── __init__.py     # 聚合所有子路由
-│       ├── chat.py         # /api/chat + SSE流式 + 核心管线函数
+│       ├── chat.py         # /api/chat + SSE流式 + 核心管线 + 两段式精灵生成
 │       ├── config.py       # /api/config/apikey (自定义 API Key 管理)
 │       ├── diary.py        # /api/diary/*
 │       ├── emotions.py     # /api/emotions/*
@@ -37,7 +37,8 @@ easytalk/
 │   │   ├── drift_detector.py # 人设漂移检测 (每30轮)
 │   │   ├── guard.py        # 身份守护
 │   │   ├── personality.py  # 人格配置
-│   │   └── prompt.py       # SYSTEM_PROMPT + 昼夜节律上下文 + temperature
+│   │   ├── prompt.py       # SYSTEM_PROMPT + 昼夜节律上下文 + temperature
+│   │   └── sprite_prompt.py # 两段式精灵生成专用prompt (16×16高分辨率网格)
 │   ├── info/               # 信息获取
 │   │   └── news.py         # 多源热榜抓取 (B站/GitHub/Tophub/百度, 4源异步)
 │   ├── memory/             # 记忆系统
@@ -56,10 +57,10 @@ easytalk/
 │   ├── index.html          # HTML 骨架
 │   ├── style.css           # 所有样式
 │   └── js/
-│       ├── engine.js       # 全局变量、工具函数、表情系统、音频引擎、调试面板
-│       ├── visuals.js      # 星空渲染、流星、记忆星点、像素头像绘制
-│       ├── constellation.js # 交互式星图 (Obsidian风格, 力导向图 + 缩放/拖拽)
-│       ├── ui.js           # 对话框、SSE流、面板、主循环、事件处理
+│       ├── engine.js       # 全局变量、工具函数、表情系统、音频引擎、调试面板、localStorage状态持久化
+│       ├── visuals.js      # 星空渲染、流星、记忆星点、像素头像(64x64)、精灵系统(offscreen canvas预渲染)
+│       ├── constellation.js # 交互式星图 (Obsidian风格, 力导向图 + 缩放/拖拽 + 触摸手势)
+│       ├── ui.js           # 对话框、SSE流、面板、话题气泡、日记模态框、设置面板、主循环
 │       └── globals.d.ts    # TypeScript 类型声明
 ├── memory/                 # 记忆数据（volume 挂载到 /app/memory）
 │   ├── user_persona.md     # AI人设
@@ -71,10 +72,9 @@ easytalk/
 │   ├── episodes.jsonl      # 叙事章节
 │   ├── milestones.jsonl    # 关系里程碑
 │   ├── attachment_style.json # 依恋风格
-│   ├── api_key.txt         # 自定义 API Key (旧格式，已迁移至 llm_config.json)
 │   └── llm_config.json     # LLM 多供应商配置 (api_key/base_url/model)
 ├── Dockerfile              # python:3.10-slim, uvicorn
-├── docker-compose.yml      # pgvector/pgvector:pg15 + app, 端口 9010
+├── docker-compose.yml      # pgvector/pgvector:pg15 + app, 端口 8000
 ├── requirements.txt        # fastapi, uvicorn, psycopg2-binary, openai, httpx, apscheduler
 ├── tsconfig.json           # TypeScript 类型检查 (checkJs, noEmit)
 ├── .env.example            # DEEPSEEK_API_KEY + DB_PASSWORD
@@ -138,7 +138,7 @@ easytalk/
 
 - 使用 `docker-compose.yml` 构建和启动
 - PostgreSQL 镜像: `pgvector/pgvector:pg15`（支持向量搜索）
-- 服务端口: `9010:8000`
+- 服务端口: `8000:8000`
 - 需要环境变量 `DEEPSEEK_API_KEY`、`DB_PASSWORD`（可选，默认 123456）
 
 ## 关键路径常量
@@ -154,6 +154,7 @@ easytalk/
 | pgvector 维度 | 256, halfvec, HNSW | db.py + services/memory/search.py |
 | LLM 配置 | `memory/llm_config.json` | llm_config.py |
 | SSE 流式间隔 | 每 2 字符，30ms | routes/chat.py:chat_stream |
+| 前端缓存版本 | `?v=N` (index.html) | 每次部署更新以强制刷新 |
 
 ## 修改指南
 
@@ -177,7 +178,7 @@ easytalk/
 
 ### 调试
 - 后端日志: `docker compose logs -f app`
-- 前端调试面板: 三击页面左下角 8×8px 区域
+- 前端调试面板: 三击页面左下角 16×16px 区域
 - LLM 错误: 自动分类并输出到日志+调试面板
 
 ## 并发安全模型
@@ -211,6 +212,29 @@ finally:
 - `_think()`、`_call_llm()` 等 LLM API 调用必须用 `await asyncio.to_thread()` 包裹
 - `chat()` 和 `chat_stream()` 端点均已适配此模式
 - 文件 I/O 和数据库查询同步执行（轻量操作，不会阻塞）
+
+## 两段式精灵生成
+
+主 LLM 输出 `sprite_keywords`（可选，2-3个中文关键词），第二段 LLM (`sprite_prompt.py`) 独立生成 16×16 像素精灵：
+
+```python
+# chat.py: generate() 内
+sprite_task = asyncio.create_task(
+    asyncio.to_thread(_generate_sprites, sprite_keywords)
+)
+# 文本流式期间检查精灵是否完成，完成即发送 pixel_sprites SSE 事件
+# 文本结束后兜底等待
+```
+
+- `_generate_sprites()` 是同步函数，通过 `asyncio.to_thread` 在线程池执行
+- 精灵前端渲染使用 offscreen canvas 预渲染 + `drawImage`（~50次/帧），替代 fillRect 循环（~12,800次/帧）
+- `ctx.imageSmoothingEnabled = false` 保持像素艺术清晰
+
+## 前端状态持久化
+
+- `saveVisualState()` (`engine.js`) — 每2秒保存表情参数、背景颜色、颜色场、对话框到 `localStorage.easytalk_visual`
+- `loadVisualState()` — 读取并恢复，5分钟过期自动清除
+- 刷新后恢复对话框 DOM（`ui.js` init 段）
 
 ## 前端安全规范
 

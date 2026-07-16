@@ -360,7 +360,7 @@ function getFacePixels(params) {
   const mcc = 32;
   const lipStretch = p.lip_stretch || 0;
   const mouthW = p.mouth_width || 0.6;
-  let hw = Math.round(lerp(3, 9, mouthW));
+  let hw = Math.round(lerp(4, 11, mouthW));
   const stretchExtra = Math.round(lipStretch * 3);
   const cs = mcc - hw - stretchExtra, ce = mcc + hw + stretchExtra;
   const ma = p.mouth_asym || 0;
@@ -441,12 +441,16 @@ let curParams = { eye_curve:0, eye_open:0.7, eye_pupil:0, eye_wink:0, eye_tensio
 let tgtParams = { ...curParams };
 
 // Mood-driven atmosphere
-let moodColor = { r: 13, g: 13, b: 36 };
-let moodTarget = { r: 13, g: 13, b: 36 };
+let moodColor = { r: 22, g: 18, b: 42 };
+let moodTarget = { r: 22, g: 18, b: 42 };
 
 // AI-controlled color fields (Rothko-style abstract color regions)
 let colorFields = [];
 let colorFieldsTarget = [];
+
+// AI-generated pixel sprites that fly out from the face
+let pixelSprites = [];
+
 let pokeActive = false, pokeTimer = 0, pokeSparkles = [];
 const POKE_EXPRESSIONS = [
   { eye_open:0.9, mouth_open:0.5, mouth_curve:0.7, sparkle:1, brow_height:0.9, iris_size:0.8, cheek_raise:0.3, duration_ms:400 },
@@ -589,12 +593,12 @@ function updateMoodFromEmotion(label) {
 
 function circadianBaseColor() {
   const h = new Date().getHours();
-  if (h >= 5 && h < 8)  return { r: 18, g: 15, b: 35 };  // dawn
-  if (h >= 8 && h < 12)  return { r: 15, g: 15, b: 38 };  // morning
-  if (h >= 12 && h < 17) return { r: 13, g: 13, b: 36 };  // afternoon (neutral)
-  if (h >= 17 && h < 20) return { r: 18, g: 14, b: 33 };  // dusk
-  if (h >= 20 && h < 23) return { r: 10, g: 11, b: 30 };  // evening
-  return { r: 7, g: 8, b: 22 };                             // night
+  if (h >= 5 && h < 8)  return { r: 75, g: 60, b: 95 };   // dawn — soft lavender emerging from darkness
+  if (h >= 8 && h < 12)  return { r: 115, g: 95, b: 125 }; // morning — bright, warm purple-tinged
+  if (h >= 12 && h < 17) return { r: 100, g: 85, b: 118 }; // afternoon — neutral, slightly cool
+  if (h >= 17 && h < 20) return { r: 65, g: 52, b: 82 };   // dusk — deepening toward calm
+  if (h >= 20 && h < 23) return { r: 38, g: 30, b: 56 };   // evening — calm, retains color character
+  return { r: 22, g: 18, b: 42 };                            // night — deep but not pure black
 }
 
 function circadianBrightness() {
@@ -629,10 +633,21 @@ function updateMoodCSS() {
   const accentG = Math.round(Math.min(255, Math.max(110, 131 - Math.abs(clampedWarmth) * 30)));
   const accentB = Math.round(Math.min(255, Math.max(180, 255 - clampedWarmth * 50)));
   root.style.setProperty('--accent', `rgb(${accentR},${accentG},${accentB})`);
+
+  // Dynamic --bg and --surface: follow moodColor so UI panels match canvas atmosphere
+  const bgR = Math.round(moodColor.r * 0.20);
+  const bgG = Math.round(moodColor.g * 0.20);
+  const bgB = Math.round(moodColor.b * 0.20);
+  root.style.setProperty('--bg', `rgb(${bgR},${bgG},${bgB})`);
+  const srR = Math.round(moodColor.r * 0.40);
+  const srG = Math.round(moodColor.g * 0.40);
+  const srB = Math.round(moodColor.b * 0.40);
+  root.style.setProperty('--surface', `rgb(${srR},${srG},${srB})`);
 }
 
 // ── AI-controlled color fields (Rothko-style) ──
 function hexToRgb(hex) {
+  if (!hex || typeof hex !== 'string' || hex.length < 7) return { r: 255, g: 255, b: 255 };
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
@@ -643,25 +658,28 @@ function updateColorFields(dt) {
   if (colorFieldsTarget.length === 0 && colorFields.length === 0) return;
 
   const speed = 0.03;
-  // Align array lengths: add new fields or mark removed ones for fade-out
   while (colorFields.length < colorFieldsTarget.length) {
-    // New field fades in from center
     const tgt = colorFieldsTarget[colorFields.length];
     colorFields.push({
       r: hexToRgb(tgt.color).r, g: hexToRgb(tgt.color).g, b: hexToRgb(tgt.color).b,
       cx: tgt.cx, cy: tgt.cy, radius: tgt.radius,
-      alpha: 0, // fade in
+      blend: tgt.blend || 'soft-light',
+      opacity: tgt.opacity != null ? tgt.opacity : 0.9,
+      blur: tgt.blur || 0,
+      pulse: tgt.pulse || null,
+      drift: tgt.drift || null,
+      _driftPhase: Math.random() * Math.PI * 2,
+      _pulsePhase: Math.random() * Math.PI * 2,
+      alpha: 0,
     });
   }
   while (colorFields.length > colorFieldsTarget.length) {
-    // Fade out extra field
     const cf = colorFields[colorFields.length - 1];
     cf.alpha = lerp(cf.alpha, 0, speed * 2);
     if (cf.alpha < 0.01) { colorFields.pop(); }
-    else break; // only fade one at a time
+    else break;
   }
 
-  // Lerp existing fields toward target
   for (let i = 0; i < Math.min(colorFields.length, colorFieldsTarget.length); i++) {
     const cf = colorFields[i];
     const tgt = colorFieldsTarget[i];
@@ -672,15 +690,20 @@ function updateColorFields(dt) {
     cf.cx = lerp(cf.cx, tgt.cx, speed);
     cf.cy = lerp(cf.cy, tgt.cy, speed);
     cf.radius = lerp(cf.radius, tgt.radius, speed);
-    cf.alpha = lerp(cf.alpha, 1, speed); // fade in to full
+    cf.opacity = lerp(cf.opacity, tgt.opacity != null ? tgt.opacity : 0.9, speed);
+    cf.blur = lerp(cf.blur, tgt.blur || 0, speed);
+    cf.blend = tgt.blend || 'soft-light';
+    cf.pulse = tgt.pulse || null;
+    cf.drift = tgt.drift || null;
+    cf.alpha = lerp(cf.alpha, 1, speed);
   }
 }
 
 function updateAtmosphere(dt) {
   // Blend circadian base color with mood color
   const circ = circadianBaseColor();
-  const circWeight = 0.6;
-  const moodSpeed = 0.02;
+  const circWeight = 0.5;
+  const moodSpeed = 0.025;
   moodColor.r = lerp(moodColor.r, moodTarget.r * (1 - circWeight) + circ.r * circWeight, moodSpeed);
   moodColor.g = lerp(moodColor.g, moodTarget.g * (1 - circWeight) + circ.g * circWeight, moodSpeed);
   moodColor.b = lerp(moodColor.b, moodTarget.b * (1 - circWeight) + circ.b * circWeight, moodSpeed);
@@ -696,6 +719,9 @@ function updateAtmosphere(dt) {
   // Lerp color fields toward target
   updateColorFields(dt);
 
+  // Update pixel sprites (fly-out animation)
+  updatePixelSprites(dt);
+
   // Poke timer
   if (pokeActive) {
     pokeTimer += dt * 1000;
@@ -705,6 +731,53 @@ function updateAtmosphere(dt) {
     }
     pokeSparkles = pokeSparkles.filter(s => s.life > 0);
   }
+}
+
+// ═══════════════════════════════════════════
+// Visual state persistence — save every 2s so refresh recovers mood + face
+// ═══════════════════════════════════════════
+let _lastSaveTime = 0;
+const _SAVE_INTERVAL = 2; // seconds
+
+function saveVisualState() {
+  const now = performance.now() / 1000;
+  if (now - _lastSaveTime < _SAVE_INTERVAL) return;
+  _lastSaveTime = now;
+  try {
+    var st = {
+      ts: Date.now(),
+      curParams: curParams,
+      tgtParams: tgtParams,
+      moodColor: moodColor,
+      moodTarget: moodTarget,
+      colorFields: colorFields.map(function(cf) { return { r:cf.r, g:cf.g, b:cf.b, cx:cf.cx, cy:cf.cy, radius:cf.radius, alpha:cf.alpha, blend:cf.blend, opacity:cf.opacity, blur:cf.blur, pulse:cf.pulse, drift:cf.drift }; }),
+      sequence: sequence,
+      seqIdx: seqIdx,
+      seqElapsed: seqElapsed,
+      replyText: replyText,
+      dlgText: (typeof dlgText !== 'undefined' ? dlgText : ''),
+      state: (typeof state !== 'undefined' ? state : STATE.STARFIELD),
+    };
+    localStorage.setItem('easytalk_visual', JSON.stringify(st));
+  } catch(e) { /* quota exceeded, ignore */ }
+}
+
+function loadVisualState() {
+  try {
+    var raw = localStorage.getItem('easytalk_visual');
+    if (!raw) return false;
+    var saved = JSON.parse(raw);
+    if (Date.now() - saved.ts > 5 * 60 * 1000) { localStorage.removeItem('easytalk_visual'); return false; }
+    if (saved.curParams) curParams = saved.curParams;
+    if (saved.tgtParams) tgtParams = saved.tgtParams;
+    if (saved.moodColor) moodColor = saved.moodColor;
+    if (saved.moodTarget) moodTarget = saved.moodTarget;
+    if (saved.colorFields && saved.colorFields.length) colorFields = saved.colorFields;
+    if (saved.sequence) { sequence = saved.sequence; seqIdx = saved.seqIdx || 0; seqElapsed = saved.seqElapsed || 0; replyText = saved.replyText || ''; }
+    if (saved.dlgText && typeof dlgText !== 'undefined') dlgText = saved.dlgText;
+    if (saved.state && typeof state !== 'undefined') state = saved.state;
+    return true;
+  } catch(e) { return false; }
 }
 
 // ═══════════════════════════════════════════

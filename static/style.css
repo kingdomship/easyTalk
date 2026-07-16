@@ -1,4 +1,4 @@
-  :root { --bg: #0a0a1a; --surface: #12122a; --text: #c8c8e0; --accent: #7c83ff; --gold: #ffd700; --cyan: #00e5ff; --mood-r: 13; --mood-g: 13; --mood-b: 36; }
+  :root { --bg: #121224; --surface: #1a1a32; --text: #c8c8e0; --accent: #7c83ff; --gold: #ffd700; --cyan: #00e5ff; --mood-r: 22; --mood-g: 18; --mood-b: 42; }
   /* ── SVG icons ── */
   .svg-icon { display:inline-block; width:16px; height:16px; vertical-align:-0.2em; flex-shrink:0; }
   .aux-tab .svg-icon, .diary-tab .svg-icon { margin-right:2px; }
@@ -315,7 +315,7 @@
     font-family:inherit; transition:all 0.2s;
   }
   .diary-month-clear:hover { border-color:#f44336; color:#f44336; }
-  .diary-filter-pills { display:flex; gap:6px; }
+  .diary-filter-pills { display:flex; justify-content:space-around; margin-top:12px; }
   .diary-pill {
     background:rgba(18,18,42,0.5); border:1px solid rgba(124,131,255,0.1);
     border-radius:14px; padding:4px 14px; color:#6a6a8a;

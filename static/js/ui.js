@@ -1166,7 +1166,22 @@ async function sendMessage() {
             if (evt.affect) updateMoodFromAffect(evt.affect);
             else updateMoodFromEmotion(evt.label || '');
             if (evt.color_fields && Array.isArray(evt.color_fields)) {
-              colorFieldsTarget = evt.color_fields.map(function(f) { return { color: f.color, cx: f.cx || 0.5, cy: f.cy || 0.5, radius: f.radius || 0.5 }; });
+              colorFieldsTarget = evt.color_fields.map(function(f) {
+                return {
+                  color: f.color,
+                  cx: f.cx || 0.5, cy: f.cy || 0.5,
+                  radius: f.radius || 0.5,
+                  blend: f.blend || 'soft-light',
+                  opacity: f.opacity != null ? f.opacity : 0.9,
+                  blur: f.blur || 0,
+                  pulse: f.pulse || null,
+                  drift: f.drift || null
+                };
+              });
+            }
+          } else if (evt.type === 'pixel_sprites') {
+            if (evt.sprites && Array.isArray(evt.sprites) && typeof spawnPixelSprites === 'function') {
+              spawnPixelSprites(evt.sprites);
             }
           } else if (evt.type === 'thinking') {
             dlgBody.innerHTML = '<span class="thinking-indicator">思考中<span class="thinking-dots">...</span></span>';
@@ -1270,6 +1285,8 @@ function loop(t) {
       break;
   }
 
+  saveVisualState();
+
   requestAnimationFrame(loop);
 }
 
@@ -1280,9 +1297,31 @@ initStarfield();
 initMemoryStars();
 recomputeFaceLayout();
 initSparkleParticles();
-// Initial face pixel computation for convergence targets
-curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, eye_tension:0, iris_size:0.5, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, lip_pout:0, lip_stretch:0, lip_bite:0, jaw_drop:0, tongue_out:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, nose_wrinkle:0, cheek_raise:0, cheek_puff:0, blush:0.15, head_tilt:0, tear:0, sweat_drop:0, vein_pop:0 };
-tgtParams = { ...curParams };
+// Restore visual state from before refresh (mood, face, atmosphere)
+var restored = false;
+if (typeof loadVisualState === 'function') {
+  restored = loadVisualState();
+}
+// Initial face pixel computation for convergence targets (skip if restored)
+if (!restored) {
+  curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, eye_tension:0, iris_size:0.5, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, lip_pout:0, lip_stretch:0, lip_bite:0, jaw_drop:0, tongue_out:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, nose_wrinkle:0, cheek_raise:0, cheek_puff:0, blush:0.15, head_tilt:0, tear:0, sweat_drop:0, vein_pop:0 };
+  tgtParams = { ...curParams };
+}
+	// Restore dialog bubble if we were in chat mode before refresh
+	if (restored && dlgText && state === STATE.CHAT) {
+	  var fcX = canvas.width / 2, fcY = canvas.height / 2, fcR = 29 * faceCS;
+	  var isNr = window.innerWidth < 600, dW = isNr ? 260 : 340;
+	  var dX = fcX + fcR + 20, dY = fcY - 60;
+	  if (dX + dW > window.innerWidth - 20) dX = Math.max(10, fcX - fcR - dW);
+	  if (isNr && dX < 10) { dX = (window.innerWidth - dW) / 2; dY = fcY + fcR + 30; }
+	  if (dY < 60) dY = fcY + fcR + 20;
+	  if (dY + 120 > window.innerHeight - 20) dY = fcY - 120;
+	  dialog.style.left = dX + 'px';
+	  dialog.style.top = dY + 'px';
+	  dialog.classList.add('visible');
+	  dlgBody.innerHTML = formatDialogText(dlgText) + '<span class="dlg-arrow">▼</span>';
+	  dlgDisplayed = dlgText.length;
+	}
 requestAnimationFrame(loop);
 
 // ═══════════════════════════════════════════
