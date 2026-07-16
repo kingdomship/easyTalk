@@ -5,12 +5,15 @@
 ```
 easytalk/
 ├── app/                    # 应用核心（FastAPI 入口、DB、路由、模型）
-│   ├── main.py             # 入口 + lifespan + seed memory + 5个定时任务
+│   ├── main.py             # 入口 + lifespan + seed memory + 8个定时任务
 │   ├── db.py               # PostgreSQL 连接池 + init_db + migration
 │   ├── models.py           # Pydantic 模型 (ChatRequest)
 │   ├── config.py           # 路径常量 (MEMORY_DIR 下各文件路径)
 │   ├── utils.py            # LLM 客户端 (get_llm/get_llm_model/reset_llm) + 后台线程池
 │   ├── llm_config.py       # LLM 配置中心 (12家供应商预设 + load/save)
+│   ├── catchup.py          # 启动补漏 (停机期间遗漏的日记/情绪随机游走)
+│   ├── cleanup.py          # 数据生命周期清理 (每天03:07, 语义保留式修剪)
+│   ├── emotion_params.py   # 27维情感参数权威定义 (default/min/max/jitter)
 │   └── routes/             # API 路由（thin layer）
 │       ├── __init__.py     # 聚合所有子路由
 │       ├── chat.py         # /api/chat + SSE流式 + 核心管线函数
@@ -118,7 +121,7 @@ easytalk/
 - **表达学习**: `adjust_expression_amplitude()` 根据用户回复长度/情绪词调整幅度，缓慢趋近 1.0
 - **里程碑**: 5个关系阈值 (温暖默契/信任分享/深刻联结/无话不谈/心之桥梁)
 
-## 定时任务 (5个)
+## 定时任务 (8个)
 
 | 任务 | 时间 | 说明 |
 |------|------|------|
@@ -127,6 +130,9 @@ easytalk/
 | 空闲思绪 | 每5分钟 | 离线时生成内心独白 |
 | 情绪波动 | 每30分钟 | 表达幅度随机游走 |
 | 日记种子 | 每小时 | 累积空闲思绪供日记使用 |
+| 数据清理 | 每天 03:07 | 语义保留式修剪旧对话数据 (app/cleanup.py) |
+| 离线分析 | 每7分钟 | 预测代理离线分析 (predictive_agent.py) |
+| System2巩固 | 每23分钟 | 慢速推理结果巩固 (consciousness_loop.py) |
 
 ## 部署
 
@@ -178,7 +184,7 @@ easytalk/
 
 ### 文件锁
 - `archive_lock` (`threading.Lock`, `app/config.py`) — 保护 `conversation_archive.jsonl` 的并发读写
-  - 15 处保护点: `chat.py` (4)、`condense.py` (1)、`narrative.py` (2)、`crystallization.py` (1)、`attachment.py` (2)、`guard.py` (2)、`cleanup.py` (1)
+  - 16 处保护点: `chat.py` (4)、`condense.py` (1)、`narrative.py` (2)、`crystallization.py` (4)、`attachment.py` (2)、`guard.py` (2)、`cleanup.py` (1)
   - 使用 `with archive_lock:` 上下文管理器
 - `_crystal_lock` (`threading.RLock`, `crystallization.py`) — 保护 `crystals.jsonl` 读写
   - **注意**: 使用 `RLock`（可重入锁），因为 `maybe_crystallize()` 和 `reinforce_crystal()` 获取锁后会调用内部函数（`_save_crystals()` 等），内部函数也会获取同一把锁

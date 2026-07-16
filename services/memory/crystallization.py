@@ -230,7 +230,7 @@ def get_crystals(min_importance: float = 0.2) -> list[dict]:
 
     try:
         if os.path.exists(CRYSTAL_PATH):
-            with open(CRYSTAL_PATH) as f:
+            with _crystal_lock, open(CRYSTAL_PATH) as f:
                 for line in f:
                     try:
                         c = json.loads(line)

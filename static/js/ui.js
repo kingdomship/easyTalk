@@ -617,7 +617,7 @@ function buildDiaryToolbar() {
 }
 
 function bindDiaryEvents() {
-  var searchInput = document.getElementById('diarySearchInput');
+  var searchInput = /** @type {HTMLInputElement|null} */ (document.getElementById('diarySearchInput'));
   if (searchInput) {
     searchInput.addEventListener('compositionstart', function() { diaryComposing = true; });
     searchInput.addEventListener('compositionend', function() {
@@ -677,7 +677,7 @@ function bindDiaryEvents() {
       loadDiaryContent(false);
     });
   }
-  document.querySelectorAll('.tl-node').forEach(function(node) {
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tl-node')).forEach(function(node) {
     node.addEventListener('click', function() {
       openDiaryModal(node.dataset.date);
     });
@@ -777,7 +777,7 @@ async function loadDiaryContent(reset) {
     }
 
     // Bind timeline clicks
-    results.querySelectorAll('.tl-node').forEach(function(node) {
+    /** @type {NodeListOf<HTMLElement>} */ (results.querySelectorAll('.tl-node')).forEach(function(node) {
       if (!node.dataset.bound) {
         node.dataset.bound = '1';
         node.addEventListener('click', function() { openDiaryModal(node.dataset.date); });
@@ -826,7 +826,7 @@ async function loadDiaryContent(reset) {
                 past.map(function(p) {
                   return '<div class="tl-clickable" style="font-size:0.7rem;color:#a0a0c0;margin-bottom:6px;line-height:1.6;cursor:pointer;" data-date="' + escapeHtml(p.date) + '">' + escapeHtml(p.date) + ' · ' + escapeHtml((p.content||'').substring(0,60)) + '...</div>';
                 }).join('');
-              otd.querySelectorAll('.tl-clickable').forEach(function(el) {
+              /** @type {NodeListOf<HTMLElement>} */ (otd.querySelectorAll('.tl-clickable')).forEach(function(el) {
                 el.addEventListener('click', function() { openDiaryModal(el.dataset.date); });
               });
             }

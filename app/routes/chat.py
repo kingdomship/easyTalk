@@ -118,7 +118,6 @@ def _maybe_condense():
 
         if line_count - _last_condense_count < _CONDENSE_EVERY:
             return
-        _last_condense_count = line_count
 
         transcript = "\n\n".join(transcript_parts)
 
@@ -140,6 +139,7 @@ def _maybe_condense():
         summary_path = SUMMARY_PATH
         with open(summary_path, "w") as f:
             f.write(summary)
+        _last_condense_count = line_count
     except Exception:
         logger.warning("Operation failed", exc_info=True)
     finally:
@@ -245,7 +245,6 @@ def _maybe_update_memory_files():
 
         # Update user profile every N turns
         if line_count - _last_profile_count >= _PROFILE_UPDATE_EVERY and current_profile:
-            _last_profile_count = line_count
             try:
                 resp = client.chat.completions.create(
                     model=get_llm_model(),
@@ -262,13 +261,13 @@ def _maybe_update_memory_files():
                 new_profile = resp.choices[0].message.content
                 with open(profile_path, "w") as f:
                     f.write(new_profile)
+                _last_profile_count = line_count
                 updated = True
             except Exception:
                 logger.warning("Operation failed", exc_info=True)
 
         # Update AI persona every N turns
         if line_count - _last_persona_count >= _PERSONA_UPDATE_EVERY and current_persona:
-            _last_persona_count = line_count
             try:
                 resp = client.chat.completions.create(
                     model=get_llm_model(),
@@ -285,6 +284,7 @@ def _maybe_update_memory_files():
                 new_persona = resp.choices[0].message.content
                 with open(persona_path, "w") as f:
                     f.write(new_persona)
+                _last_persona_count = line_count
                 updated = True
             except Exception:
                 logger.warning("Operation failed", exc_info=True)

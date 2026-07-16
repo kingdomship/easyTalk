@@ -76,7 +76,6 @@ def analyze_attachment():
                 line_count = sum(1 for _ in f)
         if line_count - _last_check < _CHECK_EVERY:
             return
-        _last_check = line_count
 
         messages = _load_recent_user_messages(20)
         if len(messages) < 8:
@@ -113,6 +112,7 @@ def analyze_attachment():
         os.makedirs(os.path.dirname(_STYLE_PATH), exist_ok=True)
         with open(_STYLE_PATH, "w") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+        _last_check = line_count
 
         logger.info("Attachment style: %s (confidence=%.2f)",
                       result.get("style"), result.get("confidence", 0))

@@ -160,6 +160,12 @@ interface ConstellationStarClick {
 
 interface Window {
   _onConstellationStarClick?: (star: ConstellationStarClick | null) => void;
+  _closeBubbleHandler?: ((e: MouseEvent) => void) | null;
+  _pendingDiaryDate?: string | null;
+}
+
+interface HTMLElement {
+  _navHandler?: (e: MouseEvent) => void;
 }
 
 // ── Global functions (declared across files) ──
