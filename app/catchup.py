@@ -160,3 +160,74 @@ def catchup_mood(max_steps: int = _MAX_MOOD_STEPS) -> int:
 
     logger.info("[catchup] Mood: done — %d steps, final=%.4f", steps, current)
     return steps
+
+
+# ── Drive catch-up ───────────────────────────────────────────────
+
+_MAX_DRIVE_STEPS = 144  # 24 hours at 10-min intervals
+
+
+def _estimate_missed_drive_steps(max_steps: int = _MAX_DRIVE_STEPS) -> int:
+    """Count missed 10-min drive_heartbeat intervals since last update."""
+    from app.db import q
+    from datetime import datetime, timezone
+
+    row = q("SELECT MAX(updated_at) AS last_ts FROM drive_state", fetch="one")
+    if not row or not row["last_ts"]:
+        return 0
+
+    last_ts = row["last_ts"]
+    now = datetime.now(timezone.utc)
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+
+    elapsed = (now - last_ts).total_seconds()
+    return max(0, min(int(elapsed // 600), max_steps))
+
+
+def catchup_drives(max_steps: int = _MAX_DRIVE_STEPS) -> int:
+    """Simulate missed drive_heartbeat steps during downtime.
+
+    Applies decay toward baseline for all drives, plus miss idle-growth
+    for the miss dimension.
+    """
+    from app.db import execute
+    from services.drive.engine import get_drives, DRIVE_DEFAULTS
+
+    steps = _estimate_missed_drive_steps(max_steps)
+    if steps <= 0:
+        logger.info("[catchup] Drive: no missing steps")
+        return 0
+
+    current = get_drives()
+    if not current:
+        logger.info("[catchup] Drive: no drive data to catch up")
+        return 0
+
+    logger.info("[catchup] Drive: simulating %d steps", steps)
+
+    for i in range(steps):
+        for dim, cfg in DRIVE_DEFAULTS.items():
+            d = current.get(dim)
+            if not d:
+                continue
+            val = d["value"]
+            val += cfg["decay_rate"] * (cfg["baseline"] - val)
+            # catchup always runs after downtime → user is always idle,
+            # so miss drive always grows (no idle check needed unlike heartbeat)
+            if dim == "miss":
+                val += 0.08 * (0.85 - val)
+            current[dim]["value"] = max(0.0, min(1.0, val))
+
+        if (i + 1) % 20 == 0:
+            logger.debug("[catchup] Drive: step %d/%d", i + 1, steps)
+
+    for dim, d in current.items():
+        execute(
+            "UPDATE drive_state SET value = %s, updated_at = NOW() "
+            "WHERE dimension = %s",
+            [round(d["value"], 4), dim],
+        )
+
+    logger.info("[catchup] Drive: done — %d steps", steps)
+    return steps

@@ -27,6 +27,7 @@ easytalk/
 │   │   ├── dual_system.py  # 双系统思维 (快速直觉 + 慢速推理)
 │   │   ├── prediction.py   # 预测误差学习 (Active Inference)
 │   │   ├── predictive_agent.py # 预测代理
+│   │   ├── pde.py          # 预测误差驱动 (新增)
 │   │   └── state_machine.py # 5行为模式 + 4唤醒态 (SAGE)
 │   ├── emotion/            # 情绪系统
 │   │   ├── affect.py       # Panksepp六系统情绪评估 + Gross调节 + 效价追踪
@@ -36,9 +37,14 @@ easytalk/
 │   ├── identity/           # 身份系统
 │   │   ├── drift_detector.py # 人设漂移检测 (每30轮)
 │   │   ├── guard.py        # 身份守护
-│   │   ├── personality.py  # 人格配置
-│   │   ├── prompt.py       # SYSTEM_PROMPT + 昼夜节律上下文 + temperature
-│   │   └── sprite_prompt.py # 两段式精灵生成专用prompt (16×16高分辨率网格)
+│   │   ├── personality.py  # OCEAN + MBTI + 原型人格引擎
+│   │   ├── prompt.py       # 模块化提示词 + AI预分析组装 (见提示词系统章节)
+│   │   ├── sprite_prompt.py # 两段式精灵生成专用prompt (16×16高分辨率网格)
+│   │   ├── sprite_library.py # 精灵库查询/持久化 (新增)
+│   │   └── sprites/        # 预生成精灵JSON (11类: animals/weather/food/...) (新增)
+│   ├── drive/               # 驱动系统 (新增)
+│   │   ├── engine.py       # 动机引擎 (drive values + decay)
+│   │   └── prompts.py      # 驱动相关 prompt
 │   ├── info/               # 信息获取
 │   │   └── news.py         # 多源热榜抓取 (B站/GitHub/Tophub/百度, 4源异步)
 │   ├── memory/             # 记忆系统
@@ -73,6 +79,9 @@ easytalk/
 │   ├── milestones.jsonl    # 关系里程碑
 │   ├── attachment_style.json # 依恋风格
 │   └── llm_config.json     # LLM 多供应商配置 (api_key/base_url/model)
+├── scripts/                # 工具脚本
+│   ├── batch_generate_sprites.py  # 批量预生成精灵
+│   └── adjust_sprite_scales.py    # 精灵缩放调整
 ├── Dockerfile              # python:3.10-slim, uvicorn
 ├── docker-compose.yml      # pgvector/pgvector:pg15 + app, 端口 8000
 ├── requirements.txt        # fastapi, uvicorn, psycopg2-binary, openai, httpx, apscheduler
@@ -134,6 +143,108 @@ easytalk/
 | 离线分析 | 每7分钟 | 预测代理离线分析 (predictive_agent.py) |
 | System2巩固 | 每23分钟 | 慢速推理结果巩固 (consciousness_loop.py) |
 
+## 提示词系统 (模块化 + AI 预分析)
+
+### 架构
+
+核心提示词拆分为 10 个独立模块，通过 `assemble_prompt()` 按需组装：
+
+```
+用户消息
+  ↓
+_analyze_intent()          AI 快速分类 (~200ms, ~60 tokens)
+  ↓                          输出标签: ["emotion","weather","story","object","topic","none"]
+  ↓                          失败时自动降级为关键词匹配
+assemble_prompt(msg, tags)
+  ↓
+┌─────────────────────────────────────────────┐
+│ 基础模块（始终加载，~970 tokens）              │
+│  _MODULE_ROLE        角色 + 情绪调节 + 关系伦理│
+│  _MODULE_FACS        27参数手册 + 8基本情绪   │
+│  _MODULE_ANIMATION   多帧序列 + 头部动画      │
+│  _MODULE_OUTPUT      JSON输出格式             │
+├─────────────────────────────────────────────┤
+│ 可选模块（AI 按需加载，~1,100 tokens 总计）    │
+│  _MODULE_COMPOSITE     8个复合表情示例         │
+│  _MODULE_COLOR_FIELDS  氛围光晕 + 5种天气配方   │
+│  _MODULE_BACKGROUND    6种话题背景色            │
+│  _MODULE_SPRITES       精灵关键词生成           │
+│  _MODULE_SCENES        Freytag叙事 + 写作技巧   │
+└─────────────────────────────────────────────┘
+```
+
+### 调用链
+
+```
+_build_context(msg)
+  → _analyze_intent(msg)              # chat.py: 轻量LLM分类
+  → build_dynamic_system_prompt(msg=msg, intent_tags=tags)  # personality.py
+  → assemble_prompt(msg, tags=tags)   # prompt.py: 模块组装
+  → 拼接完整 system prompt → 主 LLM 调用
+```
+
+### 模块触发条件
+
+| 模块 | AI 标签 | 关键词（降级用） |
+|------|---------|-----------------|
+| composite | `emotion` | "难过"、"伤心"、"愤怒"... |
+| color_fields | `emotion` / `weather` / `topic` | "下雨"、"夕阳"、"火锅"... |
+| background | `emotion` / `weather` / `topic` | 同上 + "森林"、"浪漫"... |
+| sprites | `object` | "帽子"、"猫"、"咖啡"... |
+| scenes | `story` | "讲故事"、"童话"、"寓言"... |
+
+### Token 节省
+
+简单闲聊（"你好"）：~970 tokens vs 完整版 ~2,168 tokens（省 56%）。完整 FACS 手册始终保留，表情质量不受影响。
+
+### 修改提示词
+
+- 修改基础内容：编辑 `prompt.py` 中对应 `_MODULE_*` 字符串
+- 修改触发逻辑：编辑 `prompt.py:assemble_prompt()` 或 `_analyze_intent_sync()` 中的 `_INTENT_PROMPT`
+- 新增模块：在 `prompt.py` 中定义 `_MODULE_*` 字符串 → 加入 `_BASE_MODULES` 或 `assemble_prompt()` 中的条件分支
+
+## 多段叙事 (Scenes)
+
+用户请求讲故事时，AI 输出多场景分段回复，每段独立表情/色块/背景：
+
+- **触发**: `_is_story_request()` 检测故事关键词 → `max_tokens` 8192 + temperature +0.05
+- **结构**: Freytag 金字塔 (开场→发展→高潮→结局)，Show Don't Tell，多感官描写
+- **前端**: `scene_done` 事件暂停流，显示"▶ 下一段"按钮，点击后播出缓冲帧
+- **流式协议**: `scene_start` (场景切换) → `text` (逐字) → `scene_done` (暂停等待点击)
+- **关键文件**: `prompt.py:_MODULE_SCENES`, `chat.py:_is_story_request()`, `ui.js:showStoryContinueBtn()`
+
+## 两段式精灵生成
+
+### 流程
+
+```
+主 LLM → sprite_keywords (2-3个中文关键词)
+  ↓
+_generate_sprites() [asyncio.to_thread]
+  ├─ 1) lookup_sprite(keywords) → 检查预建精灵库 (sprites/*.json)
+  └─ 2) 库未命中 → sprite_prompt.py LLM 生成 16×16 像素网格
+  ↓
+persist_sprite() → 存入精灵库供后续复用
+  ↓
+pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
+```
+
+### 关键文件
+
+- `services/identity/sprite_prompt.py` — 精灵生成专用 prompt
+- `services/identity/sprite_library.py` — `lookup_sprite()` / `persist_sprite()`
+- `services/identity/sprites/` — 11 类预生成精灵 (animals/weather/food/objects/...)
+- `static/js/visuals.js` — offscreen canvas 预渲染 + `drawImage`
+
+## 驱动系统 (Drive)
+
+新增动机引擎，追踪 AI 的内在驱动状态：
+
+- `services/drive/engine.py` — 驱动值计算、衰减、更新
+- `services/drive/prompts.py` — 驱动相关 prompt
+- **关键函数**: `get_drive_values()`, `update_drives_on_chat()`, `get_drive_context()`, `get_drive_temp_mod()`
+- 影响 temperature、行为模式、token 预算
+
 ## 部署
 
 - 使用 `docker-compose.yml` 构建和启动
@@ -158,8 +269,12 @@ easytalk/
 
 ## 修改指南
 
-### 调整 AI 性格
-编辑 `services/identity/prompt.py` 中的 `SYSTEM_PROMPT` 或 `build_time_context()`
+### 调整 AI 性格/表情/氛围
+- **基础角色/表情**: 编辑 `services/identity/prompt.py` 中对应 `_MODULE_*` 字符串
+- **模块触发**: 编辑 `prompt.py:assemble_prompt()` 或 `_analyze_intent_sync()` 中的 `_INTENT_PROMPT`
+- **新增能力模块**: 在 `prompt.py` 中定义 `_MODULE_*` → 加入 `assemble_prompt()` 条件分支
+- **时段语境**: 编辑 `prompt.py:build_time_context()`
+- **人格参数**: 编辑 `personality.py` 中的 OCEAN/MBTI/原型配置
 
 ### 调整 AI 人设
 编辑 `/home/xuwl/app/easyChat/memory/user_persona.md`，重启容器生效
@@ -212,23 +327,6 @@ finally:
 - `_think()`、`_call_llm()` 等 LLM API 调用必须用 `await asyncio.to_thread()` 包裹
 - `chat()` 和 `chat_stream()` 端点均已适配此模式
 - 文件 I/O 和数据库查询同步执行（轻量操作，不会阻塞）
-
-## 两段式精灵生成
-
-主 LLM 输出 `sprite_keywords`（可选，2-3个中文关键词），第二段 LLM (`sprite_prompt.py`) 独立生成 16×16 像素精灵：
-
-```python
-# chat.py: generate() 内
-sprite_task = asyncio.create_task(
-    asyncio.to_thread(_generate_sprites, sprite_keywords)
-)
-# 文本流式期间检查精灵是否完成，完成即发送 pixel_sprites SSE 事件
-# 文本结束后兜底等待
-```
-
-- `_generate_sprites()` 是同步函数，通过 `asyncio.to_thread` 在线程池执行
-- 精灵前端渲染使用 offscreen canvas 预渲染 + `drawImage`（~50次/帧），替代 fillRect 循环（~12,800次/帧）
-- `ctx.imageSmoothingEnabled = false` 保持像素艺术清晰
 
 ## 前端状态持久化
 

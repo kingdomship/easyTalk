@@ -118,14 +118,17 @@ interface ChatResponse {
 }
 
 interface SSEEvent {
-  type: 'emotions' | 'text' | 'done' | 'error' | 'thinking' | 'pixel_sprites';
+  type: 'emotions' | 'text' | 'done' | 'error' | 'thinking' | 'pixel_sprites' | 'scene_start' | 'scene_done';
   emotions?: RawEmotion[];
   text?: string;
   source?: string;
   label?: string;
   affect?: PankseppAffect;
   color_fields?: ColorField[];
+  background?: string;
   sprites?: PixelSprite[];
+  index?: number;
+  total?: number;
 }
 
 interface ColorField {
@@ -207,6 +210,8 @@ declare function updateColorFields(dt: number): void;
 declare function circadianBaseColor(): RGB;
 declare function circadianBrightness(): number;
 declare function updateAtmosphere(dt: number): void;
+declare function getEffectiveMoodColor(): RGB;
+declare function initAudio(): void;
 declare function playTypingSound(): void;
 declare function addDebugLog(level: string, title: string, msg: string, analysis?: string): void;
 declare function escapeHtml(s: string): string;

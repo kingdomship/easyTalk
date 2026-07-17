@@ -13,7 +13,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.db import q, execute, init_db
-from app.utils import get_background_executor, get_llm, get_llm_model
+from app.utils import get_background_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear
 from app.models import ChatRequest
 from app.emotion_params import (
     make_default_frame, clamp_frame, jitter_frame,
@@ -25,18 +25,20 @@ from services.memory.search import index_turn, build_memory_context
 from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
 from services.identity.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
 from services.identity.sprite_prompt import SPRITE_SYSTEM_PROMPT, build_sprite_user_prompt
-from services.emotion.affect import update_affect, get_affect_context, get_regulation_strategy, get_valence_context
+from services.identity.sprite_library import lookup_sprite, persist_sprite
+from services.emotion.affect import update_affect, get_affect_context, get_valence_context
 from services.memory.crystallization import maybe_crystallize, get_crystal_context
-from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod
+from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod, get_drive_temp_mod
 from services.identity.guard import maybe_guard, get_drift_correction
 from services.identity.drift_detector import check_and_intervene
 from services.memory.knowledge_graph import maybe_extract_kg
 from services.cognition.predictive_agent import pre_dialogue_analyze, feedback, get_prediction_context
-from services.cognition.dual_system import gate_decision
+from services.cognition.dual_system import gate_decision, self_evaluate, maybe_deep_audit, get_self_eval_correction
 from services.memory.narrative import detect_situations, distill_episode, get_narrative_context
 from services.emotion.salience import update_salience, get_salience_context
 from services.emotion.attachment import analyze_attachment, get_attachment_context
 from services.cognition.prediction import generate_prediction, check_prediction
+from services.drive.engine import update_drives_on_chat, get_drive_context, get_drive_values
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -92,7 +94,8 @@ def _archive_conversation(user_msg: str, avatar_reply: str, thinking: str | None
 def _post_reply_pipeline(msg: str, reply: str, label: str,
                          thinking: str | None = None,
                          llm_tags: list[str] | None = None,
-                         turn_id: int | None = None):
+                         turn_id: int | None = None,
+                         is_deep: bool = False):
     """Unified post-reply pipeline: index, update state, archive, fire background tasks."""
     if turn_id is not None:
         if llm_tags:
@@ -104,6 +107,7 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     update_salience(msg, label)
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, reply, thinking)
+    get_background_executor().submit(update_drives_on_chat, msg, label, is_deep=is_deep)
     get_background_executor().submit(generate_prediction, msg, reply)
     get_background_executor().submit(pre_dialogue_analyze)
     get_background_executor().submit(feedback, actual_emotion=label)
@@ -116,6 +120,8 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     get_background_executor().submit(analyze_attachment)
     get_background_executor().submit(check_and_intervene, reply)
     get_background_executor().submit(maybe_extract_kg, msg)
+    get_background_executor().submit(self_evaluate, msg, reply, turn_id)
+    get_background_executor().submit(maybe_deep_audit)
 
 
 def _maybe_condense():
@@ -379,6 +385,18 @@ def _row_to_response(row):
     return result
 
 
+_STORY_MARKERS = ["讲故事", "童话", "睡前故事", "讲个故事", "说个故事",
+                 "讲一个故事", "来个故事", "讲段故事", "叙事",
+                 "今天发生了什么", "今天发生了", "讲讲今天",
+                 "编个", "听故事", "小故事", "讲个童话",
+                 "说书", "评书", "寓言", "传说", "神话"]
+
+
+def _is_story_request(msg: str) -> bool:
+    """Detect whether the user is requesting a storytelling/narrative response."""
+    return any(m in msg for m in _STORY_MARKERS)
+
+
 def _is_deep_question(msg: str) -> bool:
     """Detect whether a message warrants deep thinking before reply."""
     if len(msg) > 100:
@@ -404,6 +422,52 @@ _THINKING_PROMPT = """你是一个深度思考助手。用户提出了一个值�
 3. 你能提供什么独特的洞见？
 
 用中文，控制在300字以内。直接输出分析内容，不要用JSON格式。"""
+
+_INTENT_PROMPT = """分析用户消息的意图，输出JSON数组。可选标签：
+emotion: 表达了强烈情绪（悲伤/愤怒/恐惧/兴奋/感动等）
+weather: 提到天气/季节/自然场景
+story: 要求讲故事或叙述事件
+object: 提到具体可见的物品（帽子/花/猫/咖啡等）
+topic: 提到有氛围感的话题（食物/浪漫/回忆/庆祝/旅行等）
+none: 以上都不适用
+
+只输出JSON数组，如["emotion","weather"]，不要其他内容。"""
+
+
+def _analyze_intent_sync(msg: str) -> list[str] | None:
+    """Quick AI pre-analysis of user intent for module selection.
+
+    Returns a list of intent tags, or None on failure (fall back to keyword
+    matching).
+    """
+    try:
+        client = get_llm()
+        if client is None:
+            return None
+        resp = client.chat.completions.create(
+            model=get_llm_model(),
+            messages=[
+                {"role": "system", "content": _INTENT_PROMPT},
+                {"role": "user", "content": msg},
+            ],
+            temperature=0.0,
+            max_tokens=50,
+        )
+        raw = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            data = json.loads(raw[start:end])
+            if isinstance(data, list):
+                return [t for t in data if isinstance(t, str)]
+    except Exception:
+        logger.warning("Intent analysis failed, falling back to keywords", exc_info=True)
+    return None
+
+
+async def _analyze_intent(msg: str) -> list[str] | None:
+    """Async wrapper for _analyze_intent_sync."""
+    return await asyncio.to_thread(_analyze_intent_sync, msg)
 
 
 def _think(msg: str) -> str | None:
@@ -431,13 +495,14 @@ def _think(msg: str) -> str | None:
         return None
 
 
-def _build_context(msg: str, thinking: str | None = None) -> list:
+def _build_context(msg: str, thinking: str | None = None,
+                   intent_tags: list[str] | None = None) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
     try:
         from services.identity.personality import build_dynamic_system_prompt, get_personality_context
-        system_msg = build_dynamic_system_prompt() + f"\n\n[当前时间节律]\n{time_context}"
+        system_msg = build_dynamic_system_prompt(msg=msg, intent_tags=intent_tags) + f"\n\n[当前时间节律]\n{time_context}"
         personality_ctx = get_personality_context()
         if personality_ctx:
             system_msg += "\n\n" + personality_ctx
@@ -456,9 +521,6 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     affect_ctx = get_affect_context()
     if affect_ctx:
         system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
-    reg_strat = get_regulation_strategy()
-    if reg_strat:
-        system_msg += "\n[建议回应策略]\n" + reg_strat
 
     valence_ctx = get_valence_context()
     if valence_ctx:
@@ -467,6 +529,11 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
     salience_ctx = get_salience_context()
     if salience_ctx:
         system_msg += "\n" + salience_ctx
+
+    # Drive state context (inner motivational state)
+    drive_ctx = get_drive_context()
+    if drive_ctx:
+        system_msg += "\n\n[内心驱动状态]\n" + drive_ctx
 
     attachment_ctx = get_attachment_context()
     if attachment_ctx:
@@ -499,14 +566,19 @@ def _build_context(msg: str, thinking: str | None = None) -> list:
             "而是用你一贯的口吻自然地融入见解：\n\n" + thinking
         )
 
-    # MentalProcesses state machine mode
+    # MentalProcesses state machine mode (with drive influence)
     from services.emotion.affect import get_affect
-    mode = determine_mode(_is_deep_question(msg), get_affect())
+    drives = get_drive_values()
+    mode = determine_mode(_is_deep_question(msg), get_affect(), drives=drives)
     system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
 
     drift_correction = get_drift_correction()
     if drift_correction:
         system_msg += "\n\n" + drift_correction
+
+    self_eval_correction = get_self_eval_correction()
+    if self_eval_correction:
+        system_msg += "\n\n" + self_eval_correction
 
     try:
         from services.memory.knowledge_graph import get_knowledge_graph_context
@@ -545,7 +617,7 @@ _FALLBACKS = [
 ]
 
 
-def _call_llm(messages: list) -> tuple:
+def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
     """Call DeepSeek and extract JSON from the response.
 
     Returns (data, fallback, tags) — tags are semantic keywords from the
@@ -570,17 +642,24 @@ def _call_llm(messages: list) -> tuple:
         rhythm_temp = get_rhythm_temperature(affect)
         # Extract user message (last in the list) for mode detection
         user_msg = msgs[-1]["content"].split("\n（请以上述JSON格式回复）")[0] if msgs else ""
-        mode = determine_mode(_is_deep_question(user_msg), affect)
+        drives = get_drive_values()
+        mode = determine_mode(_is_deep_question(user_msg), affect, drives=drives)
 
         # Compute idle minutes for arousal state
         last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
         idle_min = (float(last_row["secs"]) / 60.0) if last_row and last_row["secs"] else 0
 
         arousal = determine_arousal(mode, affect, idle_min)
-        temp = rhythm_temp + get_mode_temp_mod(mode) + get_arousal_temp_mod(arousal)
+        temp = (rhythm_temp + get_mode_temp_mod(mode)
+                + get_arousal_temp_mod(arousal)
+                + get_drive_temp_mod(drives))
+        is_story = ("story" in intent_tags) if intent_tags else _is_story_request(user_msg)
+        if is_story:
+            temp += 0.05  # boost creativity for storytelling
+        max_tok = 8192 if is_story else 4096
         resp = client.chat.completions.create(
             model=get_llm_model(), messages=msgs,
-            temperature=temp, max_tokens=4096,
+            temperature=temp, max_tokens=max_tok,
         )
         raw = resp.choices[0].message.content
         start = raw.find("{")
@@ -609,36 +688,103 @@ def _call_llm(messages: list) -> tuple:
         return None, random.choice(_FALLBACKS), []
 
 
-def _generate_sprites(keywords: list) -> list:
-    """Second-stage LLM call: generate pixel sprites from keywords.
+_SKY_EFFECT_PATTERNS = [
+    '雨', '雪', '花瓣', '落叶', '花', '鲜花', '星星', '羽毛',
+    '气泡', '音符', '光点', '蒲公英', '闪光', '雪花', '樱花',
+    '叶子', '蝴蝶', '萤火虫', '流星', '星辰', '冰雹',
+]
 
-    Runs synchronously (called via asyncio.to_thread). Uses a focused
-    short prompt so the call completes quickly, often during text streaming.
+
+def _is_sky_effect(keywords: list[str]) -> bool:
+    """Check if any keyword matches a sky/weather/漫天 pattern."""
+    for kw in keywords:
+        for pat in _SKY_EFFECT_PATTERNS:
+            if pat in kw:
+                return True
+    return False
+
+
+def _grid_has_pixels(grid) -> bool:
+    """Check that a sprite grid has at least one non-zero (visible) pixel."""
+    if not grid:
+        return False
+    for row in grid:
+        s = str(row) if not isinstance(row, str) else row
+        if any(ch != '0' for ch in s):
+            return True
+    return False
+
+
+def _generate_sprites(keywords: list) -> list:
+    """Generate pixel sprites from keywords.
+
+    Checks the pre-built sprite library first. Falls back to LLM generation
+    only for keywords not in the library. Runs synchronously (called via
+    asyncio.to_thread).
     """
     if not keywords:
         return []
+
+    # 1) Check pre-built sprite library
+    lib_sprite = lookup_sprite(keywords)
+    if lib_sprite:
+        logger.info("_generate_sprites: library match for %s → %s", keywords, lib_sprite.get("name"))
+        return [lib_sprite]
+
+    # 2) Fall back to LLM generation
     client = get_llm()
     if client is None:
         return []
+    user_prompt = build_sprite_user_prompt(keywords)
+    if _is_sky_effect(keywords):
+        user_prompt += (
+            "\n[重要] 这是漫天效果！count必须20-30, spread>0.9, weight<0.3, duration>5。"
+            "如果适合（下雨/暴晒），同时生成锚定物件（伞/帽子，anchor=\"head_top\",count=1,weight=0）。"
+        )
     messages = [
         {"role": "system", "content": SPRITE_SYSTEM_PROMPT},
-        {"role": "user", "content": build_sprite_user_prompt(keywords)},
+        {"role": "user", "content": user_prompt},
     ]
     try:
         resp = client.chat.completions.create(
             model=get_llm_model(), messages=messages,
-            temperature=0.7, max_tokens=4096,
+            temperature=0.7, max_tokens=16384,
+            timeout=20.0,
         )
         raw = resp.choices[0].message.content
+        # Log without newlines so we can see the full response
+        raw_flat = raw.replace('\n', '\\n') if raw else ''
+        logger.info("_generate_sprites: raw=%s", raw_flat[:800] if raw_flat else '')
         start = raw.find("[")
         end = raw.rfind("]") + 1
         if start >= 0 and end > start:
             sprites = json.loads(raw[start:end])
             if isinstance(sprites, list):
-                valid = [s for s in sprites if isinstance(s, dict) and s.get("grid")]
-                logger.info("_generate_sprites: %d sprites generated for %s", len(valid), keywords)
+                total_with_grid = sum(1 for s in sprites if isinstance(s, dict) and s.get("grid"))
+                valid = [s for s in sprites if isinstance(s, dict) and s.get("grid") and _grid_has_pixels(s.get("grid"))]
+                if total_with_grid > len(valid):
+                    logger.warning("_generate_sprites: %d sprite(s) rejected for all-zero grid",
+                                   total_with_grid - len(valid))
+                logger.info("_generate_sprites: %d valid / %d total sprites for %s",
+                            len(valid), len(sprites), keywords)
+                for i, vs in enumerate(valid):
+                    grid_type = type(vs.get("grid")).__name__
+                    grid_len = len(vs.get("grid")) if vs.get("grid") else 0
+                    logger.info("_generate_sprites: [%d] name=%s grid_type=%s grid_len=%s count=%s weight=%s anchor=%s",
+                                i, vs.get("name", "?"), grid_type, grid_len,
+                                vs.get("count"), vs.get("weight"), vs.get("anchor"))
+
+                # Persist newly generated sprites for future reuse
+                for vs in valid:
+                    try:
+                        name = vs.get("name", "")
+                        if name and not lookup_sprite([name]):
+                            persist_sprite(vs, [name] + keywords)
+                    except Exception as e:
+                        logger.warning("_generate_sprites: persist failed for %s: %s", vs.get("name"), e)
+
                 return valid
-        logger.warning("_generate_sprites: no valid JSON array in response: %s", raw[:200])
+        logger.warning("_generate_sprites: no valid JSON array in response (len=%d): %s", len(raw) if raw else 0, raw[:200])
         return []
     except Exception as e:
         logger.error("_generate_sprites failed: %s", e)
@@ -684,7 +830,7 @@ async def chat(req: ChatRequest):
                 [msg, row["reply"], row["label"]], fetch="one",
             )
             turn_id = new_row["id"] if new_row else None
-            _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id)
+            _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id, is_deep=False)
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(jitter_frame(f))
@@ -692,9 +838,14 @@ async def chat(req: ChatRequest):
             result["source"] = "cache"
             return result
 
-    thinking = await asyncio.to_thread(_think, msg) if is_deep else None
-    messages = _build_context(msg, thinking)
-    data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages)
+    fg_token = llm_foreground()
+    try:
+        thinking = await asyncio.to_thread(_think, msg) if is_deep else None
+        intent_tags = await _analyze_intent(msg)
+        messages = _build_context(msg, thinking, intent_tags=intent_tags)
+        data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
+    finally:
+        llm_foreground_clear(fg_token)
     if fallback:
         return {"emotions": _fallback_emotion(), "reply": fallback, "source": "fallback"}
 
@@ -705,15 +856,27 @@ async def chat(req: ChatRequest):
     for f in parsed:
         f.update(jitter_frame(f))
         f.update(scale_emotion_params(f))
-    result = {"emotions": parsed, "reply": str(data.get("reply", "...")), "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or []}
+    reply_text = str(data.get("reply", "..."))
+    scenes = data.get("scenes")
+    if isinstance(scenes, list) and scenes:
+        full_reply = reply_text + "\n\n" + "\n\n".join(
+            str(s.get("reply", "")) for s in scenes if isinstance(s, dict) and s.get("reply")
+        )
+    else:
+        full_reply = reply_text
+        scenes = None
+    result = {"emotions": parsed, "reply": reply_text, "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or [], "background": data.get("background")}
+    if scenes:
+        result["scenes"] = scenes
 
     new_row = q(
         "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-        [msg, result["reply"], parsed[0]["label"]], fetch="one",
+        [msg, full_reply, parsed[0]["label"]], fetch="one",
     )
     turn_id = new_row["id"] if new_row else None
     _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
-                         thinking=thinking, llm_tags=llm_tags, turn_id=turn_id)
+                         thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
+                         is_deep=is_deep)
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -755,27 +918,38 @@ async def chat_stream(req: ChatRequest):
                     [msg, row["reply"], row["label"]], fetch="one",
                 )
                 turn_id = new_row["id"] if new_row else None
-                _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id)
+                _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id, is_deep=False)
                 r = _row_to_response(row)
                 for f in r.get("emotions", []):
                     f.update(jitter_frame(f))
                     f.update(scale_emotion_params(f))
-                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': r.get('color_fields') or []}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': r.get('color_fields') or [], 'background': r.get('background')}, ensure_ascii=False)}\n\n"
                 reply = row["reply"]
+                from services.cognition.state_machine import get_typing_delay
+                from services.emotion.affect import get_affect as _get_affect_fn
+                _cache_drives = get_drive_values()
+                _cache_delay = get_typing_delay(
+                    determine_mode(False, _get_affect_fn(), drives=_cache_drives),
+                    _cache_drives, len(reply))
                 for i in range(0, len(reply), 2):
                     yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
-                    await asyncio.sleep(0.03)
+                    await asyncio.sleep(_cache_delay)
                 yield f"data: {json.dumps({'type': 'done', 'source': 'cache'}, ensure_ascii=False)}\n\n"
                 return
 
-        if is_deep:
-            yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
-            thinking = await asyncio.to_thread(_think, msg)
-        else:
-            thinking = None
+        fg_token = llm_foreground()
+        try:
+            if is_deep:
+                yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
+                thinking = await asyncio.to_thread(_think, msg)
+            else:
+                thinking = None
 
-        messages = _build_context(msg, thinking)
-        data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages)
+            intent_tags = await _analyze_intent(msg)
+            messages = _build_context(msg, thinking, intent_tags=intent_tags)
+            data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
+        finally:
+            llm_foreground_clear(fg_token)
         if fallback:
             yield f"data: {json.dumps({'type': 'emotions', 'emotions': _fallback_emotion(), 'label': 'sheepish', 'affect': _get_affect_dict(), 'color_fields': []}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'error', 'text': fallback}, ensure_ascii=False)}\n\n"
@@ -789,15 +963,24 @@ async def chat_stream(req: ChatRequest):
             f.update(jitter_frame(f))
             f.update(scale_emotion_params(f))
         reply = str(data.get("reply", "..."))
+        scenes = data.get("scenes")
+        if isinstance(scenes, list) and scenes:
+            full_reply = reply + "\n\n" + "\n\n".join(
+                str(s.get("reply", "")) for s in scenes if isinstance(s, dict) and s.get("reply")
+            )
+        else:
+            full_reply = reply
+            scenes = None  # ensure None for non-list / empty list
 
         # Persist before streaming — prevents data loss on client disconnect
         new_row = q(
             "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-            [msg, reply, parsed[0]["label"]], fetch="one",
+            [msg, full_reply, parsed[0]["label"]], fetch="one",
         )
         turn_id = new_row["id"] if new_row else None
         _post_reply_pipeline(msg, reply, parsed[0]["label"],
-                             thinking=thinking, llm_tags=llm_tags, turn_id=turn_id)
+                             thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
+                             is_deep=is_deep)
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -806,7 +989,11 @@ async def chat_stream(req: ChatRequest):
 
         lbl = parsed[0]["label"] if parsed else "neutral"
         cf = data.get("color_fields") or []
-        yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf}, ensure_ascii=False)}\n\n"
+        bg = data.get("background")
+        yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg}, ensure_ascii=False)}\n\n"
+        # Scene 0 start event (protocol consistency with scene 1..N)
+        if scenes:
+            yield f"data: {json.dumps({'type': 'scene_start', 'index': 0, 'total': len(scenes) + 1, 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg}, ensure_ascii=False)}\n\n"
 
         # Start background sprite generation if keywords present
         raw_keywords = data.get("sprite_keywords") or []
@@ -821,11 +1008,22 @@ async def chat_stream(req: ChatRequest):
             logger.info("Sprite keywords: %s", sprite_keywords)
         sprite_task = None
         if sprite_keywords:
-            sprite_task = asyncio.create_task(
-                asyncio.to_thread(_generate_sprites, sprite_keywords)
-            )
+            fg_token2 = llm_foreground()
+            try:
+                sprite_task = asyncio.create_task(
+                    asyncio.to_thread(_generate_sprites, sprite_keywords)
+                )
+            finally:
+                llm_foreground_clear(fg_token2)
 
         sprites_sent = False
+        # Compute dynamic typing delay for this reply
+        from services.cognition.state_machine import get_typing_delay
+        from services.emotion.affect import get_affect as _get_affect_fn
+        _stream_drives = get_drive_values()
+        _stream_affect = _get_affect_fn()
+        _stream_mode = determine_mode(is_deep, _stream_affect, drives=_stream_drives)
+        _stream_delay = get_typing_delay(_stream_mode, _stream_drives, len(reply))
         for i in range(0, len(reply), 2):
             yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
             # Check if sprites finished during text streaming
@@ -839,17 +1037,59 @@ async def chat_stream(req: ChatRequest):
                 except Exception as e:
                     logger.error("Sprite task failed (during stream): %s", e)
                     sprites_sent = True
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(_stream_delay)
 
-        # If sprites not ready yet, wait for them
+        # If sprites not ready yet, wait with timeout (8s max)
         if sprite_task and not sprites_sent:
             try:
-                sprites = await sprite_task
+                sprites = await asyncio.wait_for(sprite_task, timeout=8.0)
                 if sprites:
                     logger.info("Sending %d sprites after text streaming", len(sprites))
                     yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
+            except asyncio.TimeoutError:
+                logger.warning("Sprite generation timed out after 8s, skipping sprites")
             except Exception as e:
                 logger.error("Sprite task failed (after stream): %s", e)
+
+        # Scene iteration: if LLM returned multiple story scenes, stream them
+        if scenes:
+            scene_total = len(scenes) + 1  # +1 for the initial scene 0
+            for si, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    continue
+                scene_idx = si + 1
+                scene_reply = scene.get("reply") or ""
+                if not scene_reply:
+                    continue
+
+                # Signal end of previous scene
+                yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_idx - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
+
+                # Build scene_start with visual params
+                se = scene.get("emotions")
+                if isinstance(se, list) and se:
+                    scene_emotions = [clamp_frame(f) for f in se]
+                    for f in scene_emotions:
+                        f.update(jitter_frame(f))
+                        f.update(scale_emotion_params(f))
+                    scene_label = scene_emotions[0].get("label", lbl)
+                else:
+                    scene_emotions = parsed  # inherit from scene 0
+                    scene_label = lbl
+
+                scene_cf = scene.get("color_fields") or cf
+                scene_bg = scene.get("background") or bg
+
+                yield f"data: {json.dumps({'type': 'scene_start', 'index': scene_idx, 'total': scene_total, 'emotions': scene_emotions, 'label': scene_label, 'affect': _get_affect_dict(), 'color_fields': scene_cf, 'background': scene_bg}, ensure_ascii=False)}\n\n"
+
+                # Stream scene text
+                _scene_delay = get_typing_delay(_stream_mode, _stream_drives, len(scene_reply))
+                for i in range(0, len(scene_reply), 2):
+                    yield f"data: {json.dumps({'type': 'text', 'text': scene_reply[i:i+2]}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(_scene_delay)
+
+            # Signal end of final scene
+            yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'done', 'source': 'llm'}, ensure_ascii=False)}\n\n"
 

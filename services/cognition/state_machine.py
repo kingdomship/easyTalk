@@ -61,10 +61,11 @@ MODES = {
 def determine_mode(
     is_deep: bool,
     affect: dict | None = None,
+    drives: dict | None = None,
 ) -> str:
     """Determine the current behavioral mode based on affect and question type.
 
-    Priority: deep question > affect-driven modes > default chat.
+    Priority: deep question > affect-driven modes > drive-driven modes > default chat.
 
     Returns one of: 'chat', 'deep', 'comfort', 'explore', 'play'
     """
@@ -87,7 +88,38 @@ def determine_mode(
         if seeking > 0.35:
             return "explore"
 
+    # Drive-driven mode selection (lower priority than affect)
+    if drives:
+        playfulness = drives.get("playfulness", 0)
+        curiosity = drives.get("curiosity", 0)
+        care = drives.get("care", 0)
+
+        # High playfulness drive biases toward play
+        if playfulness > 0.4:
+            return "play"
+        # High curiosity drive biases toward explore
+        if curiosity > 0.4:
+            return "explore"
+        # High care + some negative affect → comfort even at lower threshold
+        if care > 0.35 and affect:
+            if affect.get("panic", 0) > 0.15 or affect.get("fear", 0) > 0.15:
+                return "comfort"
+
     return "chat"
+
+
+def get_drive_temp_mod(drives: dict | None = None) -> float:
+    """Temperature modifier from drive state. Fatigue cools, play/curiosity heat."""
+    if not drives:
+        return 0.0
+    mod = 0.0
+    if drives.get("fatigue", 0) > 0.4:
+        mod -= 0.04 * drives["fatigue"]
+    if drives.get("playfulness", 0) > 0.4:
+        mod += 0.03 * drives["playfulness"]
+    if drives.get("curiosity", 0) > 0.4:
+        mod += 0.02 * drives["curiosity"]
+    return round(mod, 4)
 
 
 def get_mode_suffix(mode: str) -> str:
@@ -168,3 +200,36 @@ def get_arousal_token_mod(arousal: str) -> int:
 
 def get_arousal_amplitude_mod(arousal: str) -> float:
     return _AROUSAL.get(arousal, _AROUSAL["rest"])["amplitude_mod"]
+
+
+def get_typing_delay(mode: str, drives: dict | None = None,
+                     reply_len: int = 0) -> float:
+    """Calculate dynamic SSE typing delay based on mode, drives, and message length.
+
+    Base delay: 30ms/chunk. Returns clamped value in [0.015, 0.08] seconds.
+
+    Factors:
+    - deep/comfort modes: slower (thoughtful, gentle)
+    - play/explore modes: faster (energetic, curious)
+    - fatigue drive: slower (tired AI)
+    - playfulness drive: faster
+    - long messages (>200 chars): slightly faster to avoid boring user
+    """
+    delay = 0.03  # base
+
+    # Mode modifiers
+    mode_mods = {"deep": 0.010, "comfort": 0.005, "explore": -0.005, "play": -0.010}
+    delay += mode_mods.get(mode, 0)
+
+    # Drive modifiers
+    if drives:
+        if drives.get("fatigue", 0) > 0.4:
+            delay += 0.015 * min(1.0, drives["fatigue"])
+        if drives.get("playfulness", 0) > 0.4:
+            delay -= 0.005
+
+    # Long messages: speed up slightly
+    if reply_len > 200:
+        delay -= 0.005
+
+    return max(0.015, min(0.08, delay))

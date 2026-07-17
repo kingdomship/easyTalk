@@ -24,6 +24,7 @@ from services.emotion.affinity import init_affinity_db
 from services.emotion.affect import init_affect_db
 from services.reflection.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed, system2_consolidation
 from services.emotion.salience import init_salience_db
+from services.drive.engine import init_drive_db, drive_heartbeat
 from app.cleanup import cleanup_old_data
 from services.cognition.predictive_agent import offline_analysis
 from app.config import MEMORY_DIR
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI):
     init_affect_db()
     init_loop_db()
     init_salience_db()
+    init_drive_db()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
     scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)
@@ -85,11 +87,13 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(cleanup_old_data, "cron", hour=3, minute=7)
     scheduler.add_job(offline_analysis, "cron", minute="*/7")
     scheduler.add_job(system2_consolidation, "cron", minute="*/23")
+    scheduler.add_job(drive_heartbeat, "cron", minute="*/10")
     scheduler.start()
 
     # ── Catch-up: fill gaps from downtime ──────────────────────
-    from app.catchup import catchup_mood
+    from app.catchup import catchup_mood, catchup_drives
     catchup_mood()                                          # fast: inline
+    catchup_drives()                                        # fast: inline
     get_background_executor().submit(_run_diary_catchup)    # slow: thread
     # ────────────────────────────────────────────────────────────
 

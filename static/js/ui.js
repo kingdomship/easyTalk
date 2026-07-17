@@ -73,6 +73,11 @@ function hideDialog() {
   clearTimeout(dlgTimer);
   dialog.classList.remove('visible');
   document.getElementById('choice-buttons')?.remove();
+  if (abortController) { abortController.abort(); abortController = null; }
+  storyPaused = false; storyBuffer = [];
+  var btn = document.getElementById('story-continue-btn');
+  if (btn) btn.remove();
+  pending = false; sendBtn.disabled = false;
 }
 
 // JRPG-style choice buttons
@@ -102,7 +107,8 @@ function checkChoices(reply) {
     btn.onmouseenter = () => { btn.style.borderColor = 'var(--accent)'; btn.style.background = 'rgba(124,131,255,0.15)'; };
     btn.onmouseleave = () => { btn.style.borderColor = 'rgba(124,131,255,0.3)'; btn.style.background = 'rgba(18,18,42,0.9)'; };
     btn.addEventListener('click', () => {
-      input.value = seg.trim();
+      textarea.value = seg.trim();
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
       container.remove();
       sendMessage();
     });
@@ -1100,23 +1106,210 @@ canvas.addEventListener('click', e => {
 // Input / Chat
 // ═══════════════════════════════════════════
 let pending = false;
+let abortController = null;
+let storyPaused = false;
+let storyBuffer = [];
 
-input.addEventListener('keydown', e => {
-  if (e.key === 'Enter') sendMessage();
+function autoGrow() {
+  textarea.style.height = 'auto';
+  var h = Math.min(textarea.scrollHeight, 200);
+  textarea.style.height = h + 'px';
+  // Toggle expanded class for border-radius transition
+  if (h > 50) inputRow.classList.add('expanded');
+  else inputRow.classList.remove('expanded');
+  // Character count
+  var len = textarea.value.length;
+  if (len > 350) {
+    charCount.textContent = len + '/500';
+    charCount.classList.add('visible');
+    charCount.classList.toggle('warning', len > 460);
+  } else {
+    charCount.classList.remove('visible', 'warning');
+  }
+}
+
+function resetTextarea() {
+  textarea.value = '';
+  textarea.style.height = 'auto';
+  inputRow.classList.remove('expanded');
+  charCount.classList.remove('visible', 'warning');
+}
+
+textarea.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
   if (state === STATE.STARFIELD) startConvergence();
 });
 
-input.addEventListener('focus', () => {
+textarea.addEventListener('input', autoGrow);
+
+textarea.addEventListener('focus', () => {
   if (state === STATE.STARFIELD) startConvergence();
 });
+
+// ── Kaomoji picker ──
+
+function renderKaomojiGrid(catId) {
+  var cat = KAOMOJI_DATA[catId];
+  if (!cat) return;
+  activeKaomojiCat = catId;
+  // Update category buttons
+  var cats = kaomojiCats.querySelectorAll('.kaomoji-cat');
+  cats.forEach(function(c) { c.classList.toggle('active', c.dataset.cat === catId); });
+  // Render grid
+  kaomojiGrid.innerHTML = cat.items.map(function(k) {
+    return '<button class="kaomoji-item" data-kaomoji="' + escapeHtml(k) + '">' + escapeHtml(k) + '</button>';
+  }).join('');
+}
+
+function toggleKaomojiPanel() {
+  var open = kaomojiPanel.classList.contains('visible');
+  if (open) { closeKaomojiPanel(); return; }
+  // Render categories
+  kaomojiCats.innerHTML = KAOMOJI_CATEGORIES.map(function(c) {
+    return '<button class="kaomoji-cat' + (c.id === activeKaomojiCat ? ' active' : '') + '" data-cat="' + c.id + '">' + c.label + '</button>';
+  }).join('');
+  renderKaomojiGrid(activeKaomojiCat);
+  kaomojiPanel.classList.add('visible');
+  kaomojiBtn.classList.add('active');
+}
+
+function closeKaomojiPanel() {
+  kaomojiPanel.classList.remove('visible');
+  kaomojiBtn.classList.remove('active');
+}
+
+kaomojiBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  toggleKaomojiPanel();
+});
+
+kaomojiCats.addEventListener('click', e => {
+  var catBtn = e.target.closest('.kaomoji-cat');
+  if (!catBtn) return;
+  renderKaomojiGrid(catBtn.dataset.cat);
+});
+
+kaomojiGrid.addEventListener('click', e => {
+  var item = e.target.closest('.kaomoji-item');
+  if (!item) return;
+  insertKaomoji(item.dataset.kaomoji);
+  textarea.focus();
+});
+
+function insertKaomoji(k) {
+  var start = textarea.selectionStart, end = textarea.selectionEnd;
+  var before = textarea.value.substring(0, start);
+  var after = textarea.value.substring(end);
+  textarea.value = before + k + after;
+  // Place cursor after the inserted kaomoji
+  var pos = start + k.length;
+  textarea.setSelectionRange(pos, pos);
+  // Trigger auto-grow
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  // Update char count
+  autoGrow();
+}
+
+// Close panel on outside click
+document.addEventListener('click', e => {
+  if (kaomojiPanel.classList.contains('visible') &&
+      !kaomojiPanel.contains(e.target) &&
+      e.target !== kaomojiBtn && !kaomojiBtn.contains(e.target)) {
+    closeKaomojiPanel();
+  }
+});
+
+// Esc to close
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && kaomojiPanel.classList.contains('visible')) {
+    closeKaomojiPanel();
+    textarea.focus();
+  }
+});
+
+function _applySceneStart(evt) {
+  clearInterval(thinkingTimer);
+  if (evt.emotions) setSequence(evt.emotions, '');
+  if (evt.affect) updateMoodFromAffect(evt.affect);
+  else if (evt.label) updateMoodFromEmotion(evt.label);
+  if (evt.color_fields && Array.isArray(evt.color_fields)) {
+    colorFieldsTarget = evt.color_fields.map(function(f) {
+      return {
+        color: f.color,
+        cx: f.cx || 0.5, cy: f.cy || 0.5,
+        radius: f.radius || 0.5,
+        blend: f.blend || 'soft-light',
+        opacity: f.opacity != null ? f.opacity : 0.9,
+        blur: f.blur || 0,
+        pulse: f.pulse || null,
+        drift: f.drift || null
+      };
+    });
+  }
+  bgColorTarget = (evt.background && typeof evt.background === 'string') ? evt.background : null;
+}
+
+function showStoryContinueBtn() {
+  var existing = document.getElementById('story-continue-btn');
+  if (existing) existing.remove();
+  var btn = document.createElement('button');
+  btn.id = 'story-continue-btn';
+  btn.className = 'story-continue-btn';
+  btn.textContent = '▶ 下一段';
+  btn.addEventListener('click', function() {
+    storyPaused = false;
+    btn.remove();
+    var text = dlgText || '';
+    var buf = storyBuffer;
+    storyBuffer = [];
+    for (var i = 0; i < buf.length; i++) {
+      var item = buf[i];
+      if (item.type === 'scene_start') {
+        _applySceneStart(item.evt);
+      } else if (item.type === 'text') {
+        text += item.evt.text;
+        playTypingSound();
+      } else if (item.type === 'scene_done') {
+        text += '\n\n—— ✦ ——\n\n';
+        dlgText = text;
+        dlgBody.innerHTML = escapeHtml(text);
+        if (item.evt.index != null && item.evt.total != null && item.evt.index < item.evt.total - 1) {
+          storyPaused = true;
+          showStoryContinueBtn();
+          storyBuffer = buf.slice(i + 1);
+          return;
+        }
+      } else if (item.type === 'done') {
+        clearInterval(thinkingTimer);
+        dlgText = text;
+        dlgBody.innerHTML = escapeHtml(text);
+        checkChoices(text);
+        pending = false; sendBtn.disabled = false; textarea.focus();
+        return;
+      }
+    }
+    dlgText = text;
+    dlgBody.innerHTML = escapeHtml(text) + '<span class="cursor-blink"></span>';
+    // Fallback: if no "done" event in buffer (e.g. stream aborted), reset pending
+    pending = false; sendBtn.disabled = false;
+  });
+  dialog.appendChild(btn);
+}
 
 async function sendMessage() {
-  const text = input.value.trim();
+  const text = textarea.value.trim();
   if (!text || pending) return;
   if (state !== STATE.CHAT) return;
 
+  initAudio(); // warm up AudioContext inside user gesture
   topicBubbles.classList.remove('visible');
-  input.value = ''; pending = true; sendBtn.disabled = true;
+  closeKaomojiPanel();
+  resetTextarea(); pending = true; sendBtn.disabled = true;
+  // Clear any lingering sprites from previous reply
+  if (typeof pixelSprites !== 'undefined') pixelSprites.length = 0;
 
   // Position dialog (responsive)
   const faceCenterX = canvas.width / 2;
@@ -1137,10 +1330,12 @@ async function sendMessage() {
   let streamedReply = '';
 
   try {
+    abortController = new AbortController();
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
+      signal: abortController.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -1156,8 +1351,13 @@ async function sendMessage() {
       // Parse SSE events from buffer
       const lines = buffer.split('\n');
       buffer = '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) { buffer = line; continue; }
+      for (let li = 0; li < lines.length; li++) {
+        var line = lines[li];
+        if (!line.startsWith('data: ')) {
+          // Only keep the LAST non-data line as a potential partial
+          if (li === lines.length - 1 && line !== '') buffer = line;
+          continue;
+        }
         try {
           const evt = JSON.parse(line.slice(6));
           if (evt.type === 'emotions') {
@@ -1179,9 +1379,42 @@ async function sendMessage() {
                 };
               });
             }
+            bgColorTarget = (evt.background && typeof evt.background === 'string') ? evt.background : null;
           } else if (evt.type === 'pixel_sprites') {
             if (evt.sprites && Array.isArray(evt.sprites) && typeof spawnPixelSprites === 'function') {
+              console.log('[sprite] SSE received:', evt.sprites.length, 'sprites');
+              for (var si = 0; si < evt.sprites.length; si++) {
+                var sp = evt.sprites[si];
+                console.log('[sprite] SSE sp[' + si + ']: grid_type=' + (Array.isArray(sp.grid) ? 'array[' + sp.grid.length + ']' : typeof sp.grid) + ' palette_len=' + (sp.palette ? sp.palette.length : 0) + ' count=' + sp.count + ' weight=' + sp.weight + ' anchor=' + sp.anchor);
+                if (sp.grid && Array.isArray(sp.grid) && sp.grid.length > 0) {
+                  // Show all 16 rows to check if any have non-zero content
+                  var hasNonZero = false;
+                  for (var ri = 0; ri < sp.grid.length; ri++) {
+                    if (sp.grid[ri] !== '0000000000000000') { hasNonZero = true; break; }
+                  }
+                  console.log('[sprite] SSE sp[' + si + '] all_rows_zero=' + !hasNonZero + ' grid[0]=' + sp.grid[0] + ' grid[7]=' + (sp.grid[7] || 'N/A'));
+                }
+              }
               spawnPixelSprites(evt.sprites);
+            }
+          } else if (evt.type === 'scene_done') {
+            if (storyPaused) {
+              // Buffer: user hasn't clicked "continue" yet
+              storyBuffer.push({ type: 'scene_done', evt: evt });
+            } else {
+              streamedReply += '\n\n—— ✦ ——\n\n';
+              dlgBody.innerHTML = escapeHtml(streamedReply);
+              if (evt.index != null && evt.total != null && evt.index < evt.total - 1) {
+                storyPaused = true;
+                dlgText = streamedReply;
+                showStoryContinueBtn();
+              }
+            }
+          } else if (evt.type === 'scene_start') {
+            if (storyPaused) {
+              storyBuffer.push({ type: 'scene_start', evt: evt });
+            } else {
+              _applySceneStart(evt);
             }
           } else if (evt.type === 'thinking') {
             dlgBody.innerHTML = '<span class="thinking-indicator">思考中<span class="thinking-dots">...</span></span>';
@@ -1194,19 +1427,27 @@ async function sendMessage() {
               if (dotsEl) dotsEl.textContent = dotFrames[dotIdx];
             }, 400);
           } else if (evt.type === 'text') {
-            clearInterval(thinkingTimer);
-            streamedReply += evt.text;
-            playTypingSound();
-            dlgBody.innerHTML = escapeHtml(streamedReply) + '<span class="cursor-blink"></span>';
+            if (storyPaused) {
+              storyBuffer.push({ type: 'text', evt: evt });
+            } else {
+              clearInterval(thinkingTimer);
+              streamedReply += evt.text;
+              playTypingSound();
+              dlgBody.innerHTML = escapeHtml(streamedReply) + '<span class="cursor-blink"></span>';
+            }
           } else if (evt.type === 'error') {
             clearInterval(thinkingTimer);
             streamedReply = evt.text;
             dlgBody.innerHTML = escapeHtml(streamedReply);
             addDebugLog('error', 'LLM调用失败', evt.text, 'DeepSeek API 可能超时或返回异常，检查 API Key 和网络连接');
           } else if (evt.type === 'done') {
-            clearInterval(thinkingTimer);
-            dlgBody.innerHTML = escapeHtml(streamedReply);
-            checkChoices(streamedReply);
+            if (storyPaused) {
+              storyBuffer.push({ type: 'done' });
+            } else {
+              clearInterval(thinkingTimer);
+              dlgBody.innerHTML = escapeHtml(streamedReply);
+              checkChoices(streamedReply);
+            }
           }
         } catch(e) {
           // Partial JSON, keep in buffer
@@ -1222,7 +1463,16 @@ async function sendMessage() {
     addDebugLog('error', '请求失败', err.message, '检查容器是否运行、网络是否正常、DeepSeek API 是否可达');
   } finally {
     clearInterval(thinkingTimer);
-    pending = false; sendBtn.disabled = false; input.focus();
+    abortController = null;
+    if (storyPaused) {
+      // Story still in progress — don't clean up, user needs to click through
+      pending = true;  // keep input locked until story finishes
+    } else {
+      storyPaused = false; storyBuffer = [];
+      var btn = document.getElementById('story-continue-btn');
+      if (btn) btn.remove();
+      pending = false; sendBtn.disabled = false; textarea.focus();
+    }
     if (streamedReply) {
       dlgText = streamedReply;
     }
@@ -1242,7 +1492,8 @@ async function loadTopics() {
     topicBubbles.querySelectorAll('.topic-bubble').forEach(/** @param {HTMLElement} b */ b => {
       b.addEventListener('click', () => {
         const prompt = b.dataset.prompt;
-        input.value = prompt;
+        textarea.value = prompt;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
         topicBubbles.classList.remove('visible');
         sendMessage();
       });
@@ -1321,6 +1572,11 @@ if (!restored) {
 	  dialog.classList.add('visible');
 	  dlgBody.innerHTML = formatDialogText(dlgText) + '<span class="dlg-arrow">▼</span>';
 	  dlgDisplayed = dlgText.length;
+	  inputRow.classList.add('visible');
+	}
+	// Rebuild story continue button if we were paused before refresh
+	if (restored && storyPaused) {
+	  showStoryContinueBtn();
 	}
 requestAnimationFrame(loop);
 

@@ -20,16 +20,21 @@
   /* ── Input bar ── */
   #input-row {
     position:fixed; bottom:40px; left:50%; transform:translateX(-50%);
-    display:flex; gap:8px; align-items:center;
+    display:flex; gap:6px; align-items:flex-end;
     background:rgba(18,18,42,0.85); backdrop-filter:blur(12px);
     border:1px solid rgba(124,131,255,0.2);
     border-color:rgb(var(--mood-r) var(--mood-g) var(--mood-b) / 0.3);
-    border-radius:24px;
-    padding:6px 6px 6px 18px; width:360px; max-width:88vw;
-    opacity:0; pointer-events:none; transition:opacity 0.4s;
+    border-radius:20px; transition:opacity 0.4s, border-radius 0.2s, border-color 0.3s, box-shadow 0.3s;
+    padding:6px 6px 6px 12px; width:420px; max-width:88vw;
+    opacity:0; pointer-events:none;
     z-index:10;
   }
   #input-row.visible { opacity:1; pointer-events:auto; }
+  #input-row:focus-within {
+    border-color:var(--accent);
+    box-shadow: 0 0 12px rgba(124,131,255,0.15);
+  }
+  #input-row.expanded { border-radius:16px; }
   #topic-bubbles {
     position:fixed; bottom:90px; left:50%; transform:translateX(-50%);
     display:flex; gap:8px; flex-wrap:wrap; justify-content:center;
@@ -45,12 +50,30 @@
     transition:all 0.2s; max-width:200px; overflow:hidden; text-overflow:ellipsis;
   }
   .topic-bubble:hover { background:rgba(124,131,255,0.25); border-color:var(--accent); color:#fff; }
-  #input-row input {
-    flex:1; background:none; border:none; outline:none;
+  #input-row textarea {
+    flex:1; background:none; border:none; outline:none; resize:none;
     color:var(--text); font-size:0.9rem; font-family:inherit; letter-spacing:0.03em;
+    line-height:1.5; min-height:28px; max-height:200px;
+    overflow-y:auto; align-self:center;
+    padding:4px 0; margin:0;
+    scrollbar-width:thin; scrollbar-color:rgba(124,131,255,0.2) transparent;
   }
-  #input-row input::placeholder { color:#8a8aaa; }
+  #input-row textarea::placeholder { color:#8a8aaa; }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+  .kaomoji-btn {
+    width:30px; height:30px; border-radius:50%; border:none; flex-shrink:0;
+    background:rgba(124,131,255,0.12); color:inherit; font-size:0.85rem;
+    cursor:pointer; display:flex; align-items:center; justify-content:center;
+    font-family:inherit; transition:all 0.15s; align-self:center;
+  }
+  .kaomoji-btn:hover { background:rgba(124,131,255,0.28); }
+  .kaomoji-btn.active { background:var(--accent); }
+  .char-count {
+    font-size:0.65rem; color:#6a6a8a; flex-shrink:0; align-self:center;
+    opacity:0; transition:opacity 0.2s; min-width:0; white-space:nowrap;
+  }
+  .char-count.visible { opacity:1; }
+  .char-count.warning { color:#e8a840; }
   #input-row button {
     width:36px; height:36px; border-radius:50%; border:none;
     background:var(--accent); color:#fff; font-size:1.1rem; cursor:pointer; flex-shrink:0;
@@ -92,6 +115,24 @@
   #dialog .dlg-body .cursor-blink { display:inline-block; width:7px; height:14px; background:var(--accent); animation:blink 0.5s steps(2) infinite; vertical-align:middle; margin-left:2px; }
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
   .dlg-arrow { display:inline-block; color:var(--accent); font-size:10px; animation:blink 0.8s steps(2) infinite; margin-left:4px; }
+
+/* ── Story continue button ── */
+.story-continue-btn {
+  position: absolute; bottom: -44px; left: 50%; transform: translateX(-50%);
+  background: rgba(124,131,255,0.15); border: 1px solid var(--accent);
+  color: var(--accent); padding: 8px 28px; border-radius: 20px;
+  font-size: 0.85rem; font-family: inherit; letter-spacing: 0.06em;
+  cursor: pointer; white-space: nowrap;
+  animation: continuePulse 1.6s ease-in-out infinite;
+  transition: background 0.2s;
+}
+.story-continue-btn:hover {
+  background: rgba(124,131,255,0.3); box-shadow: 0 0 16px rgba(124,131,255,0.3);
+}
+@keyframes continuePulse {
+  0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.85; }
+  50% { transform: translateX(-50%) scale(1.025); opacity: 1; }
+}
 
   /* ── Auxiliary panel ── */
   #aux-panel {
@@ -490,10 +531,11 @@
   @media (max-width: 768px) {
     #input-row {
       width: calc(100vw - 32px); max-width:100%; bottom:24px;
-      padding:5px 5px 5px 14px; border-radius:20px;
+      padding:5px 5px 5px 10px; border-radius:18px;
     }
-    #input-row input { font-size:0.82rem; }
+    #input-row textarea { font-size:0.82rem; max-height:140px; }
     #input-row button { width:32px; height:32px; font-size:1rem; }
+    .kaomoji-btn { width:28px; height:28px; font-size:0.78rem; }
     #topic-bubbles {
       width: calc(100vw - 32px); max-width:100%; bottom:70px; gap:6px;
     }
@@ -706,3 +748,51 @@
   cursor: pointer; transition: color 0.2s; line-height: 1;
 }
 .constellation-bubble-close:hover { color: #f44336; }
+
+/* ── Kaomoji picker panel ── */
+.kaomoji-panel {
+  position:fixed; z-index:15; bottom:100px; left:50%; transform:translateX(-50%);
+  width:380px; max-width:88vw;
+  background:rgba(22,22,50,0.95); backdrop-filter:blur(16px);
+  border:1px solid rgba(124,131,255,0.25); border-radius:16px;
+  padding:10px; opacity:0; pointer-events:none;
+  transition:opacity 0.2s, transform 0.2s;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.kaomoji-panel.visible { opacity:1; pointer-events:auto; }
+.kaomoji-categories {
+  display:flex; gap:4px; flex-wrap:wrap; margin-bottom:8px;
+  padding-bottom:8px; border-bottom:1px solid rgba(124,131,255,0.15);
+}
+.kaomoji-cat {
+  background:rgba(124,131,255,0.08); border:1px solid rgba(124,131,255,0.15);
+  border-radius:12px; padding:3px 10px; font-size:0.7rem; color:#b0b0e0;
+  cursor:pointer; transition:all 0.15s; white-space:nowrap;
+  font-family:inherit;
+}
+.kaomoji-cat:hover { background:rgba(124,131,255,0.2); border-color:rgba(124,131,255,0.35); color:#fff; }
+.kaomoji-cat.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+.kaomoji-grid {
+  display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;
+  max-height:200px; overflow-y:auto;
+  scrollbar-width:thin; scrollbar-color:rgba(124,131,255,0.2) transparent;
+}
+.kaomoji-item {
+  background:rgba(124,131,255,0.06); border:1px solid rgba(124,131,255,0.1);
+  border-radius:10px; padding:6px 4px; font-size:0.72rem; color:#d0d0e8;
+  cursor:pointer; text-align:center; transition:all 0.12s;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-family:inherit; letter-spacing:0.02em;
+}
+.kaomoji-item:hover {
+  background:rgba(124,131,255,0.22); border-color:var(--accent);
+  color:#fff; transform:scale(1.05);
+}
+.kaomoji-item:active { transform:scale(0.95); }
+
+@media (max-width: 768px) {
+  .kaomoji-panel { width: calc(100vw - 24px); max-width:100%; bottom:88px; border-radius:14px; }
+  .kaomoji-grid { grid-template-columns:repeat(4, 1fr); max-height:160px; }
+  .kaomoji-item { padding:8px 2px; font-size:0.7rem; }
+  .kaomoji-cat { font-size:0.65rem; padding:2px 8px; }
+}

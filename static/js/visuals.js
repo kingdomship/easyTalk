@@ -225,22 +225,50 @@ function drawColorFields() {
 function spawnPixelSprites(data) {
   const spawnX = 0.5, spawnY = 0.35;
   for (const s of data) {
-    if (!s.grid || !s.palette || s.grid.length === 0) continue;
-    const gridSize = s.size || 16;
+    if (!s.grid || !s.palette) { console.warn('[sprite] skip: no grid or palette', s.name); continue; }
+    // Accept grid as array-of-strings, array-of-numbers, OR flat string (LLMs occasionally output any)
+    var gridRows = Array.isArray(s.grid) ? s.grid : [];
+    if (gridRows.length === 0 && typeof s.grid === 'string') {
+      // Flat string: chunk into rows of 'size' characters
+      var gs = s.size || 16;
+      for (var r = 0; r < gs; r++) {
+        gridRows.push(s.grid.substring(r * gs, (r + 1) * gs));
+      }
+    }
+    // Normalize each row to a 16-char string (handles LLM outputting numbers)
+    for (var ri = 0; ri < gridRows.length; ri++) {
+      var row = gridRows[ri];
+      if (typeof row === 'number') {
+        row = String(row).padStart(16, '0');
+      } else if (typeof row === 'string' && row.length < 16) {
+        row = row.padStart(16, '0');
+      }
+      gridRows[ri] = row;
+    }
+    if (gridRows.length === 0) { console.warn('[sprite] skip: empty grid', s.name); continue; }
+    const gridSize = gridRows.length;  // use actual row count instead of s.size
     const spread = s.spread != null ? s.spread : 0.8;
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread;
-    const baseSpeed = 0.08 + Math.random() * 0.12;
-    const baseDuration = s.duration || 3;
+    const weight = s.weight != null ? Math.max(0, Math.min(1, s.weight)) : 0.3;
+    const baseDuration = Math.min(s.duration || 3, 12);
+    var count = Math.max(1, Math.min(s.count || 1, 50)); // clamp 1-50
 
-    // Pre-render sprite to offscreen canvas (once, not per frame)
-    const texSize = gridSize * 4; // internal resolution, 4px per cell
+    // Safety net: if LLM under-counted a sky effect (light sprite with low count),
+    // auto-boost to ensure visible density. Catches rain/snow/petal failures.
+    // Skip anchored sprites — they stay as single copies (umbrella, hat, etc.)
+    if (!s.anchor && weight < 0.4 && count <= 3) {
+      count = 12 + Math.floor(Math.random() * 7); // 12-18
+    }
+
+    // Pre-render sprite texture ONCE (shared by all copies)
+    const texSize = gridSize * 4;
     const oc = document.createElement('canvas');
     oc.width = texSize;
     oc.height = texSize;
     const octx = oc.getContext('2d');
     const texCell = texSize / gridSize;
+    var texPixels = 0;
     for (let row = 0; row < gridSize; row++) {
-      const line = s.grid[row] || '';
+      const line = gridRows[row] || '';
       for (let col = 0; col < line.length; col++) {
         const idx = parseInt(line[col], 10);
         if (idx === 0 || isNaN(idx) || idx >= s.palette.length) continue;
@@ -248,70 +276,257 @@ function spawnPixelSprites(data) {
         if (color === 'transparent' || color === 'rgba(0,0,0,0)') continue;
         octx.fillStyle = color;
         octx.fillRect(col * texCell, row * texCell, texCell, texCell);
+        texPixels++;
       }
     }
+    console.log('[sprite] spawned:', s.name || '?', 'count=' + count, 'grid=' + gridSize + '×' + gridSize, 'pixels=' + texPixels, 'weight=' + weight, 'anchor=' + (s.anchor || 'no'), 'grid[0]=' + (gridRows[0] || '').substring(0, 20), 'palette_len=' + s.palette.length, 'palette[1]=' + s.palette[1]);
+    if (texPixels === 0) { console.warn('[sprite] skip: zero visible pixels', s.name); continue; }
 
-    pixelSprites.push({
-      _tex: oc,
-      gridSize: gridSize,
-      cellScale: s.cell_scale || 1,
-      name: s.name || '',
-      x: spawnX, y: spawnY,
-      vx: Math.cos(angle) * baseSpeed,
-      vy: Math.sin(angle) * baseSpeed,
-      life: 0,
-      duration: baseDuration + Math.random() * baseDuration * 0.5,
-      rotation: (Math.random() - 0.5) * 0.6,
-      rotSpeed: (Math.random() - 0.5) * 0.4,
-      wobble: Math.random() * Math.PI * 2,
-    });
+    // Spawn 'count' copies with randomized physics
+    var isAnchored = !!s.anchor;
+    for (var ci = 0; ci < count; ci++) {
+      var angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread - weight * 0.35;
+      var speed = 0.05 + (1 - weight) * 0.10 + Math.random() * 0.05;
+      // Vary cell_scale slightly for visual variety (less for anchored)
+      var cs = isAnchored ? (s.cell_scale || 1) : (s.cell_scale || 1) * (0.8 + Math.random() * 0.4);
+
+      var landX = 0.2 + Math.random() * 0.6;
+      var stackOffset = 0;
+      if (weight >= 0.5) {
+        stackOffset = _landStackCount % 5;
+        _landStackCount++;
+      }
+
+      // For anchored sprites: minimum 3s total (0.4 emerge + 1.6 hold + 1.0 fade)
+      if (isAnchored) baseDuration = Math.max(baseDuration, 3.0);
+      var initLanded = isAnchored ? true : false;
+      var initDecayDelay = isAnchored ? baseDuration : (1.0 + Math.random() * 2.5);
+      var initLife = isAnchored ? 0.5 : 0;
+
+      pixelSprites.push({
+        _tex: oc,
+        gridSize: gridSize,
+        cellScale: cs,
+        name: s.name || '',
+        x: spawnX, y: spawnY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: initLife,
+        duration: baseDuration + Math.random() * baseDuration * 0.5,
+        rotation: (Math.random() - 0.5) * 0.6,
+        rotSpeed: (Math.random() - 0.5) * 0.4,
+        wobble: Math.random() * Math.PI * 2,
+        weight: isAnchored ? 0 : weight,
+        landX: landX,
+        stackOffset: stackOffset,
+        landed: initLanded,
+        landY: 0,
+        decayTime: 0,
+        decayDelay: initDecayDelay,
+        bounceVel: 0,
+        anchor: s.anchor || null,
+        anchor_rx: s.anchor_rx != null ? s.anchor_rx : 0,
+        anchor_ry: s.anchor_ry != null ? s.anchor_ry : -18,
+      });
+    }
   }
 }
 
 function updatePixelSprites(dt) {
+  try {
+  var spriteDt = Math.min(dt, 0.2);
   for (let i = pixelSprites.length - 1; i >= 0; i--) {
     const s = pixelSprites[i];
-    s.life += dt / s.duration;
-    if (s.life >= 1) { pixelSprites.splice(i, 1); continue; }
-    s.x += s.vx * dt;
-    s.y += s.vy * dt - Math.sin(s.life * 8 + s.wobble) * 0.008;
-    s.vx *= 0.995;
-    s.vy *= 0.995;
+
+    // Anchored sprites: skip all physics, just decay-timer cleanup
+    if (s.anchor) {
+      s.decayTime += spriteDt;
+      if (s.decayTime >= s.decayDelay) { pixelSprites.splice(i, 1); }
+      continue;
+    }
+
+    if (s.landed) {
+      // Bounce settle (spring-like decay toward landY)
+      if (s.bounceVel < 0) {
+        s.y += s.bounceVel * spriteDt;
+        s.bounceVel += 0.6 * spriteDt;
+        if (s.bounceVel >= 0 || s.y >= s.landY) { s.y = s.landY; s.bounceVel = 0; }
+      }
+      // Decay timer on ground — life frozen during display phase
+      s.decayTime += spriteDt;
+      if (s.decayTime < s.decayDelay) {
+        // Sit still on ground, fully visible
+        s.life = 0.5; // mid-life = full alpha/scale in draw
+      } else {
+        // Fade-out phase
+        var fadeDuration = 1.2;
+        s.life = 0.85 + Math.min(1, (s.decayTime - s.decayDelay) / fadeDuration) * 0.15;
+      }
+      if (s.life >= 1) {
+        pixelSprites.splice(i, 1);
+        if (_landStackCount > 0) _landStackCount--;
+        continue;
+      }
+    } else {
+      // In-flight physics
+      s.life += spriteDt / s.duration;
+      // Gravity proportional to weight
+      s.vy += 0.22 * s.weight * spriteDt;
+      // Air resistance: light things slow faster
+      var drag = 0.998 - s.weight * 0.003;
+      s.vx *= drag;
+      s.vy *= drag;
+      // Float wobble for light sprites
+      if (s.weight < 0.3) {
+        s.y -= Math.sin(s.life * 8 + s.wobble) * 0.008;
+      }
+      // Position update
+      s.x += s.vx * spriteDt;
+      s.y += s.vy * spriteDt;
+
+      // Check landing for heavy sprites
+      if (s.weight >= 0.5) {
+        var floorY = 0.82 + s.stackOffset * 0.035;
+        if (s.y >= floorY) {
+          s.y = floorY;
+          s.landY = floorY;
+          s.landed = true;
+          s.bounceVel = -Math.abs(s.vy) * 0.35;
+          s.x += (s.landX - s.x) * 0.3;
+        }
+      }
+
+      // Remove if off-screen or lifetime expired
+      if (s.life >= 1 || s.x < -0.3 || s.x > 1.3 || s.y > 1.1) {
+        pixelSprites.splice(i, 1);
+      }
+    }
   }
+  // Safety: force-clean excess sprites
+  if (pixelSprites.length > 30) {
+    pixelSprites.splice(0, pixelSprites.length - 30);
+  }
+  } catch(e) { console.error('[sprite] update error:', e); }
 }
 
 function drawPixelSprites() {
   if (pixelSprites.length === 0) return;
+  try {
   const prevSmoothing = ctx.imageSmoothingEnabled;
-  ctx.imageSmoothingEnabled = false; // crisp pixel art scaling
+  ctx.imageSmoothingEnabled = false;
+
+  var hasLanded = false;
+
   for (const s of pixelSprites) {
-    let scale, alpha;
-    if (s.life < 0.15) {
-      scale = s.life / 0.15;
-      alpha = scale;
-    } else if (s.life > 0.85) {
-      const fade = (s.life - 0.85) / 0.15;
-      scale = 1 - fade * 0.4;
-      alpha = 1 - fade;
+    // Anchored sprites: face-relative with emerge→hold→fade animation
+    if (s.anchor) {
+      var t2 = performance.now() / 1000;
+      var headBob2 = Math.sin(t2 * 0.78) * 0.03;
+      var tiltX2 = ((curParams.head_tilt || 0) + headBob2) * 3 * faceCS;
+      var faceCX = faceOx + 32 * faceCS + tiltX2;
+      var faceCY = faceOy + 32 * faceCS + faceBob;
+      var anchorPx = faceCX + (s.anchor_rx || 0) * faceCS;
+      var anchorPy = faceCY + (s.anchor_ry || 0) * faceCS;
+
+      // Three-phase: emerge (elastic scale-in) → hold (gentle sway) → fade
+      var age = s.decayTime;
+      var emergeDur = 0.4;
+      var fadeDur = 1.0;
+      var holdDur = Math.max(0.5, s.decayDelay - emergeDur - fadeDur);
+      var aScale, aAlpha;
+      if (age < emergeDur) {
+        var et = age / emergeDur;
+        // easeOutBack
+        var c1 = 1.70158, c3 = c1 + 1;
+        aScale = 1 + c3 * Math.pow(et - 1, 3) + c1 * Math.pow(et - 1, 2);
+        aAlpha = et;
+      } else if (age < emergeDur + holdDur) {
+        aScale = 1 + Math.sin(age * 2.5) * 0.03;
+        aAlpha = 1;
+      } else {
+        var ft = Math.min(1, (age - emergeDur - holdDur) / fadeDur);
+        aScale = 1 - ft * 0.2;
+        aAlpha = 1 - ft;
+      }
+
+      var anchorCell = Math.max(canvas.width, canvas.height) * 0.005 * (s.cellScale || 1);
+      var anchorW = s.gridSize * anchorCell * aScale;
+      var anchorH = s.gridSize * anchorCell * aScale;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, aAlpha));
+      ctx.drawImage(s._tex, anchorPx - anchorW / 2, anchorPy - anchorH / 2, anchorW, anchorH);
+      ctx.restore();
+      continue;
+    }
+    var scale, alpha;
+    if (s.landed) {
+      hasLanded = true;
+      // Landed sprites: no fly-in/out animation, just sit and fade
+      if (s.decayTime < s.decayDelay) {
+        scale = 1; alpha = 1;
+      } else {
+        var fade = Math.min(1, (s.decayTime - s.decayDelay) / 1.2);
+        scale = 1 - fade * 0.3;
+        alpha = 1 - fade;
+      }
+      // Gently drift toward landing X
+      s.x += (s.landX - s.x) * 0.08;
     } else {
-      scale = 1;
-      alpha = 1;
+      if (s.life < 0.15) {
+        scale = s.life / 0.15;
+        alpha = scale;
+      } else if (s.life > 0.85) {
+        var fade2 = (s.life - 0.85) / 0.15;
+        scale = 1 - fade2 * 0.4;
+        alpha = 1 - fade2;
+      } else {
+        scale = 1;
+        alpha = 1;
+      }
     }
 
-    const px = s.x * canvas.width;
-    const py = s.y * canvas.height;
-    const cellSize = Math.max(canvas.width, canvas.height) * 0.005 * scale * (s.cellScale || 1);
-    const totalW = s.gridSize * cellSize;
-    const totalH = s.gridSize * cellSize;
+    var px = s.x * canvas.width;
+    var py = s.y * canvas.height;
+    var cellSize = Math.max(canvas.width, canvas.height) * 0.005 * scale * (s.cellScale || 1);
+    var totalW = s.gridSize * cellSize;
+    var totalH = s.gridSize * cellSize;
 
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(px, py);
-    ctx.rotate(s.rotation + s.rotSpeed * s.life * 5);
+    if (!s.landed) {
+      ctx.rotate(s.rotation + s.rotSpeed * s.life * 5);
+    }
     ctx.drawImage(s._tex, -totalW / 2, -totalH / 2, totalW, totalH);
     ctx.restore();
   }
+
   ctx.imageSmoothingEnabled = prevSmoothing;
+
+  // Draw landing shelf if any sprites have landed
+  if (hasLanded) drawLandingShelf();
+  } catch(e) { console.error('[sprite] draw error:', e); }
+}
+
+function drawLandingShelf() {
+  var shelfY = canvas.height * 0.83;
+  var grad = ctx.createLinearGradient(0, shelfY - 4, 0, shelfY + 1);
+  grad.addColorStop(0, 'rgba(124,131,255,0)');
+  grad.addColorStop(0.5, 'rgba(124,131,255,0.12)');
+  grad.addColorStop(1, 'rgba(124,131,255,0.04)');
+
+  ctx.save();
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, shelfY - 4, canvas.width, 5);
+
+  // Subtle glow line
+  ctx.strokeStyle = 'rgba(124,131,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(canvas.width * 0.05, shelfY);
+  ctx.lineTo(canvas.width * 0.95, shelfY);
+  ctx.stroke();
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════
@@ -540,7 +755,9 @@ let cursorX = null, cursorY = null;
 
 function drawStarfield() {
   // Mood-driven gradient — shifts warm/cool based on conversation sentiment
-  const r = Math.round(moodColor.r), g = Math.round(moodColor.g), b = Math.round(moodColor.b);
+  // Blends AI background override with mood/circadian for topic-aware atmosphere
+  const eff = getEffectiveMoodColor();
+  const r = Math.round(eff.r), g = Math.round(eff.g), b = Math.round(eff.b);
   const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/3.5, 0, canvas.width/2, canvas.height*0.8, canvas.height * 0.75);
   grad.addColorStop(0, `rgb(${r},${g},${b})`);
   grad.addColorStop(0.35, `rgb(${Math.round(r*0.72)},${Math.round(g*0.70)},${Math.round(b*0.74)})`);
@@ -635,7 +852,7 @@ function updateConvergence(dt) {
     }
     inputRow.classList.add('visible');
     loadTopics();
-    input.focus();
+    textarea.focus();
   }
 }
 
@@ -1005,9 +1222,11 @@ function drawSparkleOverlay(oy) {
 
 function drawChat() {
   // Mood-driven radial gradient centered near face position
+  // Blends AI background override with mood/circadian for topic-aware atmosphere
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
-  const mr = Math.round(moodColor.r), mg = Math.round(moodColor.g), mb = Math.round(moodColor.b);
+  const eff = getEffectiveMoodColor();
+  const mr = Math.round(eff.r), mg = Math.round(eff.g), mb = Math.round(eff.b);
   const grad = ctx.createRadialGradient(cx, cy * 0.6, 0, cx, cy * 0.3, Math.max(canvas.width, canvas.height) * 0.72);
   grad.addColorStop(0, 'rgb(' + mr + ',' + mg + ',' + mb + ')');
   grad.addColorStop(0.3, 'rgb(' + Math.round(mr * 0.88) + ',' + Math.round(mg * 0.86) + ',' + Math.round(mb * 0.90) + ')');

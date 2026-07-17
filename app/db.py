@@ -298,4 +298,32 @@ def init_db():
         )
     """)
 
+    # Self-evaluation log for reply quality tracking
+    execute("""
+        CREATE TABLE IF NOT EXISTS self_eval_log (
+            id SERIAL PRIMARY KEY,
+            turn_id INTEGER REFERENCES chat_history(id),
+            user_msg TEXT NOT NULL DEFAULT '',
+            avatar_reply TEXT NOT NULL DEFAULT '',
+            trust_impact REAL DEFAULT 0,
+            warmth_impact REAL DEFAULT 0,
+            engagement_impact REAL DEFAULT 0,
+            risk_level REAL DEFAULT 0,
+            impact_assessment TEXT DEFAULT '',
+            has_contradiction BOOLEAN DEFAULT FALSE,
+            contradiction_desc TEXT DEFAULT '',
+            contradiction_confidence REAL DEFAULT 0,
+            overall_score REAL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_self_eval_log_created_at
+        ON self_eval_log (created_at)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_self_eval_log_turn_id
+        ON self_eval_log (turn_id)
+    """)
+
     _init_done = True

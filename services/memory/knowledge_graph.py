@@ -247,9 +247,12 @@ def get_current_state() -> list[dict]:
 
 
 def get_knowledge_graph_context() -> str:
-    """Build KG context for injection into the system prompt.
+    """Build KG context with two-layer memory separation.
 
-    Returns temporal insights and current entity summary.
+    Profile layer: stable user facts (food/hobby/work/person/tech) — always shown.
+    Relationship layer: recent conversational dynamics — shown with recency filtering.
+
+    Inspired by eros-engine's Profile/Relationship memory design.
     """
     parts = []
 
@@ -259,15 +262,29 @@ def get_knowledge_graph_context() -> str:
 
     state = get_current_state()
     if state:
-        lines = ["## 用户当前的偏好/状态（已知）："]
-        for s in state[:10]:
-            relation_cn = {
-                "likes": "喜欢", "dislikes": "不喜欢", "loves": "热爱", "hates": "讨厌",
-                "prefers": "偏好", "works_at": "工作在", "studies": "在学习",
-                "owns": "拥有", "wants": "想要", "visited": "去过",
-            }
-            rel = relation_cn.get(s["relation"], s["relation"])
-            lines.append(f"- {rel}{s['name']}（{s['type']}）")
-        parts.append("\n".join(lines))
+        relation_cn = {
+            "likes": "喜欢", "dislikes": "不喜欢", "loves": "热爱", "hates": "讨厌",
+            "prefers": "偏好", "works_at": "工作在", "studies": "在学习",
+            "owns": "拥有", "wants": "想要", "visited": "去过",
+        }
+
+        # Profile layer: stable user attributes (permanent entity types)
+        profile_types = {"food", "hobby", "work", "person", "tech", "place", "activity"}
+        profile_facts = [s for s in state if s["type"] in profile_types]
+        relationship_facts = [s for s in state if s["type"] not in profile_types]
+
+        if profile_facts:
+            lines = ["## 关于用户的基本信息（长期稳定）："]
+            for s in profile_facts[:8]:
+                rel = relation_cn.get(s["relation"], s["relation"])
+                lines.append(f"- {rel}{s['name']}（{s['type']}）")
+            parts.append("\n".join(lines))
+
+        if relationship_facts:
+            lines = ["## 用户近期关注的动态："]
+            for s in relationship_facts[:6]:
+                rel = relation_cn.get(s["relation"], s["relation"])
+                lines.append(f"- {rel}{s['name']}（{s['type']}）")
+            parts.append("\n".join(lines))
 
     return "\n\n".join(parts) if parts else ""

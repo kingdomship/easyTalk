@@ -8,7 +8,9 @@ function escapeHtml(s) {
 // ═══════════════════════════════════════════
 const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('c')), ctx = canvas.getContext('2d');
 const inputRow = document.getElementById('input-row');
-const input = /** @type {HTMLInputElement} */ (document.getElementById('input')), sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sendBtn'));
+const textarea = /** @type {HTMLTextAreaElement} */ (document.getElementById('input')), sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sendBtn'));
+const kaomojiBtn = document.getElementById('kaomojiBtn'), kaomojiPanel = document.getElementById('kaomoji-panel');
+const charCount = document.getElementById('charCount');
 const dialog = document.getElementById('dialog'), dlgBody = document.getElementById('dlgBody');
 const dlgClose = document.getElementById('dlgClose');
 const topicBubbles = document.getElementById('topic-bubbles');
@@ -30,40 +32,62 @@ const settingsStatus = /** @type {HTMLElement} */ (document.getElementById('sett
 // ═══════════════════════════════════════════
 // Typing sound engine (Web Audio API)
 // ═══════════════════════════════════════════
-// Pre-generate WAV blobs at different frequencies for typing sound variety
-var _blipBlobs = [];
-function _makeBlipBlob(freq) {
-  var sampleRate = 8000, duration = 0.04;
-  var numSamples = Math.floor(sampleRate * duration);
-  var dataSize = numSamples;
-  var fileSize = 44 + dataSize;
-  var buf = new ArrayBuffer(fileSize);
-  var v = new DataView(buf);
-  function w16(o, x) { v.setUint16(o, x, true); }
-  function w32(o, x) { v.setUint32(o, x, true); }
-  w32(0, 0x46464952); w32(4, fileSize - 8); w32(8, 0x45564157);
-  w32(12, 0x20746d66); w32(16, 16); w16(20, 1); w16(22, 1);
-  w32(24, sampleRate); w32(28, sampleRate); w16(32, 1); w16(34, 8);
-  w32(36, 0x61746164); w32(40, dataSize);
-  var u8 = new Uint8Array(buf, 44, dataSize);
-  for (var i = 0; i < numSamples; i++) {
-    u8[i] = Math.sin(2 * Math.PI * freq * i / sampleRate) > 0 ? 220 : 36;
+// Synthesised soft mechanical keyboard click:
+//   noise burst → bandpass filter → sharp attack / fast decay
+// Much more pleasant than the old square-wave "bibibibi" beeps.
+var _typeAudioCtx = null;
+var _typeNoiseBuf = null;
+
+function _ensureAudioCtx() {
+  if (!_typeAudioCtx) {
+    _typeAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  if (_typeAudioCtx.state === 'suspended') {
+    _typeAudioCtx.resume();
+  }
+  // Lazy-create a short stereo noise buffer (shared, ~80ms)
+  if (!_typeNoiseBuf) {
+    var sr = _typeAudioCtx.sampleRate;
+    var len = Math.floor(sr * 0.08); // 80ms
+    _typeNoiseBuf = _typeAudioCtx.createBuffer(1, len, sr);
+    var d = _typeNoiseBuf.getChannelData(0);
+    for (var i = 0; i < len; i++) {
+      d[i] = Math.random() * 2 - 1;
+    }
+  }
+  return _typeAudioCtx;
 }
-// Pre-generate 5 blips at different pitches for variety
-[600, 900, 1100, 1400, 1800].forEach(function(f) {
-  _blipBlobs.push(_makeBlipBlob(f));
-});
+
+function initAudio() {
+  _ensureAudioCtx();
+}
 
 function playTypingSound() {
   if (!soundOn) return;
   try {
-    var blob = _blipBlobs[Math.floor(Math.random() * _blipBlobs.length)];
-    var a = new Audio(blob);
-    a.volume = 0.10;
-    a.play().catch(function(){});
-  } catch(e) {}
+    var ctx = _ensureAudioCtx();
+    var now = ctx.currentTime;
+
+    // Noise source → bandpass → gain envelope
+    var src = ctx.createBufferSource();
+    src.buffer = _typeNoiseBuf;
+
+    var bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(1800 + Math.random() * 2400, now); // 1.8-4.2kHz
+    bp.Q.setValueAtTime(0.7 + Math.random() * 0.6, now);          // 0.7-1.3
+
+    var gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.exponentialRampToValueAtTime(0.12, now + 0.002);    // sharp attack 2ms
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.025 + Math.random() * 0.02); // decay 25-45ms
+
+    src.connect(bp);
+    bp.connect(gain);
+    gain.connect(ctx.destination);
+    src.start(now);
+    src.stop(now + 0.08);
+  } catch (e) {}
 }
 const auxBack = document.getElementById('auxBack');
 const soundToggle = document.getElementById('sound-toggle');
@@ -448,8 +472,13 @@ let moodTarget = { r: 22, g: 18, b: 42 };
 let colorFields = [];
 let colorFieldsTarget = [];
 
+// AI-controlled background color override (hex string or null)
+let bgColorTarget = null;
+let bgColorCurrent = null;  // {r,g,b} for smooth lerp, or null
+
 // AI-generated pixel sprites that fly out from the face
 let pixelSprites = [];
+var _landStackCount = 0; // tracks how many heavy sprites have landed (for stacking offset)
 
 let pokeActive = false, pokeTimer = 0, pokeSparkles = [];
 const POKE_EXPRESSIONS = [
@@ -614,9 +643,10 @@ function circadianBrightness() {
 let _lastMoodCSS = { r: 0, g: 0, b: 0 };
 
 function updateMoodCSS() {
-  const r = Math.round(moodColor.r);
-  const g = Math.round(moodColor.g);
-  const b = Math.round(moodColor.b);
+  const eff = getEffectiveMoodColor();
+  const r = Math.round(eff.r);
+  const g = Math.round(eff.g);
+  const b = Math.round(eff.b);
   if (r === _lastMoodCSS.r && g === _lastMoodCSS.g && b === _lastMoodCSS.b) return;
   _lastMoodCSS = { r, g, b };
 
@@ -627,21 +657,21 @@ function updateMoodCSS() {
 
   // Shift accent color based on mood warmth
   // Warm (r > b) → shift toward warmer purple; Cool (b > r) → shift toward blue
-  const warmth = (moodColor.r - moodColor.b) / 60;
+  const warmth = (eff.r - eff.b) / 60;
   const clampedWarmth = Math.max(-0.5, Math.min(0.5, warmth));
   const accentR = Math.round(Math.min(255, Math.max(100, 124 + clampedWarmth * 50)));
   const accentG = Math.round(Math.min(255, Math.max(110, 131 - Math.abs(clampedWarmth) * 30)));
   const accentB = Math.round(Math.min(255, Math.max(180, 255 - clampedWarmth * 50)));
   root.style.setProperty('--accent', `rgb(${accentR},${accentG},${accentB})`);
 
-  // Dynamic --bg and --surface: follow moodColor so UI panels match canvas atmosphere
-  const bgR = Math.round(moodColor.r * 0.20);
-  const bgG = Math.round(moodColor.g * 0.20);
-  const bgB = Math.round(moodColor.b * 0.20);
+  // Dynamic --bg and --surface: follow effective color so UI panels match canvas
+  const bgR = Math.round(eff.r * 0.20);
+  const bgG = Math.round(eff.g * 0.20);
+  const bgB = Math.round(eff.b * 0.20);
   root.style.setProperty('--bg', `rgb(${bgR},${bgG},${bgB})`);
-  const srR = Math.round(moodColor.r * 0.40);
-  const srG = Math.round(moodColor.g * 0.40);
-  const srB = Math.round(moodColor.b * 0.40);
+  const srR = Math.round(eff.r * 0.40);
+  const srG = Math.round(eff.g * 0.40);
+  const srB = Math.round(eff.b * 0.40);
   root.style.setProperty('--surface', `rgb(${srR},${srG},${srB})`);
 }
 
@@ -652,6 +682,16 @@ function hexToRgb(hex) {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return { r: isNaN(r) ? 255 : r, g: isNaN(g) ? 255 : g, b: isNaN(b) ? 255 : b };
+}
+
+function getEffectiveMoodColor() {
+  if (!bgColorCurrent) return moodColor;
+  // Blend 70% toward AI background, 30% mood/circadian keeps emotional + time-of-day influence
+  return {
+    r: lerp(moodColor.r, bgColorCurrent.r, 0.7),
+    g: lerp(moodColor.g, bgColorCurrent.g, 0.7),
+    b: lerp(moodColor.b, bgColorCurrent.b, 0.7),
+  };
 }
 
 function updateColorFields(dt) {
@@ -713,6 +753,28 @@ function updateAtmosphere(dt) {
   moodTarget.g = lerp(moodTarget.g, circ.g, 0.005);
   moodTarget.b = lerp(moodTarget.b, circ.b, 0.005);
 
+  // Lerp bgColorCurrent toward AI-specified background target
+  if (bgColorTarget) {
+    const tgtRgb = hexToRgb(bgColorTarget);
+    if (!bgColorCurrent) {
+      bgColorCurrent = { r: moodColor.r, g: moodColor.g, b: moodColor.b };
+    }
+    const bgSpeed = 0.025; // ~1.3s to converge at 60fps
+    bgColorCurrent.r = lerp(bgColorCurrent.r, tgtRgb.r, bgSpeed);
+    bgColorCurrent.g = lerp(bgColorCurrent.g, tgtRgb.g, bgSpeed);
+    bgColorCurrent.b = lerp(bgColorCurrent.b, tgtRgb.b, bgSpeed);
+  } else if (bgColorCurrent) {
+    // Decay back to moodColor when AI clears background
+    const decaySpeed = 0.04;
+    bgColorCurrent.r = lerp(bgColorCurrent.r, moodColor.r, decaySpeed);
+    bgColorCurrent.g = lerp(bgColorCurrent.g, moodColor.g, decaySpeed);
+    bgColorCurrent.b = lerp(bgColorCurrent.b, moodColor.b, decaySpeed);
+    const diff = Math.abs(bgColorCurrent.r - moodColor.r)
+               + Math.abs(bgColorCurrent.g - moodColor.g)
+               + Math.abs(bgColorCurrent.b - moodColor.b);
+    if (diff < 1.5) bgColorCurrent = null;
+  }
+
   // Sync mood color to CSS variables for global UI linkage
   updateMoodCSS();
 
@@ -750,6 +812,8 @@ function saveVisualState() {
       tgtParams: tgtParams,
       moodColor: moodColor,
       moodTarget: moodTarget,
+      bgColorTarget: bgColorTarget,
+      bgColorCurrent: bgColorCurrent,
       colorFields: colorFields.map(function(cf) { return { r:cf.r, g:cf.g, b:cf.b, cx:cf.cx, cy:cf.cy, radius:cf.radius, alpha:cf.alpha, blend:cf.blend, opacity:cf.opacity, blur:cf.blur, pulse:cf.pulse, drift:cf.drift }; }),
       sequence: sequence,
       seqIdx: seqIdx,
@@ -757,6 +821,8 @@ function saveVisualState() {
       replyText: replyText,
       dlgText: (typeof dlgText !== 'undefined' ? dlgText : ''),
       state: (typeof state !== 'undefined' ? state : STATE.STARFIELD),
+      storyPaused: (typeof storyPaused !== 'undefined' ? storyPaused : false),
+      storyBuffer: (typeof storyBuffer !== 'undefined' ? storyBuffer : []),
     };
     localStorage.setItem('easytalk_visual', JSON.stringify(st));
   } catch(e) { /* quota exceeded, ignore */ }
@@ -772,13 +838,83 @@ function loadVisualState() {
     if (saved.tgtParams) tgtParams = saved.tgtParams;
     if (saved.moodColor) moodColor = saved.moodColor;
     if (saved.moodTarget) moodTarget = saved.moodTarget;
+    if (saved.bgColorTarget !== undefined) bgColorTarget = saved.bgColorTarget;
+    if (saved.bgColorCurrent) bgColorCurrent = saved.bgColorCurrent;
     if (saved.colorFields && saved.colorFields.length) colorFields = saved.colorFields;
     if (saved.sequence) { sequence = saved.sequence; seqIdx = saved.seqIdx || 0; seqElapsed = saved.seqElapsed || 0; replyText = saved.replyText || ''; }
     if (saved.dlgText && typeof dlgText !== 'undefined') dlgText = saved.dlgText;
     if (saved.state && typeof state !== 'undefined') state = saved.state;
+    if (saved.storyPaused && typeof storyPaused !== 'undefined') storyPaused = saved.storyPaused;
+    if (saved.storyBuffer && typeof storyBuffer !== 'undefined') storyBuffer = saved.storyBuffer;
     return true;
   } catch(e) { return false; }
 }
+
+// ═══════════════════════════════════════════
+// Kaomoji data — 8 categories, ~200 curated emoticons
+// ═══════════════════════════════════════════
+var KAOMOJI_DATA = {
+  happy: { label: '开心', items: [
+    '(◕‿◕)', '(≧◡≦)', 'ヽ(>∀<☆)ノ', '(｡◕‿◕｡)', '╰(▔∀▔)╯',
+    '(◍•ᴗ•◍)', '(｡•̀ᴗ-́)✧', '(ﾉ◕ヮ◕)ﾉ', '٩(◕‿◕｡)۶', '(๑˃̵ᴗ˂̵)و',
+    '(￣▽￣)ノ', '(●´ω｀●)', '♪(´▽｀)', '( ＾∇＾)', '(⌒▽⌒)',
+    'ヾ(☆▽☆)', '＼(^ω^＼)', '(ﾉ´ヮ´)ﾉ*:･ﾟ✧', '(◠‿◠✿)', '(๑•̀ㅂ•́)و✧',
+    '(｡･ω･｡)ﾉ♡', '☆*:.｡.o(≧▽≦)o.｡.:*☆', '(づ｡◕‿‿◕｡)づ', '(✿◠‿◠)', '╰(*´︶`*)╯',
+    'o(≧∇≦o)', '(ﾟ∀ﾟ)', '(´｡• ᵕ •｡`)', '(｡ﾉω＼｡)', '(*^▽^*)'
+  ]},
+  sad: { label: '难过', items: [
+    '(╥﹏╥)', '(´；ω；`)', '(｡•́︿•̀｡)', '(╯︵╰)', '(｡ŏ﹏ŏ)',
+    '(´-﹏-`；)', 'ಥ_ಥ', '(´°̥̥̥̥̥̥̥̥ω°̥̥̥̥̥̥̥̥｀)', '(╥_╥)', '(｡T ω T｡)',
+    '(´；Д；｀)', '(´;︵;`)', '(｡•́__ก̀｡)', '˚‧º·(˚ ˃̣̣̥᷄⌓˂̣̣̥᷅ )‧º·˚', '(´°ω°｀)',
+    '｡ﾟ(ﾟ´Д｀ﾟ)ﾟ｡', '┗( T﹏T )┛', '(｡╯︵╰｡)', '（；へ：）', '(´-ι_-｀)',
+    '｡ﾟ･ (>﹏<) ･ﾟ｡', '(:´༎ຶД༎ຶ`)', '。゜゜(´Ｏ`) ゜゜。', '(｡•̩̩̩́ ᆺ •̩̩̩̀｡)', 'o(╥﹏╥)o'
+  ]},
+  surprise: { label: '惊讶', items: [
+    'Σ(°△°)', '(⊙_⊙)', '(゜ロ゜)', '∑(O_O；)', '(;ﾟ∇ﾟ)',
+    'w(°ｏ°)w', '(⊙﹏⊙)', '(」゜ロ゜)」', 'ヽ(°〇°)ﾉ', 'Σ(ﾟДﾟ)',
+    '(°ロ°)', '(屮ﾟДﾟ)屮', 'щ(゜ロ゜щ)', 'Σ(●ﾟдﾟ●)', '(º ロ º)',
+    '(((╹д╹;)))', '(Ω_Ω)', 'ミ●﹏☉ミ', '（○Ａ○）', '＼(º □ º l|l)/'
+  ]},
+  cute: { label: '可爱', items: [
+    '✿◕ ‿ ◕✿', '(◍•ᴗ•◍)', '(｡♥‿♥｡)', '(◕ᴗ◕✿)', 'ʕ•ᴥ•ʔ',
+    '(◕‿◕✿)', '(◍•ᴗ•◍)❤', '(｡･ω･｡)', '(✿ ♥‿♥)', '✿♥‿♥✿',
+    '(づ￣ ³￣)づ', '(｡’▽’｡)♡', '(•ө•)♡', '(๑>ᴗ<๑)', '(｡ꏿ﹏ꏿ｡)',
+    '(◠ω◠✿)', '(◡‿◡✿)', '(｡✿‿✿｡)', '(ﾉ´ з `)ノ', '(♡˙︶˙♡)',
+    '꒰◍ᐡᐤᐡ◍꒱', '(ᵔ◡ᵔ)', '(◕‿◕)♡', '✧(｡•̀ᴗ-)✧', '◝(⁰▿⁰)◜',
+    '(๑˘︶˘๑)', '(◡ ω ◡)', '(.❛ ᴗ ❛.)', '(｡´ ‿｀｡)♡', '(◍˃̶ᗜ˂̶◍)✩'
+  ]},
+  angry: { label: '生气', items: [
+    '(╬ Ò﹏Ó)', '(＃`Д´)', '(ノಠ益ಠ)ノ', '(ꐦ°᷄д°᷅)', '(╯°□°）╯',
+    '(｀Д´)', '(ㆆ_ㆆ)', '(;¬_¬)', '(◣_◢)', '(-_-メ)',
+    '(｀へ´)', '(╬ﾟ◥益◤ﾟ)', '(҂ ｰ̀дｰ́ )', '(◔ д ◔)', '(≖_≖ )',
+    '(ヽ´ω`)', '(V●ᴥ●V)??', '(╯ಠ_ರೃ)╯', '（▼へ▼メ）', '(`皿´＃)'
+  ]},
+  daily: { label: '日常', items: [
+    '(・ω・)ノ', '(￣▽￣)', '(´-ω-`)', '( ・◇・)', '(￣ω￣)',
+    '（￣▽￣）', '(ーー;)', '(´▽｀;)', '(￣～￣)', '(=_=)',
+    '(～﹃～)~zZ', 'φ(．．)', '(*￣▽￣)b', '(o゜▽゜)o☆', '╮(￣▽￣)╭',
+    '(´･ω･`)', '(´∀｀)', '(。-ω-)zzz', '( ˘ ³˘)♥', '(￣ε￣")',
+    '( ´ ▽ ` )', '⇨ (╹◡╹)', 'ψ(｀∇´)ψ', 'щ(º∀º)щ', '(*´▽｀*)'
+  ]},
+  animal: { label: '动物', items: [
+    'ʕ•ᴥ•ʔ', '(=^・ω・^=)', '(￣(工)￣)', '(ﾐㅇㅅㅆ)', '(=｀ェ´=)',
+    '／(=･ｪ･=)＼', '(=^ ◡ ^=)', '(ᵔᴥᵔ)', '∪･ω･∪', 'V●ᴥ●V',
+    'ฅ^•ﻌ•^ฅ', 'ʕ·͡ᴥ·ʔ', '(≡^∇^≡)', '(=①ω①=)', '(=;ω;=)',
+    '₍ᐢ•ﻌ•ᐢ₎*･ﾟ✧', '꒰ ⸝⸝ɞ̴̶̷ ·̮ ɞ̴̶̷⸝⸝꒱', 'ଘ(๑•ᴗ•๑)ଓ', '／(≧ x ≦)＼', '₍ᐢɞ̴̶̷ᗜɞ̴̶̷ᐢ₎',
+    '(◕ᴥ◕)', '（＾・ω・＾✿）', '(ﾐ´لﻌﾐ)', 'ᵔᴥᵔ', '◕〖▪ ڿ ▪〗◕'
+  ]},
+  special: { label: '特殊', items: [
+    '(╯°□°)╯︵ ┻━┻', '(☞ﾟヮﾟ)☞', '¯\\_(ツ)_/¯', '( ͡° ͜ʖ ͡°)', '┬─┬ノ( º _ ºノ)',
+    '(シ_ _)シ', 'ಠ_ಠ', '(￣ー￣)ﾆﾔﾘ', '(≖ ‿ ≖)', '~(˘▾˘~)',
+    'ᕙ(⇀‸↼‶)ᕗ', '(๑•̀ㅁ•́ฅ)', '♪～(´ε｀ )', '( う-´)づ︻╦̵̵̿╤──', '(⌐■_■)',
+    '(。･∀･)ﾉ゛', '━╤デ╦︻(▀̿Ĺ̯▀̿ ̿)', '(˵¯͒〰¯͒˵)', 'ᕦ(ò_óˇ)ᕤ', '( •_•)>⌐■-■',
+    '(´~`)', '(∩｀-´)⊃━☆ﾟ.*･｡ﾟ', '( ﾟ▽ﾟ)/', '(；一_一)', '⚆ _ ⚆'
+  ]}
+};
+var KAOMOJI_CATEGORIES = Object.keys(KAOMOJI_DATA).map(function(k) {
+  return { id: k, label: KAOMOJI_DATA[k].label };
+});
+var activeKaomojiCat = 'happy';
 
 // ═══════════════════════════════════════════
 // Particles / Stars
