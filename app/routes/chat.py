@@ -89,6 +89,35 @@ def _archive_conversation(user_msg: str, avatar_reply: str, thinking: str | None
         logger.warning("Operation failed", exc_info=True)
 
 
+def _post_reply_pipeline(msg: str, reply: str, label: str,
+                         thinking: str | None = None,
+                         llm_tags: list[str] | None = None,
+                         turn_id: int | None = None):
+    """Unified post-reply pipeline: index, update state, archive, fire background tasks."""
+    if turn_id is not None:
+        if llm_tags:
+            get_background_executor().submit(index_turn, turn_id, msg, llm_tags)
+        else:
+            get_background_executor().submit(index_turn, turn_id, msg)
+    update_affinity(msg, label)
+    update_affect(msg)
+    update_salience(msg, label)
+    adjust_expression_amplitude(msg)
+    _archive_conversation(msg, reply, thinking)
+    get_background_executor().submit(generate_prediction, msg, reply)
+    get_background_executor().submit(pre_dialogue_analyze)
+    get_background_executor().submit(feedback, actual_emotion=label)
+    get_background_executor().submit(_maybe_condense)
+    get_background_executor().submit(_maybe_update_memory_files)
+    get_background_executor().submit(maybe_crystallize)
+    get_background_executor().submit(maybe_guard)
+    get_background_executor().submit(detect_situations)
+    get_background_executor().submit(distill_episode)
+    get_background_executor().submit(analyze_attachment)
+    get_background_executor().submit(check_and_intervene, reply)
+    get_background_executor().submit(maybe_extract_kg, msg)
+
+
 def _maybe_condense():
     global _last_condense_count
     if not _condense_lock.acquire(blocking=False):
@@ -654,25 +683,8 @@ async def chat(req: ChatRequest):
                 "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
                 [msg, row["reply"], row["label"]], fetch="one",
             )
-            if new_row:
-                get_background_executor().submit(index_turn, new_row["id"], msg)
-            update_affinity(msg, row["label"])
-            update_affect(msg)
-            update_salience(msg, row["label"])
-            adjust_expression_amplitude(msg)
-            _archive_conversation(msg, row["reply"])
-            get_background_executor().submit(generate_prediction, msg, row["reply"])
-            get_background_executor().submit(pre_dialogue_analyze)
-            get_background_executor().submit(feedback, actual_emotion=row["label"])
-            get_background_executor().submit(_maybe_condense)
-            get_background_executor().submit(_maybe_update_memory_files)
-            get_background_executor().submit(maybe_crystallize)
-            get_background_executor().submit(maybe_guard)
-            get_background_executor().submit(detect_situations)
-            get_background_executor().submit(distill_episode)
-            get_background_executor().submit(analyze_attachment)
-            get_background_executor().submit(check_and_intervene, row["reply"])
-            get_background_executor().submit(maybe_extract_kg, msg)
+            turn_id = new_row["id"] if new_row else None
+            _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id)
             result = _row_to_response(row)
             for f in result.get("emotions", []):
                 f.update(jitter_frame(f))
@@ -699,25 +711,9 @@ async def chat(req: ChatRequest):
         "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
         [msg, result["reply"], parsed[0]["label"]], fetch="one",
     )
-    if new_row:
-        get_background_executor().submit(index_turn, new_row["id"], msg, llm_tags)
-    update_affinity(msg, parsed[0]["label"])
-    update_affect(msg)
-    update_salience(msg, parsed[0]["label"])
-    adjust_expression_amplitude(msg)
-    _archive_conversation(msg, result["reply"], thinking)
-    get_background_executor().submit(generate_prediction, msg, result["reply"])
-    get_background_executor().submit(pre_dialogue_analyze)
-    get_background_executor().submit(feedback, actual_emotion=parsed[0]["label"])
-    get_background_executor().submit(_maybe_condense)
-    get_background_executor().submit(_maybe_update_memory_files)
-    get_background_executor().submit(maybe_crystallize)
-    get_background_executor().submit(maybe_guard)
-    get_background_executor().submit(check_and_intervene, result["reply"])
-    get_background_executor().submit(maybe_extract_kg, msg)
-    get_background_executor().submit(detect_situations)
-    get_background_executor().submit(distill_episode)
-    get_background_executor().submit(analyze_attachment)
+    turn_id = new_row["id"] if new_row else None
+    _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
+                         thinking=thinking, llm_tags=llm_tags, turn_id=turn_id)
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -758,25 +754,8 @@ async def chat_stream(req: ChatRequest):
                     "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
                     [msg, row["reply"], row["label"]], fetch="one",
                 )
-                if new_row:
-                    get_background_executor().submit(index_turn, new_row["id"], msg)
-                update_affinity(msg, row["label"])
-                update_affect(msg)
-                update_salience(msg, row["label"])
-                adjust_expression_amplitude(msg)
-                _archive_conversation(msg, row["reply"])
-                get_background_executor().submit(generate_prediction, msg, row["reply"])
-                get_background_executor().submit(pre_dialogue_analyze)
-                get_background_executor().submit(feedback, actual_emotion=row["label"])
-                get_background_executor().submit(_maybe_condense)
-                get_background_executor().submit(_maybe_update_memory_files)
-                get_background_executor().submit(maybe_crystallize)
-                get_background_executor().submit(maybe_guard)
-                get_background_executor().submit(detect_situations)
-                get_background_executor().submit(distill_episode)
-                get_background_executor().submit(analyze_attachment)
-                get_background_executor().submit(check_and_intervene, row["reply"])
-                get_background_executor().submit(maybe_extract_kg, msg)
+                turn_id = new_row["id"] if new_row else None
+                _post_reply_pipeline(msg, row["reply"], row["label"], turn_id=turn_id)
                 r = _row_to_response(row)
                 for f in r.get("emotions", []):
                     f.update(jitter_frame(f))
@@ -816,25 +795,9 @@ async def chat_stream(req: ChatRequest):
             "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
             [msg, reply, parsed[0]["label"]], fetch="one",
         )
-        if new_row:
-            get_background_executor().submit(index_turn, new_row["id"], msg, llm_tags)
-        update_affinity(msg, parsed[0]["label"])
-        update_affect(msg)
-        update_salience(msg, parsed[0]["label"])
-        adjust_expression_amplitude(msg)
-        _archive_conversation(msg, reply, thinking)
-        get_background_executor().submit(generate_prediction, msg, reply)
-        get_background_executor().submit(pre_dialogue_analyze)
-        get_background_executor().submit(feedback, actual_emotion=parsed[0]["label"])
-        get_background_executor().submit(_maybe_condense)
-        get_background_executor().submit(_maybe_update_memory_files)
-        get_background_executor().submit(maybe_crystallize)
-        get_background_executor().submit(maybe_guard)
-        get_background_executor().submit(detect_situations)
-        get_background_executor().submit(distill_episode)
-        get_background_executor().submit(analyze_attachment)
-        get_background_executor().submit(check_and_intervene, reply)
-        get_background_executor().submit(maybe_extract_kg, msg)
+        turn_id = new_row["id"] if new_row else None
+        _post_reply_pipeline(msg, reply, parsed[0]["label"],
+                             thinking=thinking, llm_tags=llm_tags, turn_id=turn_id)
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
