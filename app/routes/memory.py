@@ -155,3 +155,74 @@ def kg_relationships(limit: int = 50):
         "ORDER BY r.valid_at DESC LIMIT %s",
         [limit],
     )
+
+
+@router.get("/api/mood/affect-history")
+def mood_affect_history(days: int = 7):
+    """Return daily Panksepp 6-dimension averages for the last N days.
+
+    Reads from affect_history table; if no data, falls back to current affect_state.
+    """
+    init_db()
+    rows = q(
+        "SELECT date, seeking, play, care, fear, rage, panic "
+        "FROM affect_history "
+        "WHERE date >= CURRENT_DATE - INTERVAL '%s days' "
+        "ORDER BY date ASC",
+        [days],
+    )
+    if rows:
+        return rows
+    # Fallback: return today's current affect as single data point
+    from services.emotion.affect import get_affect
+    aff = get_affect()
+    today = __import__("datetime").date.today().isoformat()
+    return [{
+        "date": today,
+        "seeking": aff.get("seeking", 0.35),
+        "play": aff.get("play", 0.25),
+        "care": aff.get("care", 0.2),
+        "fear": aff.get("fear", 0.1),
+        "rage": aff.get("rage", 0.05),
+        "panic": aff.get("panic", 0.1),
+    }]
+
+
+@router.get("/api/mood/timeline")
+def mood_timeline(days: int = 7):
+    """Return daily emotion distribution for the last N days.
+
+    Returns [{date, emotion_label, count}] grouped by date + emotion_label,
+    plus daily totals for chart rendering.
+    """
+    init_db()
+    rows = q(
+        "SELECT DATE(created_at) AS date, emotion_label, COUNT(*) AS cnt "
+        "FROM chat_history "
+        "WHERE created_at >= NOW() - INTERVAL '%s days' "
+        "GROUP BY DATE(created_at), emotion_label "
+        "ORDER BY date DESC",
+        [days],
+    )
+    # Build a per-date summary: {date: {label: count, total: N}}
+    by_date = {}
+    for r in (rows or []):
+        d = str(r["date"])
+        if d not in by_date:
+            by_date[d] = {"total": 0, "labels": {}}
+        by_date[d]["total"] += int(r["cnt"])
+        by_date[d]["labels"][r["emotion_label"]] = int(r["cnt"])
+
+    # Compute dominant emotion per day
+    timeline = []
+    for d in sorted(by_date.keys(), reverse=True):
+        entry = by_date[d]
+        labels = entry["labels"]
+        dominant = max(labels, key=labels.get) if labels else ""
+        timeline.append({
+            "date": d,
+            "total": entry["total"],
+            "dominant": dominant,
+            "labels": labels,
+        })
+    return timeline

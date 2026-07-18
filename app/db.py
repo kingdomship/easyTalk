@@ -372,4 +372,31 @@ def init_db():
         )
     """)
 
+    execute("""
+        CREATE TABLE IF NOT EXISTS cbt_records (
+            id SERIAL PRIMARY KEY,
+            situation TEXT DEFAULT '',
+            auto_thought TEXT DEFAULT '',
+            evidence_for TEXT DEFAULT '',
+            evidence_against TEXT DEFAULT '',
+            alternative TEXT DEFAULT '',
+            reframed TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS affect_history (
+            id SERIAL PRIMARY KEY,
+            date DATE UNIQUE NOT NULL,
+            seeking REAL DEFAULT 0.35,
+            play REAL DEFAULT 0.25,
+            care REAL DEFAULT 0.2,
+            fear REAL DEFAULT 0.1,
+            rage REAL DEFAULT 0.05,
+            panic REAL DEFAULT 0.1,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
     _init_done = True

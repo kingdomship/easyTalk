@@ -114,3 +114,38 @@ async def dashboard(days: int = Query(default=7, ge=1, le=90)):
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.post("/cbt-record")
+async def save_cbt_record(
+    situation: str = "",
+    auto_thought: str = "",
+    evidence_for: str = "",
+    evidence_against: str = "",
+    alternative: str = "",
+    reframed: str = "",
+):
+    """保存 CBT 思维记录."""
+    from fastapi import Body
+    row = q(
+        """INSERT INTO cbt_records (situation, auto_thought, evidence_for,
+           evidence_against, alternative, reframed)
+           VALUES (%s, %s, %s, %s, %s, %s)
+           RETURNING id""",
+        [str(situation), str(auto_thought), str(evidence_for),
+         str(evidence_against), str(alternative), str(reframed)],
+        fetch="one",
+    )
+    return {"ok": True, "id": row["id"] if row else None}
+
+
+@router.get("/cbt-records")
+async def list_cbt_records(days: int = Query(default=30, ge=1, le=365)):
+    """返回最近 N 天的 CBT 记录列表."""
+    rows = q(
+        "SELECT id, auto_thought, reframed, created_at FROM cbt_records "
+        "WHERE created_at >= NOW() - INTERVAL '%s days' "
+        "ORDER BY created_at DESC LIMIT 50",
+        [days],
+    )
+    return rows if rows else []

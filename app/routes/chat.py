@@ -543,7 +543,8 @@ def _think(msg: str) -> str | None:
 def _build_context(msg: str, thinking: str | None = None,
                    modules_config: dict | None = None,
                    crisis_result: dict | None = None,
-                   therapy_intent: dict | None = None) -> list:
+                   therapy_intent: dict | None = None,
+                   therapy_mode: bool = False) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
@@ -564,6 +565,18 @@ def _build_context(msg: str, thinking: str | None = None,
     affinity_ctx = get_affinity_context()
     if affinity_ctx:
         system_msg += "\n\n" + affinity_ctx
+
+    # ── 治疗模式全局引导 (therapy_mode 开关开启时) ──────────
+    if therapy_mode:
+        system_msg += (
+            "\n\n## 疗愈模式\n"
+            "你正在与用户进行心理支持性质的对话。请注意：\n"
+            "1. 采用更温和、更耐心、更专业的语气\n"
+            "2. 优先倾听和共情，不急于给建议\n"
+            "3. 适当运用心理咨询的微技能（开放式提问、反映性倾听、肯定）\n"
+            "4. 保持专业性边界，不做诊断\n"
+            "5. 适用时自然融入 CBT 认知重评或正念引导"
+        )
 
     # ── 治疗模块注入 (按需, 在情绪上下文之前) ──────────────
     if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
@@ -962,7 +975,8 @@ async def chat(req: ChatRequest):
 
         messages = _build_context(msg, thinking, modules_config=modules_config,
                                   crisis_result=crisis_result,
-                                  therapy_intent=therapy_intent)
+                                  therapy_intent=therapy_intent,
+                                  therapy_mode=req.therapy_mode)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
     finally:
         llm_foreground_clear(fg_token)
@@ -1090,9 +1104,24 @@ async def chat_stream(req: ChatRequest):
                 logger.warning("治疗意图分析失败(stream)", exc_info=True)
                 therapy_intent = {"intent": "none", "confidence": 0.0}
 
+            # ── 危机告警 SSE (severity>=1.5 或 LLM确认时立即推送) ──
+            sev = crisis_result.get("severity", 0)
+            llm_ok = crisis_result.get("llm_verified", False)
+            if sev >= 1.5 or llm_ok:
+                yield f"data: {json.dumps({'type': 'crisis_alert', 'severity': sev, 'level': crisis_result.get('level', 'none'), 'urgency': crisis_result.get('urgency', 'moderate'), 'llm_verified': llm_ok, 'has_method': crisis_result.get('has_method', False)}, ensure_ascii=False)}\n\n"
+
+            # ── 结构化干预 SSE: 呼吸练习 (mindfulness intent 时触发) ──
+            if therapy_intent.get("intent") == "mindfulness" and therapy_intent.get("confidence", 0) >= 0.6:
+                yield f"data: {json.dumps({'type': 'breathing_exercise', 'pattern': 'simple', 'duration': 120}, ensure_ascii=False)}\n\n"
+
+            # ── 结构化干预 SSE: CBT 思维记录 (cbt_needed intent 时触发) ──
+            if therapy_intent.get("intent") == "cbt_needed" and therapy_intent.get("confidence", 0) >= 0.5:
+                yield f"data: {json.dumps({'type': 'cbt_trigger', 'thought': msg[:100]}, ensure_ascii=False)}\n\n"
+
             messages = _build_context(msg, thinking, modules_config=modules_config,
                                       crisis_result=crisis_result,
-                                      therapy_intent=therapy_intent)
+                                      therapy_intent=therapy_intent,
+                                      therapy_mode=req.therapy_mode)
             data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
         finally:
             llm_foreground_clear(fg_token)
