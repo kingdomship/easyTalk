@@ -104,15 +104,14 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     # ── 危机事件日志 ──────────────────────────────────────────
     if crisis_result and crisis_result.get("severity", 0) > 0:
         try:
-            crisis_result["crisis_type"] = "llm_verified" if crisis_result.get("llm_verified") else "keyword"
             log_crisis_event(msg, crisis_result)
         except Exception:
-            pass
+            logger.warning("危机事件记录失败", exc_info=True)
     # 风险快照更新 (每小时一次, 纯计算)
     try:
         update_risk_snapshot()
     except Exception:
-        pass
+        logger.warning("风险快照更新失败", exc_info=True)
 
     if turn_id is not None:
         if llm_tags:
@@ -129,12 +128,12 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
         from services.emotion.affect import get_affect
         update_life_domains(msg, get_affect())
     except Exception:
-        pass
+        logger.warning("生命领域更新失败", exc_info=True)
     try:
         from services.psych.entry_point import update_curiosity_queue
         update_curiosity_queue(msg)
     except Exception:
-        pass
+        logger.warning("好奇心队列更新失败", exc_info=True)
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, reply, thinking)
     get_background_executor().submit(update_drives_on_chat, msg, label, is_deep=is_deep)
@@ -954,10 +953,11 @@ async def chat(req: ChatRequest):
                 crisis_result["llm_severity"] = verify.get("severity", 1)
                 crisis_result["urgency"] = verify.get("urgency", "none")
             except Exception:
-                pass
+                logger.warning("危机LLM验证失败", exc_info=True)
         try:
             therapy_intent = await therapy_task
         except Exception:
+            logger.warning("治疗意图分析失败", exc_info=True)
             therapy_intent = {"intent": "none", "confidence": 0.0}
 
         messages = _build_context(msg, thinking, modules_config=modules_config,
@@ -1082,11 +1082,12 @@ async def chat_stream(req: ChatRequest):
                     crisis_result["llm_severity"] = verify.get("severity", 1)
                     crisis_result["urgency"] = verify.get("urgency", "none")
                 except Exception:
-                    pass
+                    logger.warning("危机LLM验证失败(stream)", exc_info=True)
             # 等待治疗意图分析完成
             try:
                 therapy_intent = await therapy_task
             except Exception:
+                logger.warning("治疗意图分析失败(stream)", exc_info=True)
                 therapy_intent = {"intent": "none", "confidence": 0.0}
 
             messages = _build_context(msg, thinking, modules_config=modules_config,

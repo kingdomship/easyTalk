@@ -125,16 +125,19 @@ def crisis_keyword_check(user_msg: str) -> dict:
 
 
 def _check_silent_risk() -> bool:
-    """检查 affect 静默风险: 连续 3 轮以上高 PANIC/FEAR 但未触发关键词."""
+    """检查 affect 静默风险: PANIC + FEAR 同时偏高 (>=0.5) 但未触发关键词.
+
+    affect_state 表每个 dimension 只有一行 (UNIQUE 约束),
+    所以检测 panick 和 fear 是否同时 >= 0.5.
+    """
     try:
-        # 最近3轮的主导情绪
         rows = q("""
-            SELECT dimension FROM affect_state
+            SELECT dimension, value FROM affect_state
             WHERE dimension IN ('panic', 'fear') AND value >= 0.5
-            ORDER BY updated_at DESC
         """)
-        high_count = len(rows)
-        return high_count >= 3
+        # 两个维度同时偏高 → 累积性痛苦, 即使没有直接的关键词信号
+        dims = {r["dimension"] for r in rows}
+        return "panic" in dims and "fear" in dims
     except Exception:
         return False
 
@@ -172,7 +175,13 @@ def crisis_llm_verify(user_msg: str) -> dict:
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start >= 0 and end > start:
-            return json.loads(raw[start:end])
+            data = json.loads(raw[start:end])
+            crisis = bool(data.get("crisis", False))
+            severity = max(1, min(5, int(data.get("severity", 1))))
+            urgency = data.get("urgency", "none")
+            if urgency not in ("immediate", "high", "moderate", "low", "none"):
+                urgency = "none"
+            return {"crisis": crisis, "severity": severity, "urgency": urgency}
     except Exception:
         logger.warning("crisis_llm_verify failed", exc_info=True)
     return {"crisis": False, "severity": 1, "urgency": "none"}
@@ -242,8 +251,12 @@ def _load_resources() -> list[dict]:
 # ── 危机事件日志 ─────────────────────────────────────────────────
 
 def log_crisis_event(user_msg: str, crisis_result: dict) -> int | None:
-    """记录危机事件到 DB 和 JSONL 日志."""
+    """记录危机事件到 DB.
+
+    crisis_type 由内部判定: llm_verified 为 True 时标 llm_verified, 否则标 keyword.
+    """
     try:
+        crisis_type = "llm_verified" if crisis_result.get("llm_verified") else "keyword"
         row = q(
             """INSERT INTO crisis_events
                (severity, user_msg, crisis_type, has_method, llm_verified,
@@ -253,7 +266,7 @@ def log_crisis_event(user_msg: str, crisis_result: dict) -> int | None:
             [
                 crisis_result.get("severity", 0),
                 user_msg[:500],
-                crisis_result.get("crisis_type", "keyword"),
+                crisis_type,
                 crisis_result.get("has_method", False),
                 crisis_result.get("llm_verified", False),
                 crisis_result.get("llm_severity"),
