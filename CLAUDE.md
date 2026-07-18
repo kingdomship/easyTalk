@@ -89,7 +89,7 @@ easytalk/
 │   ├── batch_generate_sprites.py  # 批量预生成精灵
 │   └── adjust_sprite_scales.py    # 精灵缩放调整
 ├── Dockerfile              # python:3.10-slim, uvicorn
-├── docker-compose.yml      # pgvector/pgvector:pg15 + app, 端口 8000
+├── docker-compose.yml      # pgvector/pgvector:pg15 + app, 端口 9010
 ├── requirements.txt        # fastapi, uvicorn, psycopg2-binary, openai, httpx, apscheduler
 ├── tsconfig.json           # TypeScript 类型检查 (checkJs, noEmit)
 ├── .env.example            # DEEPSEEK_API_KEY + DB_PASSWORD
@@ -104,7 +104,7 @@ easytalk/
 
 ## 数据持久化
 
-- **记忆文件宿主路径**: `/home/xuwl/app/easyChat/memory`
+- **记忆文件宿主路径**: `/home/xuwl/app/psychology/memory`
 - 容器内挂载点: `/app/memory`
 - 该目录存放: `user_persona.md`、`user_profile.md`、`conversation_archive.jsonl`、`conversation_summary.md` 等
 - 更新容器时使用此宿主路径，避免记忆数据丢失
@@ -255,14 +255,14 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
 
 - 使用 `docker-compose.yml` 构建和启动
 - PostgreSQL 镜像: `pgvector/pgvector:pg15`（支持向量搜索）
-- 服务端口: `8000:8000`
+- 服务端口: `9010:8000` (宿主机9010→容器内8000)
 - 需要环境变量 `DEEPSEEK_API_KEY`、`DB_PASSWORD`（可选，默认 123456）
 
 ## 关键路径常量
 
 | 常量 | 值 | 位置 |
 |------|-----|------|
-| 记忆宿主路径 | `/home/xuwl/app/easyChat/memory` | docker-compose.yml |
+| 记忆宿主路径 | `/home/xuwl/app/psychology/memory` | docker-compose.yml |
 | 容器挂载点 | `/app/memory` | Dockerfile |
 | 种子数据 | `/app/memory_seed/` | Dockerfile COPY |
 | 归档文件 | `conversation_archive.jsonl` | routes/chat.py |
@@ -283,7 +283,7 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
 - **人格参数**: 编辑 `personality.py` 中的 OCEAN/MBTI/原型配置
 
 ### 调整 AI 人设
-编辑 `/home/xuwl/app/easyChat/memory/user_persona.md`，重启容器生效
+编辑 `/home/xuwl/app/psychology/memory/user_persona.md`，重启容器生效
 
 ### 添加新 API 端点
 1. 在 `app/routes/` 下新建文件（参考已有文件的模式）

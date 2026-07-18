@@ -78,6 +78,10 @@ async def lifespan(app: FastAPI):
     init_loop_db()
     init_salience_db()
     init_drive_db()
+
+    # 种子: 危机热线资源
+    from services.therapy.seed_data import seed_crisis_resources
+    seed_crisis_resources()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
     scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)

@@ -132,14 +132,14 @@ _ARCHETYPE_PREFIXES = {
 
 
 def build_dynamic_system_prompt(personality: dict | None = None, msg: str = "",
-                               intent_tags: list[str] | None = None) -> str:
+                               modules_config: dict | None = None) -> str:
     """Generate the system prompt from personality parameters.
 
     Args:
         personality: Optional personality config dict. Loads from disk if None.
-        msg: Current user message (fallback for keyword matching).
-        intent_tags: AI-pre-analyzed intent tags. When provided, these
-                     override keyword matching in assemble_prompt().
+        msg: Current user message (unused, kept for API compatibility).
+        modules_config: Per-module state dict from _analyze_intent LLM.
+            {"composite":"full","color_fields":"compact","background":"skip",...}
     """
     if personality is None:
         personality = load_personality()
@@ -194,7 +194,7 @@ def build_dynamic_system_prompt(personality: dict | None = None, msg: str = "",
     personality_section = "\n\n".join(parts)
 
     from services.identity.prompt import assemble_prompt
-    core = assemble_prompt(msg, tags=intent_tags)
+    core = assemble_prompt(modules_config)
     return personality_section + "\n\n" + core
 
 

@@ -126,9 +126,11 @@ interface SSEEvent {
   affect?: PankseppAffect;
   color_fields?: ColorField[];
   background?: string;
+  whiteboard?: WhiteboardCommand[];
   sprites?: PixelSprite[];
   index?: number;
   total?: number;
+  batch_mode?: boolean;
 }
 
 interface ColorField {
@@ -141,6 +143,15 @@ interface ColorField {
   blur?: number;
   pulse?: { speed: number; amplitude: number };
   drift?: { speed: number; range: number };
+}
+
+interface WhiteboardCommand {
+  type: 'line' | 'circle' | 'dot';
+  x1?: number; y1?: number; x2?: number; y2?: number;
+  cx?: number; cy?: number; r?: number;
+  x?: number; y?: number;
+  color?: string; width?: number; opacity?: number;
+  size?: number; fill?: boolean;
 }
 
 interface PixelSprite {
@@ -243,6 +254,9 @@ declare function drawStar(s: Star, alpha?: number): void;
 declare function drawConstellations(mx: number | null, my: number | null): void;
 declare function moodStarTint(): string;
 declare function drawColorFields(): void;
+declare function drawWhiteboard(): void;
+declare function parseWhiteboardCommands(commands: WhiteboardCommand[]): void;
+declare var whiteboardCommands: WhiteboardCommand[];
 
 // ui.js
 declare function showDialog(text: string, x?: number, y?: number): void;

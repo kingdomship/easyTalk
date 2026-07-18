@@ -116,6 +116,10 @@ def assess_affect(user_msg: str) -> dict:
     Returns raw activation scores for this message only, not EMA-smoothed.
     """
     msg = user_msg.lower()
+    # First-person signal: "我" + emotion word → more likely self-report
+    has_self_ref = any(w in user_msg for w in ["我", "自己", "本人"])
+    is_help_seeking = any(w in user_msg for w in ["我该怎么办", "怎么办", "帮帮我", "救救我"])
+
     scores = {}
     for dim in DIMENSIONS:
         seeds = _SEEDS[dim]
@@ -130,7 +134,15 @@ def assess_affect(user_msg: str) -> dict:
         # Short emotionally-charged messages get a boost
         if len(user_msg) <= 15 and hits >= 1:
             raw = min(1.0, raw + 0.15)
+        # First-person weight: "我很难过" > "难过" (more confident it's self-report)
+        if has_self_ref and hits >= 1:
+            raw = min(1.0, raw * 1.5)
         scores[dim] = round(raw, 3)
+
+    # Help-seeking signal: "我该怎么办" → elevated SEEKING
+    if is_help_seeking:
+        scores["seeking"] = round(min(1.0, scores.get("seeking", 0) + 0.15), 3)
+
     return scores
 
 

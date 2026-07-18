@@ -22,5 +22,10 @@ VALENCE_PREV_PATH = os.path.join(MEMORY_DIR, "valence_prev.json")
 PERSONALITY_CONFIG_PATH = os.path.join(MEMORY_DIR, "personality_config.json")
 APIKEY_PATH = os.path.join(MEMORY_DIR, "api_key.txt")
 
+LIFE_DOMAINS_PATH = os.path.join(MEMORY_DIR, "life_domains.json")
+CURIOSITY_PATH = os.path.join(MEMORY_DIR, "curiosity_queue.json")
+
+CRISIS_LOG_PATH = os.path.join(MEMORY_DIR, "crisis_log.jsonl")
+
 # Lock for thread-safe archive file access
 archive_lock = threading.Lock()

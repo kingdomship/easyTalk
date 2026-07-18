@@ -4,8 +4,8 @@ function escapeHtml(s) {
 }
 
 // Emoji regex for choice-button detection (covers all common Unicode emoji ranges)
-var EMOJI_RE = /[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿‍️]/g;
-var EMOJI_SPLIT_RE = /(?=[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿])/;
+var EMOJI_RE = /[☀-➿🇦-🇿🌀-🗿😀-🙏🚀-🛿🤀-🧿‍️]/gu;
+var EMOJI_SPLIT_RE = /(?=[☀-➿🇦-🇿🌀-🗿😀-🙏🚀-🛿🤀-🧿])/u;
 
 // ═══════════════════════════════════════════
 // DOM refs
@@ -480,6 +480,16 @@ let colorFieldsTarget = [];
 let bgColorTarget = null;
 let bgColorCurrent = null;  // {r,g,b} for smooth lerp, or null
 
+// AI whiteboard drawing commands
+let whiteboardCommands = [];
+
+function parseWhiteboardCommands(commands) {
+  if (!commands || !Array.isArray(commands)) return;
+  whiteboardCommands = commands.filter(function(c) {
+    return c && c.type && (c.type === 'line' || c.type === 'circle' || c.type === 'dot');
+  });
+}
+
 // AI-generated pixel sprites that fly out from the face
 let pixelSprites = [];
 var _landStackCount = 0; // tracks how many heavy sprites have landed (for stacking offset)
@@ -818,6 +828,7 @@ function saveVisualState() {
       moodTarget: moodTarget,
       bgColorTarget: bgColorTarget,
       bgColorCurrent: bgColorCurrent,
+      whiteboardCommands: whiteboardCommands,
       colorFields: colorFields.map(function(cf) { return { r:cf.r, g:cf.g, b:cf.b, cx:cf.cx, cy:cf.cy, radius:cf.radius, alpha:cf.alpha, blend:cf.blend, opacity:cf.opacity, blur:cf.blur, pulse:cf.pulse, drift:cf.drift }; }),
       sequence: sequence,
       seqIdx: seqIdx,
@@ -844,6 +855,7 @@ function loadVisualState() {
     if (saved.moodTarget) moodTarget = saved.moodTarget;
     if (saved.bgColorTarget !== undefined) bgColorTarget = saved.bgColorTarget;
     if (saved.bgColorCurrent) bgColorCurrent = saved.bgColorCurrent;
+    if (saved.whiteboardCommands && saved.whiteboardCommands.length) whiteboardCommands = saved.whiteboardCommands;
     if (saved.colorFields && saved.colorFields.length) colorFields = saved.colorFields;
     if (saved.sequence) { sequence = saved.sequence; seqIdx = saved.seqIdx || 0; seqElapsed = saved.seqElapsed || 0; replyText = saved.replyText || ''; }
     if (saved.dlgText && typeof dlgText !== 'undefined') dlgText = saved.dlgText;

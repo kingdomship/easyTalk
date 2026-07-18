@@ -123,6 +123,8 @@ def init_db():
         ("sweat_drop", "REAL NOT NULL DEFAULT 0"),
         ("vein_pop", "REAL NOT NULL DEFAULT 0"),
         ("color_fields", "TEXT"),
+        ("background", "TEXT"),
+        ("whiteboard", "TEXT"),
     ]:
         try:
             execute(f"ALTER TABLE emotion_cache ADD COLUMN IF NOT EXISTS {col} {typ}")
@@ -324,6 +326,50 @@ def init_db():
     execute("""
         CREATE INDEX IF NOT EXISTS idx_self_eval_log_turn_id
         ON self_eval_log (turn_id)
+    """)
+
+    # ── 心理健康辅助: 危机检测 ──────────────────────────────
+    execute("""
+        CREATE TABLE IF NOT EXISTS crisis_events (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(50) NOT NULL DEFAULT '',
+            severity REAL NOT NULL DEFAULT 0,
+            user_msg TEXT NOT NULL DEFAULT '',
+            crisis_type VARCHAR(50) NOT NULL DEFAULT 'keyword',
+            has_method BOOLEAN NOT NULL DEFAULT FALSE,
+            llm_verified BOOLEAN NOT NULL DEFAULT FALSE,
+            llm_severity INTEGER,
+            urgency VARCHAR(20),
+            acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            acknowledged_at TIMESTAMP
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS crisis_resources (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(200) NOT NULL,
+            phone VARCHAR(50) NOT NULL,
+            description TEXT DEFAULT '',
+            country VARCHAR(50) DEFAULT '中国',
+            hours VARCHAR(100) DEFAULT '24小时',
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+    """)
+
+    execute("""
+        CREATE TABLE IF NOT EXISTS risk_snapshot (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(50) NOT NULL DEFAULT '',
+            valence_ema REAL DEFAULT 0.5,
+            distress_ema REAL DEFAULT 0.0,
+            crisis_count_24h INTEGER DEFAULT 0,
+            risk_level INTEGER DEFAULT 0,
+            last_check_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
     """)
 
     _init_done = True

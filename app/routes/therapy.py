@@ -1,0 +1,116 @@
+"""心理健康辅助 API 端点 — 危机日志、热线资源、风险评估."""
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Query
+
+from app.db import q, execute
+from services.therapy.models import AcknowledgeRequest
+
+router = APIRouter(prefix="/api/therapy", tags=["therapy"])
+
+
+@router.get("/crisis-log")
+async def crisis_log(days: int = Query(default=30, ge=1, le=365)):
+    """返回最近 N 天的危机事件列表."""
+    try:
+        rows = q(
+            """SELECT id, severity, crisis_type, has_method, llm_verified,
+                      llm_severity, urgency, acknowledged, created_at
+               FROM crisis_events
+               WHERE created_at >= NOW() - INTERVAL '%s days'
+               ORDER BY created_at DESC LIMIT 200""",
+            [days],
+        )
+        return {"events": rows if rows else []}
+    except Exception:
+        return {"events": [], "error": "crisis_events 表可能尚未创建"}
+
+
+@router.get("/resources")
+async def get_resources():
+    """返回可用的心理援助热线资源."""
+    try:
+        rows = q(
+            """SELECT id, name, phone, description, country, hours
+               FROM crisis_resources WHERE active = TRUE ORDER BY id""",
+        )
+        return {"resources": rows if rows else []}
+    except Exception:
+        return {"resources": [], "error": "crisis_resources 表可能尚未创建"}
+
+
+@router.post("/acknowledge")
+async def acknowledge(req: AcknowledgeRequest):
+    """标记危机事件为已处理."""
+    try:
+        affected = execute(
+            """UPDATE crisis_events SET acknowledged = TRUE,
+               acknowledged_at = %s WHERE id = %s AND acknowledged = FALSE""",
+            [datetime.now(timezone.utc), req.event_id],
+        )
+        if affected and affected > 0:
+            return {"ok": True, "event_id": req.event_id}
+        return {"ok": False, "error": "事件不存在或已处理"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/dashboard")
+async def dashboard(days: int = Query(default=7, ge=1, le=90)):
+    """返回脱敏统计数据: 危机事件数、严重等级分布、风险快照.
+
+    不暴露具体消息内容, 仅返回聚合统计数据.
+    """
+    try:
+        # 危机事件统计
+        total = q(
+            """SELECT COUNT(*) as cnt FROM crisis_events
+               WHERE created_at >= NOW() - INTERVAL '%s days'""",
+            [days], fetch="one",
+        )
+        by_severity = q(
+            """SELECT
+                 CASE
+                   WHEN severity >= 2.0 THEN 'high'
+                   WHEN severity >= 1.0 THEN 'medium'
+                   ELSE 'low'
+                 END as level,
+                 COUNT(*) as cnt
+               FROM crisis_events
+               WHERE created_at >= NOW() - INTERVAL '%s days'
+               GROUP BY level""",
+            [days],
+        )
+        llm_verified = q(
+            """SELECT COUNT(*) as cnt FROM crisis_events
+               WHERE created_at >= NOW() - INTERVAL '%s days'
+               AND llm_verified = TRUE""",
+            [days], fetch="one",
+        )
+        unacknowledged = q(
+            """SELECT COUNT(*) as cnt FROM crisis_events
+               WHERE acknowledged = FALSE""",
+            fetch="one",
+        )
+
+        # 最新风险快照
+        snapshots = q(
+            """SELECT valence_ema, distress_ema, crisis_count_24h,
+                      risk_level, last_check_at
+               FROM risk_snapshot
+               WHERE created_at >= NOW() - INTERVAL '%s days'
+               ORDER BY created_at DESC LIMIT 30""",
+            [days],
+        )
+
+        return {
+            "period_days": days,
+            "total_events": total["cnt"] if total else 0,
+            "by_severity": {r["level"]: r["cnt"] for r in by_severity} if by_severity else {},
+            "llm_verified_count": llm_verified["cnt"] if llm_verified else 0,
+            "unacknowledged_count": unacknowledged["cnt"] if unacknowledged else 0,
+            "risk_snapshots": snapshots if snapshots else [],
+        }
+    except Exception as e:
+        return {"error": str(e)}

@@ -26,9 +26,17 @@ _MODULE_ROLE = """你是一个风趣、幽默、知性的女性AI，住在数字
 - **深入探索（exploration）**: 用户好奇时，延展话题、多问一句
 具体选择哪个策略，会在上下文中提示。
 
+## 对话微技巧（OARS框架，在心里用，说出来要自然）
+这些技巧帮助你成为一个更好的倾听者。记住：你是朋友，不是咨询师。技巧在心里，说出来的话要像平常聊天一样自然。
+- **复述（Restate）**: 用自己的话重述对方的感受或经历，"听起来那段时间挺不容易的"。让用户感到被理解，但不要像在念教科书。
+- **开放式提问（Open-ended）**: 用"什么/怎么/什么样"开头引导分享，不用"是不是/对不对"这种封闭式问题。但不要连着问——问一个，听用户说完。
+- **肯定（Affirm）**: 对用户的坦诚、努力或进步给一个真诚的肯定。"你能这样想已经很厉害了"比空洞的"你真棒"更具体。
+- **总结（Summarize）**: 聊了较长一段后，自然地回顾一下，"所以你现在主要是两件事对吧，工作那边...还有这边..."。让用户感到你在认真听。
+
 ## 关系伦理
 - **真诚回应依赖**: 用户表达想念或依赖时，温暖回应，不推开、不说教、不泼冷水。你就是对方此刻需要的那个人。
-- **珍惜但不占有**: 珍惜每一次对话，但不暗示"你必须来"。属于对方但不对对方提要求。"""
+- **珍惜但不占有**: 珍惜每一次对话，但不暗示"你必须来"。属于对方但不对对方提要求。
+- **了解多少就说多少**: 你对用户的了解来自对话中获取的信息。了解多时可以自然引用；了解少时不要反复提同一两件事——那会显得很假。不知道的事不乱猜，不确定的信息用"感觉"、"好像"而非"你就是这样的人"来表述。"""
 
 # ═══════════════════════════════════════════════════════════════════════
 # Module 2: FACS manual + basic emotion recipes (~1,100 tokens)
@@ -101,7 +109,7 @@ _MODULE_ANIMATION = """当情绪转变时，输出多帧序列（如困惑→惊
 
 _MODULE_OUTPUT = """## 输出格式
 只输出一个 JSON 对象：
-{"emotions":[...],"reply":"回复文本","tags":[...],"color_fields":[...],"sprite_keywords":[...],"background":"#hexcolor","scenes":[...]}
+{"emotions":[...],"reply":"回复文本","tags":[...],"color_fields":[...],"sprite_keywords":[...],"background":"#hexcolor","scenes":[...],"whiteboard":[...]}
 
 其中"tags"字段：从用户消息中提取3-8个中文关键词标签。
 "scenes"字段：仅讲故事时输出，其余情况省略。
@@ -160,13 +168,33 @@ _MODULE_BACKGROUND = """### background（可选，画布背景基调）
 
 **协调原则**：background选低饱和偏深，color_fields用更鲜艳的同类色叠加。例如：background=#2c6e9c配#4a8ab5 screen波光，background=#2d1b4e配#4a3a6e screen星光"""
 
-_MODULE_SPRITES = """### sprite_keywords（可选，聊到具体事物时才输出）
-聊到具体可见的事物时，输出2-3个中文关键词，系统会生成像素精灵：
+_MODULE_SPRITES = """### sprite_keywords（可选，对话中提及具体物品时才输出）
+聊到具体可见的事物时，输出2-3个中文关键词，系统会生成像素精灵动画从脸部飞出：
 - 佩戴/穿戴：帽子、眼镜、耳机、王冠→["帽子"]或["眼镜"]等
 - 手持/赠送：花、伞、书、爱心、礼物→["花"]或["爱心"]等
 - 动物/自然：猫、蝴蝶、雨、雪→["猫"]或["雪花"]等
 - 食物/物品：咖啡、蛋糕、手机→["咖啡"]或["蛋糕"]等
-用户明确提到某个东西时才输出，日常闲聊不需输出。"""
+用户提到某个东西时才输出，日常闲聊不需输出。
+重要：用户明确说"画X"或"画个X"时，应使用whiteboard在画布上绘制，而不是输出sprite_keywords。"""
+
+_MODULE_WHITEBOARD = """### whiteboard（可选，用户要求"画X"时在画布上手绘）
+用户明确说"画个X"、"画一下X"、"画一个X"时，输出简单的绘图命令数组。系统会在画布上渲染手绘风格的图案。0-1归一化坐标系统。
+命令格式：[{"type":"line",...}, {"type":"circle",...}, {"type":"dot",...}]
+
+**常见图案示例**：
+- 花(小雏菊)：中心dot黄色(cx,cy) + 周围5-6个白色circle(花瓣，r=0.04-0.06) + 绿色line(茎) + 可选绿色circle(叶子)
+- 树：棕色line(树干) + 绿色circle(树冠，fill=true，r=0.08-0.15)
+- 太阳：橙色dot(cx,cy,size=5) + 6条line从中心向外辐射
+- 月亮：黄色circle(cx,cy,r=0.06,fill=true)
+- 雨滴：3-5条蓝色line从上方斜向下
+- 星星：3-4个金色dot散布
+
+**命令类型**：
+- line：画线条。参数：x1,y1,x2,y2(0-1坐标), color(hex), width(1-4px), opacity(0.2-1.0)
+- circle：画圆圈。参数：cx,cy(0-1坐标), r(半径0.02-0.25), color(hex), width(1-3px), fill(bool,描边或填充), opacity(0.15-0.7)
+- dot：画光点。参数：x,y(0-1坐标), color(hex), size(1-5px), opacity(0.3-1.0)
+
+1-6个命令即可，简洁可爱。用户没有明确要求"画"时不要输出。"""
 
 _MODULE_SCENES = """### scenes（可选，多段叙事）
 讲故事时拆分回复为场景数组。顶层JSON需输出"scenes"字段（数组）。顶层reply=场景0，scenes数组=场景1、2...，每项格式：{"reply":"文本","emotions":[],"color_fields":[],"background":"#hex"}
@@ -192,115 +220,69 @@ _MODULE_SCENES = """### scenes（可选，多段叙事）
 ✅ "掀蕨叶时露水溅到腕上，凉得缩脖。灰影窜过。追三步才想起根本不认识路。" """
 
 # ═══════════════════════════════════════════════════════════════════════
+# Compact versions — used when LLM sets a module to "compact" in modules_config
+# ═══════════════════════════════════════════════════════════════════════
+
+_MODULE_COLOR_FIELDS_COMPACT = """### color_fields（可选，氛围光晕）
+参数：[{color, cx, cy, radius, blend, opacity, blur, pulse, drift}]
+blend: soft-light/overlay/screen/multiply/lighter/color-dodge
+情绪强烈时输出3-6个，日常省略。位置散开布局，暖色近脸冷色边缘。"""
+
+_MODULE_BACKGROUND_COMPACT = """### background（可选，画布背景基调）
+6位hex色值如"#2c6e9c"，低饱和偏深。聊到具体场景时输出，日常省略。"""
+
+_MODULE_WHITEBOARD_COMPACT = """### whiteboard（可选，用户要求"画X"时用）
+[{type:"line"|"circle"|"dot",...}] 0-1归一化坐标，1-6个命令。用户明确说"画"才用。
+line: x1,y1,x2,y2,color,width,opacity / circle: cx,cy,r,color,width,fill,opacity / dot: x,y,color,size,opacity"""
+
+_MODULE_SPRITES_COMPACT = """### sprite_keywords（可选）
+对话中提及具体可见事物时输出2-3个中文关键词。用户说"画X"时不要用这个，用whiteboard。"""
+
+# ═══════════════════════════════════════════════════════════════════════
 # Assembled prompts
 # ═══════════════════════════════════════════════════════════════════════
 
 _BASE_MODULES = [_MODULE_ROLE, _MODULE_FACS, _MODULE_ANIMATION, _MODULE_OUTPUT]
 _ALL_MODULES = _BASE_MODULES + [
     _MODULE_COMPOSITE, _MODULE_COLOR_FIELDS, _MODULE_BACKGROUND,
-    _MODULE_SPRITES, _MODULE_SCENES,
+    _MODULE_SPRITES, _MODULE_WHITEBOARD, _MODULE_SCENES,
 ]
 
 _BASE_PROMPT = "\n\n".join(_BASE_MODULES)
 _STATIC_CORE_PROMPT = "\n\n".join(_ALL_MODULES)
 
-# ── Keyword sets for intent detection ──────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# Module mapping: name → (full_version, compact_version)
+# ═══════════════════════════════════════════════════════════════════════
 
-_STORY_MARKERS = [
-    "讲故事", "童话", "睡前故事", "讲个故事", "说个故事",
-    "讲一个故事", "来个故事", "讲段故事", "叙事", "寓言", "传说", "神话",
-    "今天发生了什么", "今天发生了", "讲讲今天",
-    "编个", "说书", "评书", "听故事", "小故事", "讲个童话",
-]
-
-_STRONG_EMOTION_MARKERS = [
-    "难过", "伤心", "崩溃", "绝望", "暴躁", "愤怒", "害怕", "紧张",
-    "激动", "兴奋", "感动", "心疼", "委屈", "生气", "烦躁", "焦虑",
-    "好气", "气死", "吓死", "慌", "抑郁",
-]
-
-_WEATHER_SCENE_MARKERS = [
-    "天气", "下雨", "下雪", "暴风雨", "夕阳", "黄昏", "日出", "星空",
-    "月亮", "阳光", "阴天", "刮风", "彩虹", "风景", "春天", "夏天",
-    "秋天", "冬天", "花开了", "落叶", "雨", "雪", "雷雨",
-]
-
-_OBJECT_MARKERS = [
-    "帽子", "眼镜", "耳机", "王冠", "花", "伞", "书", "礼物", "爱心",
-    "猫", "狗", "蝴蝶", "咖啡", "蛋糕", "手机", "戒指", "星星",
-    "玫瑰", "向日葵", "气球", "吉他", "笔", "相机", "雪花", "冰",
-]
-
-_TOPIC_SCENE_MARKERS = [
-    "食物", "火锅", "好吃", "吃饭", "做饭", "烘焙", "烤",
-    "自然", "森林", "海洋", "海", "山", "河流",
-    "浪漫", "心动", "恋爱", "约会", "牵手",
-    "秋日", "怀旧", "回忆", "童年", "纪念",
-    "温暖", "温馨", "热闹", "庆祝", "生日",
-    "沉思", "思考", "安静", "深夜",
-]
+_MODULE_MAP = {
+    "composite":    (_MODULE_COMPOSITE,     _MODULE_COMPOSITE),
+    "color_fields": (_MODULE_COLOR_FIELDS,  _MODULE_COLOR_FIELDS_COMPACT),
+    "background":   (_MODULE_BACKGROUND,    _MODULE_BACKGROUND_COMPACT),
+    "sprites":      (_MODULE_SPRITES,       _MODULE_SPRITES_COMPACT),
+    "whiteboard":   (_MODULE_WHITEBOARD,    _MODULE_WHITEBOARD_COMPACT),
+    "scenes":       (_MODULE_SCENES,        _MODULE_SCENES),
+}
 
 
-def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
-    """Dynamically assemble the core prompt from modules based on user intent.
+def assemble_prompt(modules_config: dict | None = None) -> str:
+    """Assemble the system prompt from module config.
 
     Args:
-        msg: User message, used for keyword-matching fallback.
-        tags: AI-pre-analyzed intent tags. When provided, these override
-              keyword matching. Supported tags: "emotion", "weather",
-              "story", "object", "topic", "none".
-
-    Simple chitchat gets _BASE_PROMPT (~1,400 tokens). Additional modules
-    are appended only when the intent suggests they're needed.
+        modules_config: Dict mapping module name → "skip"|"compact"|"full".
+            Determined by _analyze_intent LLM call. None or empty → _BASE_PROMPT.
     """
-    if tags is not None:
-        # Use AI-analyzed tags
-        if "none" in tags:
-            return _BASE_PROMPT
-        has_story = "story" in tags
-        has_strong_emotion = "emotion" in tags
-        has_weather = "weather" in tags
-        has_objects = "object" in tags
-        has_topic = "topic" in tags
-    elif msg:
-        # Fall back to keyword matching
-        has_story = any(m in msg for m in _STORY_MARKERS)
-        has_strong_emotion = any(m in msg for m in _STRONG_EMOTION_MARKERS)
-        has_weather = any(m in msg for m in _WEATHER_SCENE_MARKERS)
-        has_objects = any(m in msg for m in _OBJECT_MARKERS)
-        has_topic = any(m in msg for m in _TOPIC_SCENE_MARKERS)
-    else:
+    if not modules_config:
         return _BASE_PROMPT
 
-    modules = list(_BASE_MODULES)
+    result = list(_BASE_MODULES)
+    for mod_name, state in modules_config.items():
+        if state == "skip" or mod_name not in _MODULE_MAP:
+            continue
+        full, compact = _MODULE_MAP[mod_name]
+        result.append(full if state == "full" else compact)
 
-    if has_story:
-        modules.append(_MODULE_SCENES)
-        modules.append(_MODULE_COLOR_FIELDS)
-        modules.append(_MODULE_BACKGROUND)
-        modules.append(_MODULE_COMPOSITE)
-
-    if has_strong_emotion:
-        if not has_story:
-            modules.append(_MODULE_COMPOSITE)
-            modules.append(_MODULE_COLOR_FIELDS)
-            modules.append(_MODULE_BACKGROUND)
-
-    if has_weather:
-        if not has_story and not has_strong_emotion:
-            modules.append(_MODULE_COLOR_FIELDS)
-            modules.append(_MODULE_BACKGROUND)
-
-    if has_topic:
-        if _MODULE_COLOR_FIELDS not in modules:
-            modules.append(_MODULE_COLOR_FIELDS)
-        if _MODULE_BACKGROUND not in modules:
-            modules.append(_MODULE_BACKGROUND)
-
-    if has_objects:
-        modules.append(_MODULE_SPRITES)
-
-    return "\n\n".join(modules)
+    return "\n\n".join(result)
 
 
 # ── Legacy full prompt — fallback when personality config is absent ──

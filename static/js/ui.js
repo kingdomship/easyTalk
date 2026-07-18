@@ -72,25 +72,30 @@ function hideDialog() {
   dialog.classList.remove('visible');
   document.getElementById('choice-buttons')?.remove();
   if (abortController) { abortController.abort(); abortController = null; }
-  storyPaused = false; storyBuffer = [];
+  storyPaused = false; storyBuffer = []; batchMode = false;
   var btn = document.getElementById('story-continue-btn');
   if (btn) btn.remove();
   pending = false; sendBtn.disabled = false;
 }
 
-// JRPG-style choice buttons
+// JRPG-style choice buttons — only trigger when emoji appear at line-start
 function checkChoices(reply) {
   const existing = document.getElementById('choice-buttons');
   if (existing) existing.remove();
 
-  // Detect choice patterns: emoji + text pairs, numbered items, or "/" separated
-  // Match any emoji (covers most common Unicode emoji ranges)
-  var emojiItems = reply.match(EMOJI_RE);
-  if (!emojiItems || emojiItems.length < 2) return;
-
-  // Extract possible choices (emoji-prefixed segments)
-  var segments = reply.split(EMOJI_SPLIT_RE).filter(function(s) { return s.trim().length > 2 && s.trim().length < 40; });
-  if (segments.length < 2) return;
+  // Only treat emoji-at-line-start as a choice marker, not inline emoji
+  var lines = reply.split('\n');
+  var choices = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (EMOJI_RE.test(line) && line.search(EMOJI_RE) === 0) {
+      var text = line.replace(EMOJI_RE, '').trim();
+      if (text.length >= 2 && text.length <= 30) {
+        choices.push({ emoji: line.match(EMOJI_RE)[0], text: text });
+      }
+    }
+  }
+  if (choices.length < 2) return;
 
   const container = document.createElement('div');
   container.id = 'choice-buttons';
@@ -99,14 +104,14 @@ function checkChoices(reply) {
   container.style.left = dlgRect.left + 'px';
   container.style.top = (dlgRect.bottom + 8) + 'px';
 
-  segments.forEach(seg => {
+  choices.forEach(function(ch) {
     const btn = document.createElement('button');
-    btn.textContent = seg.trim();
+    btn.textContent = ch.emoji + ' ' + ch.text;
     btn.style.cssText = 'background:rgba(18,18,42,0.9);border:1px solid rgba(124,131,255,0.3);border-radius:12px;padding:6px 12px;color:#c8c8e0;font-size:0.7rem;cursor:pointer;font-family:inherit;letter-spacing:0.03em;transition:all 0.2s;';
-    btn.onmouseenter = () => { btn.style.borderColor = 'var(--accent)'; btn.style.background = 'rgba(124,131,255,0.15)'; };
-    btn.onmouseleave = () => { btn.style.borderColor = 'rgba(124,131,255,0.3)'; btn.style.background = 'rgba(18,18,42,0.9)'; };
-    btn.addEventListener('click', () => {
-      textarea.value = seg.trim();
+    btn.onmouseenter = function() { btn.style.borderColor = 'var(--accent)'; btn.style.background = 'rgba(124,131,255,0.15)'; };
+    btn.onmouseleave = function() { btn.style.borderColor = 'rgba(124,131,255,0.3)'; btn.style.background = 'rgba(18,18,42,0.9)'; };
+    btn.addEventListener('click', function() {
+      textarea.value = ch.text;
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
       container.remove();
       sendMessage();
@@ -115,8 +120,7 @@ function checkChoices(reply) {
   });
 
   document.body.appendChild(container);
-  // Auto-remove after 15 seconds
-  setTimeout(() => container.remove(), 15000);
+  setTimeout(function() { container.remove(); }, 15000);
 }
 
 dlgClose.addEventListener('click', hideDialog);
@@ -1108,6 +1112,7 @@ let pending = false;
 let abortController = null;
 let storyPaused = false;
 let storyBuffer = [];
+let batchMode = false;
 
 function autoGrow() {
   textarea.style.height = 'auto';
@@ -1249,6 +1254,9 @@ function _applySceneStart(evt) {
     });
   }
   bgColorTarget = (evt.background && typeof evt.background === 'string') ? evt.background : null;
+  if (evt.whiteboard && typeof parseWhiteboardCommands === 'function') {
+    parseWhiteboardCommands(evt.whiteboard);
+  }
 }
 
 function showStoryContinueBtn() {
@@ -1257,7 +1265,12 @@ function showStoryContinueBtn() {
   var btn = document.createElement('button');
   btn.id = 'story-continue-btn';
   btn.className = 'story-continue-btn';
-  btn.textContent = '▶ 下一段';
+  if (batchMode) {
+    btn.classList.add('icon-only');
+    btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+  } else {
+    btn.textContent = '▶ 下一段';
+  }
   btn.addEventListener('click', function() {
     storyPaused = false;
     btn.remove();
@@ -1307,8 +1320,9 @@ async function sendMessage() {
   topicBubbles.classList.remove('visible');
   closeKaomojiPanel();
   resetTextarea(); pending = true; sendBtn.disabled = true;
-  // Clear any lingering sprites from previous reply
+  // Clear any lingering sprites and whiteboard from previous reply
   if (typeof pixelSprites !== 'undefined') pixelSprites.length = 0;
+  if (typeof whiteboardCommands !== 'undefined') whiteboardCommands.length = 0;
 
   // Position dialog (responsive)
   const faceCenterX = canvas.width / 2;
@@ -1379,13 +1393,15 @@ async function sendMessage() {
               });
             }
             bgColorTarget = (evt.background && typeof evt.background === 'string') ? evt.background : null;
+            if (evt.whiteboard && typeof parseWhiteboardCommands === 'function') {
+              parseWhiteboardCommands(evt.whiteboard);
+            }
           } else if (evt.type === 'pixel_sprites') {
             if (evt.sprites && Array.isArray(evt.sprites) && typeof spawnPixelSprites === 'function') {
               spawnPixelSprites(evt.sprites);
             }
           } else if (evt.type === 'scene_done') {
             if (storyPaused) {
-              // Buffer: user hasn't clicked "continue" yet
               storyBuffer.push({ type: 'scene_done', evt: evt });
             } else {
               streamedReply += '\n\n—— ✦ ——\n\n';
@@ -1393,6 +1409,7 @@ async function sendMessage() {
               if (evt.index != null && evt.total != null && evt.index < evt.total - 1) {
                 storyPaused = true;
                 dlgText = streamedReply;
+                if (evt.batch_mode) batchMode = true;
                 showStoryContinueBtn();
               }
             }
@@ -1400,6 +1417,7 @@ async function sendMessage() {
             if (storyPaused) {
               storyBuffer.push({ type: 'scene_start', evt: evt });
             } else {
+              if (evt.batch_mode) batchMode = true;
               _applySceneStart(evt);
             }
           } else if (evt.type === 'thinking') {
@@ -1436,8 +1454,13 @@ async function sendMessage() {
             }
           }
         } catch(e) {
-          // Prepend any buffered non-data line before the partial data line
-          buffer = (buffer ? buffer + '\n' : '') + line;
+          // If the line has a closing brace, it's complete but malformed — skip.
+          // Otherwise it's likely split across chunks (incomplete) — retry.
+          if (line.indexOf('}') !== -1) {
+            addDebugLog('warn', 'SSE解析错误', e.message, line.slice(0, 100));
+          } else {
+            buffer = (buffer ? buffer + '\n' : '') + line;
+          }
         }
       }
     }
@@ -1454,7 +1477,7 @@ async function sendMessage() {
       // Story still in progress — don't clean up, user needs to click through
       pending = true;  // keep input locked until story finishes
     } else {
-      storyPaused = false; storyBuffer = [];
+      storyPaused = false; storyBuffer = []; batchMode = false;
       var btn = document.getElementById('story-continue-btn');
       if (btn) btn.remove();
       pending = false; sendBtn.disabled = false; textarea.focus();

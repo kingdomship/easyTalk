@@ -6,7 +6,6 @@ import os
 import json
 import hashlib
 import random
-import re
 import threading
 from datetime import datetime, timezone
 
@@ -40,6 +39,9 @@ from services.emotion.salience import update_salience, get_salience_context
 from services.emotion.attachment import analyze_attachment, get_attachment_context
 from services.cognition.prediction import generate_prediction, check_prediction
 from services.drive.engine import update_drives_on_chat, get_drive_context, get_drive_values
+from services.therapy.crisis import crisis_keyword_check, crisis_llm_verify, get_crisis_context, log_crisis_event, update_risk_snapshot
+from services.therapy.intent import analyze_therapy_intent, get_therapy_modules
+from services.therapy.modules import assemble_therapy_modules
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -54,6 +56,7 @@ _ARCHIVE_PATH = ARCHIVE_PATH
 
 def _strip_emoji(text: str) -> str:
     """Remove emoji from conversation history to prevent DeepSeek JSON-mode crash."""
+    import re
     return re.sub(
         r'[\U0001F300-\U0001F9FF☀-➿⭐❤✨✀-➿️‍]',
         '', text,
@@ -95,8 +98,22 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
                          thinking: str | None = None,
                          llm_tags: list[str] | None = None,
                          turn_id: int | None = None,
-                         is_deep: bool = False):
+                         is_deep: bool = False,
+                         crisis_result: dict | None = None):
     """Unified post-reply pipeline: index, update state, archive, fire background tasks."""
+    # ── 危机事件日志 ──────────────────────────────────────────
+    if crisis_result and crisis_result.get("severity", 0) > 0:
+        try:
+            crisis_result["crisis_type"] = "llm_verified" if crisis_result.get("llm_verified") else "keyword"
+            log_crisis_event(msg, crisis_result)
+        except Exception:
+            pass
+    # 风险快照更新 (每小时一次, 纯计算)
+    try:
+        update_risk_snapshot()
+    except Exception:
+        pass
+
     if turn_id is not None:
         if llm_tags:
             get_background_executor().submit(index_turn, turn_id, msg, llm_tags)
@@ -105,6 +122,19 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     update_affinity(msg, label)
     update_affect(msg)
     update_salience(msg, label)
+
+    # Life domain tracking + curiosity seeding (lightweight, no LLM)
+    try:
+        from services.psych.life_domains import update_life_domains
+        from services.emotion.affect import get_affect
+        update_life_domains(msg, get_affect())
+    except Exception:
+        pass
+    try:
+        from services.psych.entry_point import update_curiosity_queue
+        update_curiosity_queue(msg)
+    except Exception:
+        pass
     adjust_expression_amplitude(msg)
     _archive_conversation(msg, reply, thinking)
     get_background_executor().submit(update_drives_on_chat, msg, label, is_deep=is_deep)
@@ -347,25 +377,26 @@ def _fallback_emotion():
     return [f]
 
 
-def _upsert(label: str, frame: dict, reply: str, seq: str | None, color_fields: list | None = None):
+def _upsert(label: str, frame: dict, reply: str, seq: str | None, color_fields: list | None = None, background: str | None = None, whiteboard: list | None = None):
     values = frame_to_db_values(frame)
     col_names = list(EMOTION_PARAMS.keys())
     cf_json = json.dumps(color_fields, ensure_ascii=False) if color_fields else None
+    wb_json = json.dumps(whiteboard, ensure_ascii=False) if whiteboard else None
     existing = q("SELECT id FROM emotion_cache WHERE label = %s", [label], fetch="one")
     if existing:
         set_clause = ", ".join(f"{c}=%s" for c in col_names)
         execute(
             f"UPDATE emotion_cache SET {set_clause}, reply=%s, sequence_data=%s, "
-            f"color_fields=%s, use_count=use_count+1, updated_at=NOW() WHERE id=%s",
-            values + [reply, seq, cf_json, existing["id"]],
+            f"color_fields=%s, background=%s, whiteboard=%s, use_count=use_count+1, updated_at=NOW() WHERE id=%s",
+            values + [reply, seq, cf_json, background, wb_json, existing["id"]],
         )
     else:
         cols = ", ".join(col_names)
         phs = ", ".join(["%s"] * len(col_names))
         execute(
-            f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data, color_fields) "
-            f"VALUES (%s, {phs}, %s, %s, %s)",
-            [label] + values + [reply, seq, cf_json],
+            f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data, color_fields, background, whiteboard) "
+            f"VALUES (%s, {phs}, %s, %s, %s, %s, %s)",
+            [label] + values + [reply, seq, cf_json, background, wb_json],
         )
 
 
@@ -382,19 +413,10 @@ def _row_to_response(row):
         result["emotions"] = [{**result, "duration_ms": 3000}]
     cf = row.get("color_fields")
     result["color_fields"] = json.loads(cf) if isinstance(cf, str) else (cf or [])
+    result["background"] = row.get("background") or None
+    wb = row.get("whiteboard")
+    result["whiteboard"] = json.loads(wb) if isinstance(wb, str) else (wb or [])
     return result
-
-
-_STORY_MARKERS = ["讲故事", "童话", "睡前故事", "讲个故事", "说个故事",
-                 "讲一个故事", "来个故事", "讲段故事", "叙事",
-                 "今天发生了什么", "今天发生了", "讲讲今天",
-                 "编个", "听故事", "小故事", "讲个童话",
-                 "说书", "评书", "寓言", "传说", "神话"]
-
-
-def _is_story_request(msg: str) -> bool:
-    """Detect whether the user is requesting a storytelling/narrative response."""
-    return any(m in msg for m in _STORY_MARKERS)
 
 
 def _is_deep_question(msg: str) -> bool:
@@ -423,27 +445,36 @@ _THINKING_PROMPT = """你是一个深度思考助手。用户提出了一个值�
 
 用中文，控制在300字以内。直接输出分析内容，不要用JSON格式。"""
 
-_INTENT_PROMPT = """分析用户消息的意图，输出JSON数组。可选标签：
-emotion: 表达了强烈情绪（悲伤/愤怒/恐惧/兴奋/感动等）
-weather: 提到天气/季节/自然场景
-story: 要求讲故事或叙述事件
-object: 提到具体可见的物品（帽子/花/猫/咖啡等）
-topic: 提到有氛围感的话题（食物/浪漫/回忆/庆祝/旅行等）
-none: 以上都不适用
+_INTENT_PROMPT = """分析用户消息，输出模块配置JSON。
 
-只输出JSON数组，如["emotion","weather"]，不要其他内容。"""
+6个可选模块及用途：
+- composite: 复合表情示例参考，情绪表达浓烈时用
+- color_fields: 氛围光晕（Rothko风格色块），情绪/天气/话题场景时用
+- background: 画布背景基调色，具体场景氛围时用
+- sprites: 像素精灵动画（小图标从脸部飞出），对话中聊到/提及某个具体物品时点缀用（如"今天喝了咖啡"→☕精灵）。注意：用户明确说"画X"时不触发此模块
+- whiteboard: 手绘线条/图形（line/circle/dot），用户明确要求"画个X"、"画一下"、或"画一个"某物时在画布上绘制。也适用于用户要求手绘/简笔画风格的场景
+- scenes: 多段叙事（Freytag金字塔），明确要求讲故事时用
+
+每个模块设为: "skip"(不需要) / "compact"(精简参数，仅格式说明) / "full"(完整指导，含详细示例)。
+判断原则：根据消息内容精确评估哪些模块真正需要。日常闲聊全部skip。消息涉及到什么才开启什么，"compact"用于辅助氛围，"full"用于核心需求。
+同时输出"tags"数组（3-8个中文关键词）和"creativity"(normal/high，需要叙事创意时用high)。
+以及"batch_mode"布尔值：用户消息是否包含2个或以上明显独立的请求/问题（如"帮我查天气，顺便推荐一本好书"），需要分批次逐一回答。
+
+输出格式：
+{"modules":{"composite":"skip","color_fields":"compact","background":"skip","sprites":"skip","whiteboard":"skip","scenes":"skip"},"tags":["下雨","心情","低落"],"creativity":"normal","batch_mode":false}"""
 
 
-def _analyze_intent_sync(msg: str) -> list[str] | None:
-    """Quick AI pre-analysis of user intent for module selection.
+def _analyze_intent_sync(msg: str) -> tuple[dict | None, list[str], str]:
+    """Quick AI pre-analysis: returns per-module config, tags, and creativity level.
 
-    Returns a list of intent tags, or None on failure (fall back to keyword
-    matching).
+    Returns (modules_config, tags, creativity). On failure returns (None, [], "normal").
+    When batch_mode is detected, forces scenes=full in modules_config and injects
+    __batch_mode=True internal flag.
     """
     try:
         client = get_llm()
         if client is None:
-            return None
+            return None, [], "normal"
         resp = client.chat.completions.create(
             model=get_llm_model(),
             messages=[
@@ -451,21 +482,35 @@ def _analyze_intent_sync(msg: str) -> list[str] | None:
                 {"role": "user", "content": msg},
             ],
             temperature=0.0,
-            max_tokens=50,
+            max_tokens=150,
+            timeout=10.0,
         )
         raw = resp.choices[0].message.content.strip()
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
         if start >= 0 and end > start:
             data = json.loads(raw[start:end])
-            if isinstance(data, list):
-                return [t for t in data if isinstance(t, str)]
+            modules_config = data.get("modules") if isinstance(data.get("modules"), dict) else None
+            tags = data.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            tags = [t for t in tags if isinstance(t, str)][:8]
+            creativity = data.get("creativity", "normal")
+            if creativity not in ("normal", "high"):
+                creativity = "normal"
+            # Multi-question batching: force scenes for batched mode
+            if data.get("batch_mode") is True:
+                if modules_config is None:
+                    modules_config = {}
+                modules_config["scenes"] = "full"
+                modules_config["__batch_mode"] = True
+            return modules_config, tags, creativity
     except Exception:
-        logger.warning("Intent analysis failed, falling back to keywords", exc_info=True)
-    return None
+        logger.warning("Intent analysis failed, falling back to base prompt", exc_info=True)
+    return None, [], "normal"
 
 
-async def _analyze_intent(msg: str) -> list[str] | None:
+async def _analyze_intent(msg: str) -> tuple[dict | None, list[str], str]:
     """Async wrapper for _analyze_intent_sync."""
     return await asyncio.to_thread(_analyze_intent_sync, msg)
 
@@ -488,6 +533,7 @@ def _think(msg: str) -> str | None:
             ],
             temperature=0.7,
             max_tokens=500,
+            timeout=30.0,
         )
         return resp.choices[0].message.content.strip()
     except Exception:
@@ -496,13 +542,15 @@ def _think(msg: str) -> str | None:
 
 
 def _build_context(msg: str, thinking: str | None = None,
-                   intent_tags: list[str] | None = None) -> list:
+                   modules_config: dict | None = None,
+                   crisis_result: dict | None = None,
+                   therapy_intent: dict | None = None) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
     try:
         from services.identity.personality import build_dynamic_system_prompt, get_personality_context
-        system_msg = build_dynamic_system_prompt(msg=msg, intent_tags=intent_tags) + f"\n\n[当前时间节律]\n{time_context}"
+        system_msg = build_dynamic_system_prompt(msg=msg, modules_config=modules_config) + f"\n\n[当前时间节律]\n{time_context}"
         personality_ctx = get_personality_context()
         if personality_ctx:
             system_msg += "\n\n" + personality_ctx
@@ -518,6 +566,12 @@ def _build_context(msg: str, thinking: str | None = None,
     if affinity_ctx:
         system_msg += "\n\n" + affinity_ctx
 
+    # ── 治疗模块注入 (按需, 在情绪上下文之前) ──────────────
+    if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
+        therapy_prompt = assemble_therapy_modules(therapy_intent["intent"])
+        if therapy_prompt:
+            system_msg += "\n\n" + therapy_prompt
+
     affect_ctx = get_affect_context()
     if affect_ctx:
         system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
@@ -529,6 +583,25 @@ def _build_context(msg: str, thinking: str | None = None,
     salience_ctx = get_salience_context()
     if salience_ctx:
         system_msg += "\n" + salience_ctx
+
+    # ── 危机上下文注入 (仅当检测到危机时) ──────────────────
+    if crisis_result:
+        sev = crisis_result.get("severity", 0)
+        llm_verified = crisis_result.get("llm_verified", False)
+        urgency = crisis_result.get("urgency", "moderate")
+        if sev >= 1.5 or llm_verified:
+            crisis_ctx = get_crisis_context(sev, urgency=urgency, llm_verified=llm_verified)
+            if crisis_ctx:
+                system_msg += "\n\n" + crisis_ctx
+
+    # Life domain context (what the user cares about lately)
+    try:
+        from services.psych.life_domains import get_life_domain_context
+        life_ctx = get_life_domain_context()
+        if life_ctx:
+            system_msg += "\n\n" + life_ctx
+    except Exception:
+        pass
 
     # Drive state context (inner motivational state)
     drive_ctx = get_drive_context()
@@ -571,6 +644,17 @@ def _build_context(msg: str, thinking: str | None = None,
     drives = get_drive_values()
     mode = determine_mode(_is_deep_question(msg), get_affect(), drives=drives)
     system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
+
+    # Curiosity hint — only in explore/chat modes (not comfort/deep/play)
+    if mode in ("explore", "chat"):
+        try:
+            from services.psych.entry_point import get_curiosity_hint
+            global _turn_count
+            hint = get_curiosity_hint(_turn_count)
+            if hint:
+                system_msg += "\n\n" + hint
+        except Exception:
+            pass
 
     drift_correction = get_drift_correction()
     if drift_correction:
@@ -617,7 +701,9 @@ _FALLBACKS = [
 ]
 
 
-def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
+def _call_llm(messages: list, creativity: str = "normal",
+              modules_config: dict | None = None,
+              batch_mode: bool = False) -> tuple:
     """Call DeepSeek and extract JSON from the response.
 
     Returns (data, fallback, tags) — tags are semantic keywords from the
@@ -634,6 +720,16 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
     # Append JSON format reminder without modifying user's original words
     msgs = list(messages)
     msgs[-1] = dict(msgs[-1])
+
+    # Batch mode: inject instructions before the JSON format reminder
+    if batch_mode:
+        msgs[-1]["content"] += (
+            "\n\n用户一次发送了多个独立的问题/请求。"
+            "请用scenes字段分批次逐一回答，每次只回答一个问题，简洁完整。"
+            "reply字段放第一个问题的回答，scenes数组按顺序放后续每个问题的回答。"
+            "每个回答独立成段，不要合并问题。"
+        )
+
     msgs[-1]["content"] += "\n（请以上述JSON格式回复）"
 
     try:
@@ -653,13 +749,14 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
         temp = (rhythm_temp + get_mode_temp_mod(mode)
                 + get_arousal_temp_mod(arousal)
                 + get_drive_temp_mod(drives))
-        is_story = ("story" in intent_tags) if intent_tags else _is_story_request(user_msg)
+        is_story = (creativity == "high") or (modules_config or {}).get("scenes") in ("full", "compact")
         if is_story:
             temp += 0.05  # boost creativity for storytelling
         max_tok = 8192 if is_story else 4096
         resp = client.chat.completions.create(
             model=get_llm_model(), messages=msgs,
             temperature=temp, max_tokens=max_tok,
+            timeout=90.0,
         )
         raw = resp.choices[0].message.content
         start = raw.find("{")
@@ -798,11 +895,13 @@ async def chat(req: ChatRequest):
     if not msg:
         return {"error": "empty message"}
 
+    from services.emotion.salience import get_salience, init_salience_db
+    from services.emotion.affect import get_affect
+
     is_deep = _is_deep_question(msg)
     pred_error = check_prediction(msg)
     if pred_error > 0.4:
         # Boost salience surprise for unexpected responses
-        from services.emotion.salience import get_salience, init_salience_db
         init_salience_db()
         s = get_salience()
         execute(
@@ -812,7 +911,6 @@ async def chat(req: ChatRequest):
     key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
 
     # Dual-system gate: decide whether to engage System 2
-    from services.emotion.affect import get_affect
     init_salience_db()
     salience = get_salience()
     affect = get_affect()
@@ -841,9 +939,31 @@ async def chat(req: ChatRequest):
     fg_token = llm_foreground()
     try:
         thinking = await asyncio.to_thread(_think, msg) if is_deep else None
-        intent_tags = await _analyze_intent(msg)
-        messages = _build_context(msg, thinking, intent_tags=intent_tags)
-        data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
+        modules_config, _, creativity = await _analyze_intent(msg)
+        batch_mode = modules_config.pop("__batch_mode", False) if modules_config else False
+
+        # ── 治疗管线 ──────────────────────────────────────
+        therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
+        crisis_result = crisis_keyword_check(msg)
+        crisis_result["llm_verified"] = False
+        crisis_result["urgency"] = "none"
+        if crisis_result["trigger_llm_verify"]:
+            try:
+                verify = await asyncio.to_thread(crisis_llm_verify, msg)
+                crisis_result["llm_verified"] = verify.get("crisis", False)
+                crisis_result["llm_severity"] = verify.get("severity", 1)
+                crisis_result["urgency"] = verify.get("urgency", "none")
+            except Exception:
+                pass
+        try:
+            therapy_intent = await therapy_task
+        except Exception:
+            therapy_intent = {"intent": "none", "confidence": 0.0}
+
+        messages = _build_context(msg, thinking, modules_config=modules_config,
+                                  crisis_result=crisis_result,
+                                  therapy_intent=therapy_intent)
+        data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
     finally:
         llm_foreground_clear(fg_token)
     if fallback:
@@ -865,7 +985,7 @@ async def chat(req: ChatRequest):
     else:
         full_reply = reply_text
         scenes = None
-    result = {"emotions": parsed, "reply": reply_text, "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or [], "background": data.get("background")}
+    result = {"emotions": parsed, "reply": reply_text, "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or [], "background": data.get("background"), "whiteboard": data.get("whiteboard") or []}
     if scenes:
         result["scenes"] = scenes
 
@@ -876,12 +996,12 @@ async def chat(req: ChatRequest):
     turn_id = new_row["id"] if new_row else None
     _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
                          thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
-                         is_deep=is_deep)
+                         is_deep=is_deep, crisis_result=crisis_result)
 
     first = parsed[0]
     seq = json.dumps(parsed) if len(parsed) > 1 else None
-    _upsert(key, first, result["reply"], seq, result.get("color_fields"))
-    _upsert(first["label"], first, result["reply"], seq, result.get("color_fields"))
+    _upsert(key, first, result["reply"], seq, result.get("color_fields"), result.get("background"), result.get("whiteboard"))
+    _upsert(first["label"], first, result["reply"], seq, result.get("color_fields"), result.get("background"), result.get("whiteboard"))
 
     result["source"] = "llm"
     return result
@@ -923,7 +1043,7 @@ async def chat_stream(req: ChatRequest):
                 for f in r.get("emotions", []):
                     f.update(jitter_frame(f))
                     f.update(scale_emotion_params(f))
-                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': r.get('color_fields') or [], 'background': r.get('background')}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'emotions', 'emotions': r['emotions'], 'label': row['label'], 'affect': _get_affect_dict(), 'color_fields': r.get('color_fields') or [], 'background': r.get('background'), 'whiteboard': r.get('whiteboard') or []}, ensure_ascii=False)}\n\n"
                 reply = row["reply"]
                 from services.cognition.state_machine import get_typing_delay
                 from services.emotion.affect import get_affect as _get_affect_fn
@@ -945,9 +1065,34 @@ async def chat_stream(req: ChatRequest):
             else:
                 thinking = None
 
-            intent_tags = await _analyze_intent(msg)
-            messages = _build_context(msg, thinking, intent_tags=intent_tags)
-            data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
+            modules_config, _, creativity = await _analyze_intent(msg)
+            batch_mode = modules_config.pop("__batch_mode", False) if modules_config else False
+
+            # ── 治疗管线: 并行意图分析 + 危机检测 ────────────
+            therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
+            # 第一层: 关键词危机检测 (同步, 零 LLM)
+            crisis_result = crisis_keyword_check(msg)
+            crisis_result["llm_verified"] = False
+            crisis_result["urgency"] = "none"
+            # 第二层: LLM 复核 (仅在触发时)
+            if crisis_result["trigger_llm_verify"]:
+                try:
+                    verify = await asyncio.to_thread(crisis_llm_verify, msg)
+                    crisis_result["llm_verified"] = verify.get("crisis", False)
+                    crisis_result["llm_severity"] = verify.get("severity", 1)
+                    crisis_result["urgency"] = verify.get("urgency", "none")
+                except Exception:
+                    pass
+            # 等待治疗意图分析完成
+            try:
+                therapy_intent = await therapy_task
+            except Exception:
+                therapy_intent = {"intent": "none", "confidence": 0.0}
+
+            messages = _build_context(msg, thinking, modules_config=modules_config,
+                                      crisis_result=crisis_result,
+                                      therapy_intent=therapy_intent)
+            data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
         finally:
             llm_foreground_clear(fg_token)
         if fallback:
@@ -980,20 +1125,21 @@ async def chat_stream(req: ChatRequest):
         turn_id = new_row["id"] if new_row else None
         _post_reply_pipeline(msg, reply, parsed[0]["label"],
                              thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
-                             is_deep=is_deep)
+                             is_deep=is_deep, crisis_result=crisis_result)
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
-        _upsert(key, first, reply, seq, data.get("color_fields"))
-        _upsert(first["label"], first, reply, seq, data.get("color_fields"))
+        _upsert(key, first, reply, seq, data.get("color_fields"), data.get("background"), data.get("whiteboard"))
+        _upsert(first["label"], first, reply, seq, data.get("color_fields"), data.get("background"), data.get("whiteboard"))
 
         lbl = parsed[0]["label"] if parsed else "neutral"
         cf = data.get("color_fields") or []
         bg = data.get("background")
-        yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg}, ensure_ascii=False)}\n\n"
+        wb = data.get("whiteboard") or []
+        yield f"data: {json.dumps({'type': 'emotions', 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg, 'whiteboard': wb}, ensure_ascii=False)}\n\n"
         # Scene 0 start event (protocol consistency with scene 1..N)
         if scenes:
-            yield f"data: {json.dumps({'type': 'scene_start', 'index': 0, 'total': len(scenes) + 1, 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'scene_start', 'index': 0, 'total': len(scenes) + 1, 'emotions': parsed, 'label': lbl, 'affect': _get_affect_dict(), 'color_fields': cf, 'background': bg, 'whiteboard': wb, 'batch_mode': batch_mode}, ensure_ascii=False)}\n\n"
 
         # Start background sprite generation if keywords present
         raw_keywords = data.get("sprite_keywords") or []
@@ -1017,81 +1163,86 @@ async def chat_stream(req: ChatRequest):
                 llm_foreground_clear(fg_token2)
 
         sprites_sent = False
-        # Compute dynamic typing delay for this reply
-        from services.cognition.state_machine import get_typing_delay
-        from services.emotion.affect import get_affect as _get_affect_fn
-        _stream_drives = get_drive_values()
-        _stream_affect = _get_affect_fn()
-        _stream_mode = determine_mode(is_deep, _stream_affect, drives=_stream_drives)
-        _stream_delay = get_typing_delay(_stream_mode, _stream_drives, len(reply))
-        for i in range(0, len(reply), 2):
-            yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
-            # Check if sprites finished during text streaming
-            if sprite_task and not sprites_sent and sprite_task.done():
+        try:
+            # Compute dynamic typing delay for this reply
+            from services.cognition.state_machine import get_typing_delay
+            from services.emotion.affect import get_affect as _get_affect_fn
+            _stream_drives = get_drive_values()
+            _stream_affect = _get_affect_fn()
+            _stream_mode = determine_mode(is_deep, _stream_affect, drives=_stream_drives)
+            _stream_delay = get_typing_delay(_stream_mode, _stream_drives, len(reply))
+            for i in range(0, len(reply), 2):
+                yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
+                # Check if sprites finished during text streaming
+                if sprite_task and not sprites_sent and sprite_task.done():
+                    try:
+                        sprites = sprite_task.result()
+                        if sprites:
+                            logger.info("Sending %d sprites during text streaming", len(sprites))
+                            yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
+                        sprites_sent = True
+                    except Exception as e:
+                        logger.error("Sprite task failed (during stream): %s", e)
+                        sprites_sent = True
+                await asyncio.sleep(_stream_delay)
+
+            # If sprites not ready yet, wait with timeout (8s max)
+            if sprite_task and not sprites_sent:
                 try:
-                    sprites = sprite_task.result()
+                    sprites = await asyncio.wait_for(sprite_task, timeout=8.0)
                     if sprites:
-                        logger.info("Sending %d sprites during text streaming", len(sprites))
+                        logger.info("Sending %d sprites after text streaming", len(sprites))
                         yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
-                    sprites_sent = True
+                except asyncio.TimeoutError:
+                    logger.warning("Sprite generation timed out after 8s, skipping sprites")
                 except Exception as e:
-                    logger.error("Sprite task failed (during stream): %s", e)
-                    sprites_sent = True
-            await asyncio.sleep(_stream_delay)
+                    logger.error("Sprite task failed (after stream): %s", e)
 
-        # If sprites not ready yet, wait with timeout (8s max)
-        if sprite_task and not sprites_sent:
-            try:
-                sprites = await asyncio.wait_for(sprite_task, timeout=8.0)
-                if sprites:
-                    logger.info("Sending %d sprites after text streaming", len(sprites))
-                    yield f"data: {json.dumps({'type': 'pixel_sprites', 'sprites': sprites}, ensure_ascii=False)}\n\n"
-            except asyncio.TimeoutError:
-                logger.warning("Sprite generation timed out after 8s, skipping sprites")
-            except Exception as e:
-                logger.error("Sprite task failed (after stream): %s", e)
+            # Scene iteration: if LLM returned multiple story scenes, stream them
+            if scenes:
+                scene_total = len(scenes) + 1  # +1 for the initial scene 0
+                for si, scene in enumerate(scenes):
+                    if not isinstance(scene, dict):
+                        continue
+                    scene_idx = si + 1
+                    scene_reply = scene.get("reply") or ""
+                    if not scene_reply:
+                        continue
 
-        # Scene iteration: if LLM returned multiple story scenes, stream them
-        if scenes:
-            scene_total = len(scenes) + 1  # +1 for the initial scene 0
-            for si, scene in enumerate(scenes):
-                if not isinstance(scene, dict):
-                    continue
-                scene_idx = si + 1
-                scene_reply = scene.get("reply") or ""
-                if not scene_reply:
-                    continue
+                    # Signal end of previous scene
+                    yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_idx - 1, 'total': scene_total, 'batch_mode': batch_mode}, ensure_ascii=False)}\n\n"
 
-                # Signal end of previous scene
-                yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_idx - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
+                    # Build scene_start with visual params
+                    se = scene.get("emotions")
+                    if isinstance(se, list) and se:
+                        scene_emotions = [clamp_frame(f) for f in se]
+                        for f in scene_emotions:
+                            f.update(jitter_frame(f))
+                            f.update(scale_emotion_params(f))
+                        scene_label = scene_emotions[0].get("label", lbl)
+                    else:
+                        scene_emotions = parsed  # inherit from scene 0
+                        scene_label = lbl
 
-                # Build scene_start with visual params
-                se = scene.get("emotions")
-                if isinstance(se, list) and se:
-                    scene_emotions = [clamp_frame(f) for f in se]
-                    for f in scene_emotions:
-                        f.update(jitter_frame(f))
-                        f.update(scale_emotion_params(f))
-                    scene_label = scene_emotions[0].get("label", lbl)
-                else:
-                    scene_emotions = parsed  # inherit from scene 0
-                    scene_label = lbl
+                    scene_cf = scene.get("color_fields") or cf
+                    scene_bg = scene.get("background") or bg
+                    scene_wb = scene.get("whiteboard") or wb
 
-                scene_cf = scene.get("color_fields") or cf
-                scene_bg = scene.get("background") or bg
+                    yield f"data: {json.dumps({'type': 'scene_start', 'index': scene_idx, 'total': scene_total, 'emotions': scene_emotions, 'label': scene_label, 'affect': _get_affect_dict(), 'color_fields': scene_cf, 'background': scene_bg, 'whiteboard': scene_wb, 'batch_mode': batch_mode}, ensure_ascii=False)}\n\n"
 
-                yield f"data: {json.dumps({'type': 'scene_start', 'index': scene_idx, 'total': scene_total, 'emotions': scene_emotions, 'label': scene_label, 'affect': _get_affect_dict(), 'color_fields': scene_cf, 'background': scene_bg}, ensure_ascii=False)}\n\n"
+                    # Stream scene text
+                    _scene_delay = get_typing_delay(_stream_mode, _stream_drives, len(scene_reply))
+                    for i in range(0, len(scene_reply), 2):
+                        yield f"data: {json.dumps({'type': 'text', 'text': scene_reply[i:i+2]}, ensure_ascii=False)}\n\n"
+                        await asyncio.sleep(_scene_delay)
 
-                # Stream scene text
-                _scene_delay = get_typing_delay(_stream_mode, _stream_drives, len(scene_reply))
-                for i in range(0, len(scene_reply), 2):
-                    yield f"data: {json.dumps({'type': 'text', 'text': scene_reply[i:i+2]}, ensure_ascii=False)}\n\n"
-                    await asyncio.sleep(_scene_delay)
+                # Signal end of final scene
+                yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total, 'batch_mode': batch_mode}, ensure_ascii=False)}\n\n"
 
-            # Signal end of final scene
-            yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
-
-        yield f"data: {json.dumps({'type': 'done', 'source': 'llm'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'source': 'llm', 'batch_mode': batch_mode}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.error("Streaming interrupted: %s", e, exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'text': '嗯...说到一半信号断了，再说一次？✨'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

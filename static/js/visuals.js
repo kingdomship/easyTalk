@@ -222,6 +222,21 @@ function drawColorFields() {
 // Uses offscreen-canvas pre-render for GPU-accelerated drawImage (not fillRect loops)
 // ═══════════════════════════════════════════
 
+// Classify sprite motion type from its name and weight.
+// The LLM sets s.name (e.g. "雨滴", "樱花") — we match keywords to pick a physics profile.
+function _classifyMotion(name, weight) {
+  if (!name) return 'default';
+  var n = name.toLowerCase();
+  if (/雨|雨滴|下雨|冰雹/.test(n)) return 'rain';
+  if (/雪|雪花|飘雪/.test(n)) return 'snow';
+  if (/花瓣|落叶|花|樱花|叶子|羽毛|蒲公英|枫叶/.test(n)) return 'float';
+  if (/气泡|泡泡|音符/.test(n)) return 'rise';
+  if (/星星|闪光|光点|萤火虫|流星|星辰|星|闪烁/.test(n)) return 'sparkle';
+  if (weight >= 0.5) return 'heavy';
+  if (/书|咖啡|果实|爱心|礼物|石头|盒子|书本/.test(n)) return 'heavy';
+  return 'default';
+}
+
 function spawnPixelSprites(data) {
   const spawnX = 0.5, spawnY = 0.35;
   for (const s of data) {
@@ -252,11 +267,22 @@ function spawnPixelSprites(data) {
     const baseDuration = Math.min(s.duration || 3, 12);
     var count = Math.max(1, Math.min(s.count || 1, 50)); // clamp 1-50
 
-    // Safety net: if LLM under-counted a sky effect (light sprite with low count),
-    // auto-boost to ensure visible density. Catches rain/snow/petal failures.
-    // Skip anchored sprites — they stay as single copies (umbrella, hat, etc.)
-    if (!s.anchor && weight < 0.4 && count <= 3) {
-      count = 12 + Math.floor(Math.random() * 7); // 12-18
+    // Classify motion type for physics dispatch
+    var motion = _classifyMotion(s.name || '', weight);
+
+    // Safety net: auto-boost count for atmospheric effects that LLM under-counted.
+    // Heavy/anchored sprites keep their original count — density would look wrong.
+    if (!s.anchor) {
+      if (motion === 'rain' || motion === 'snow' || motion === 'float') {
+        if (count < 15) count = 15 + Math.floor(Math.random() * 11); // 15-25
+      } else if (motion === 'sparkle') {
+        if (count < 8) count = 8 + Math.floor(Math.random() * 5); // 8-12
+      } else if (motion === 'rise') {
+        if (count < 5) count = 5 + Math.floor(Math.random() * 4); // 5-8
+      } else if (motion !== 'heavy' && weight < 0.4 && count <= 3) {
+        count = 12 + Math.floor(Math.random() * 7); // default: 12-18
+      }
+      // heavy: no auto-boost, keep original count
     }
 
     // Pre-render sprite texture ONCE (shared by all copies)
@@ -307,6 +333,7 @@ function spawnPixelSprites(data) {
         gridSize: gridSize,
         cellScale: cs,
         name: s.name || '',
+        motion: motion,
         x: spawnX, y: spawnY,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
@@ -367,36 +394,68 @@ function updatePixelSprites(dt) {
         continue;
       }
     } else {
-      // In-flight physics
+      // In-flight physics — dispatch by motion type
       s.life += spriteDt / s.duration;
-      // Gravity proportional to weight
-      s.vy += 0.22 * s.weight * spriteDt;
-      // Air resistance: light things slow faster
-      var drag = 0.998 - s.weight * 0.003;
-      s.vx *= drag;
-      s.vy *= drag;
-      // Float wobble for light sprites
-      if (s.weight < 0.3) {
-        s.y -= Math.sin(s.life * 8 + s.wobble) * 0.008;
+      var mot = s.motion || 'default';
+
+      if (mot === 'rain') {
+        // Straight fall, slight slant, no bounce
+        s.vx *= 0.999;
+        s.vy += 0.15 * spriteDt;
+        s.vy *= 0.998;
+      } else if (mot === 'snow') {
+        // Slow drift, wide horizontal sway, gentle descent
+        s.vx += Math.sin(s.life * 3 + s.wobble) * 0.003;
+        s.vy += 0.02 * spriteDt;
+        s.vx *= 0.998;
+        s.vy *= 0.995;
+        s.rotation += s.rotSpeed * spriteDt * 0.3;
+      } else if (mot === 'float') {
+        // Spiral float, moderate wobble, light gravity
+        s.vx += Math.sin(s.life * 2.5 + s.wobble) * 0.004;
+        s.vy += 0.05 * spriteDt;
+        s.vx *= 0.996;
+        s.vy *= 0.996;
+        s.rotation += s.rotSpeed * spriteDt * 0.5;
+      } else if (mot === 'rise') {
+        // Float upward, gentle wobble, no gravity
+        s.vy -= 0.03 * spriteDt;
+        s.vx += Math.sin(s.life * 4 + s.wobble) * 0.002;
+        s.vx *= 0.997;
+        s.vy *= 0.997;
+      } else if (mot === 'sparkle') {
+        // No gravity, slow outward drift, no landing
+        s.vx *= 0.995;
+        s.vy *= 0.995;
+      } else {
+        // heavy / default: keep original physics
+        s.vy += 0.22 * s.weight * spriteDt;
+        var drag = 0.998 - s.weight * 0.003;
+        s.vx *= drag;
+        s.vy *= drag;
+        if (s.weight < 0.3) {
+          s.y -= Math.sin(s.life * 8 + s.wobble) * 0.008;
+        }
+        // Check landing for heavy sprites
+        if (s.weight >= 0.5) {
+          var floorY = 0.82 + s.stackOffset * 0.035;
+          if (s.y >= floorY) {
+            s.y = floorY;
+            s.landY = floorY;
+            s.landed = true;
+            s.bounceVel = -Math.abs(s.vy) * 0.35;
+            s.x += (s.landX - s.x) * 0.3;
+          }
+        }
       }
+
       // Position update
       s.x += s.vx * spriteDt;
       s.y += s.vy * spriteDt;
 
-      // Check landing for heavy sprites
-      if (s.weight >= 0.5) {
-        var floorY = 0.82 + s.stackOffset * 0.035;
-        if (s.y >= floorY) {
-          s.y = floorY;
-          s.landY = floorY;
-          s.landed = true;
-          s.bounceVel = -Math.abs(s.vy) * 0.35;
-          s.x += (s.landX - s.x) * 0.3;
-        }
-      }
-
       // Remove if off-screen or lifetime expired
-      if (s.life >= 1 || s.x < -0.3 || s.x > 1.3 || s.y > 1.1) {
+      var offTop = mot === 'rise' && s.y < -0.3;
+      if (s.life >= 1 || s.x < -0.5 || s.x > 1.5 || s.y > 1.2 || offTop) {
         pixelSprites.splice(i, 1);
       }
     }
@@ -406,6 +465,83 @@ function updatePixelSprites(dt) {
     pixelSprites.splice(0, pixelSprites.length - 30);
   }
   } catch(e) { console.error('[sprite] update error:', e); }
+}
+
+function drawWhiteboard() {
+  if (!whiteboardCommands.length) return;
+  var w = canvas.width, h = canvas.height;
+  var t = performance.now() / 1000;
+  ctx.save();
+  for (var i = 0; i < whiteboardCommands.length; i++) {
+    var cmd = whiteboardCommands[i];
+    var alpha = cmd.opacity != null ? cmd.opacity : 0.6;
+    ctx.globalAlpha = alpha;
+    var color = cmd.color || '#ffffff';
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = cmd.width || 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (cmd.type === 'line') {
+      var x1 = (cmd.x1 != null ? cmd.x1 : 0) * w;
+      var y1 = (cmd.y1 != null ? cmd.y1 : 0) * h;
+      var x2 = (cmd.x2 != null ? cmd.x2 : 0.5) * w;
+      var y2 = (cmd.y2 != null ? cmd.y2 : 0.5) * h;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      // Hand-drawn wobble: sinusoidal perturbation perpendicular to line
+      var dx = x2 - x1, dy = y2 - y1;
+      var len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 1) { ctx.lineTo(x2, y2); ctx.stroke(); continue; }
+      var nx = -dy / len, ny = dx / len; // perpendicular unit vector
+      var wobbleAmp = 1.2;
+      var segments = Math.max(4, Math.floor(len / 8));
+      for (var s = 1; s <= segments; s++) {
+        var frac = s / segments;
+        var wx = x1 + dx * frac;
+        var wy = y1 + dy * frac;
+        var wobble = wobbleAmp * Math.sin(frac * Math.PI * 3 + t * 2 + i);
+        wx += nx * wobble;
+        wy += ny * wobble;
+        ctx.lineTo(wx, wy);
+      }
+      ctx.stroke();
+    } else if (cmd.type === 'circle') {
+      var cx = (cmd.cx != null ? cmd.cx : 0.5) * w;
+      var cy = (cmd.cy != null ? cmd.cy : 0.5) * h;
+      var r = (cmd.r || 0.1) * Math.min(w, h);
+      ctx.beginPath();
+      // Wobbly radius: vary slightly along the arc
+      var arcSteps = 24;
+      for (var s = 0; s <= arcSteps; s++) {
+        var angle = (s / arcSteps) * Math.PI * 2;
+        // Leave ~5% gap at the end for hand-drawn look
+        if (s > arcSteps * 0.95) break;
+        var wr = r + r * 0.03 * Math.sin(angle * 5 + t + i);
+        var ax = cx + Math.cos(angle) * wr;
+        var ay = cy + Math.sin(angle) * wr;
+        if (s === 0) ctx.moveTo(ax, ay);
+        else ctx.lineTo(ax, ay);
+      }
+      if (cmd.fill) {
+        ctx.fill();
+      } else {
+        ctx.stroke();
+      }
+    } else if (cmd.type === 'dot') {
+      var dx = (cmd.x != null ? cmd.x : 0.5) * w;
+      var dy = (cmd.y != null ? cmd.y : 0.5) * h;
+      var size = (cmd.size || 2);
+      // Subtle position jitter
+      var jx = dx + Math.sin(t * 3 + i) * 0.8;
+      var jy = dy + Math.cos(t * 3.7 + i) * 0.8;
+      ctx.beginPath();
+      ctx.arc(jx, jy, size * 0.5 + Math.sin(t * 2 + i) * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
 }
 
 function drawPixelSprites() {
@@ -471,16 +607,27 @@ function drawPixelSprites() {
       // Gently drift toward landing X
       s.x += (s.landX - s.x) * 0.08;
     } else {
+      var mot = s.motion || 'default';
       if (s.life < 0.15) {
         scale = s.life / 0.15;
         alpha = scale;
       } else if (s.life > 0.85) {
         var fade2 = (s.life - 0.85) / 0.15;
-        scale = 1 - fade2 * 0.4;
-        alpha = 1 - fade2;
+        if (mot === 'rise') {
+          // Pop effect: scale to 0 at end of life
+          scale = 1 + fade2 * 0.1 - fade2 * fade2 * 1.1;
+          alpha = 1 - fade2;
+        } else {
+          scale = 1 - fade2 * 0.4;
+          alpha = 1 - fade2;
+        }
       } else {
         scale = 1;
         alpha = 1;
+      }
+      // Sparkle: sinusoidal flicker
+      if (mot === 'sparkle') {
+        scale *= 0.7 + 0.3 * Math.sin(s.life * 12 + s.wobble);
       }
     }
 
@@ -510,16 +657,16 @@ function drawPixelSprites() {
 function drawLandingShelf() {
   var shelfY = canvas.height * 0.83;
   var grad = ctx.createLinearGradient(0, shelfY - 4, 0, shelfY + 1);
-  grad.addColorStop(0, 'rgba(124,131,255,0)');
-  grad.addColorStop(0.5, 'rgba(124,131,255,0.12)');
-  grad.addColorStop(1, 'rgba(124,131,255,0.04)');
+  grad.addColorStop(0, 'rgba(255,215,0,0)');
+  grad.addColorStop(0.5, 'rgba(255,215,0,0.10)');
+  grad.addColorStop(1, 'rgba(255,215,0,0.03)');
 
   ctx.save();
   ctx.fillStyle = grad;
   ctx.fillRect(0, shelfY - 4, canvas.width, 5);
 
   // Subtle glow line
-  ctx.strokeStyle = 'rgba(124,131,255,0.15)';
+  ctx.strokeStyle = 'rgba(255,215,0,0.12)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(canvas.width * 0.05, shelfY);
@@ -768,6 +915,7 @@ function drawStarfield() {
   // Overlay AI-controlled color fields (Rothko-style abstract regions)
   drawColorFields();
   drawSubtlePattern();
+  drawWhiteboard();
 
   const t = performance.now() / 1000;
   const breathe = 1 + 0.06 * Math.sin(t * 0.52); // ~12s breathing cycle
@@ -1255,6 +1403,9 @@ function drawChat() {
   // Draw the face properly
   const displayParams = isBlinking ? { ...curParams, eye_open: 0.05 } : curParams;
   drawFaceOnCanvas(displayParams, faceBob);
+
+  // Whiteboard drawings on top of face
+  drawWhiteboard();
 
   // Overlay sparkle particles
   drawSparkleOverlay(faceBob);
