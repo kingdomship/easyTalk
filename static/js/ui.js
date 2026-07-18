@@ -1587,6 +1587,10 @@ if (!restored) {
 	if (restored && storyPaused) {
 	  showStoryContinueBtn();
 	}
+	// Auto-enter chat mode on fresh visit so the face renders immediately
+	if (!restored) {
+	  startConvergence();
+	}
 requestAnimationFrame(loop);
 
 // ═══════════════════════════════════════════
