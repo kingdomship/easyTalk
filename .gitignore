@@ -1,4 +1,12 @@
 __pycache__/
 *.pyc
+*.pyo
 .claude/
 .env
+.venv/
+venv/
+.DS_Store
+*.egg-info/
+dist/
+.pytest_cache/
+/memory/

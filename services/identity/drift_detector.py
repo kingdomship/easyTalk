@@ -18,6 +18,7 @@ Replaces the simple LLM-based scoring in identity_guard.py with:
 
 import json
 import logging
+import hashlib
 import math
 import os
 
@@ -76,7 +77,6 @@ def _text_to_embedding(text: str) -> list[float]:
 
     Zero external API cost — reuses the same scheme as memory_search.py.
     """
-    import hashlib
     dim = VEC_DIM
     vec = [0.0] * dim
     # Use character trigrams as "tags" for the hash scheme

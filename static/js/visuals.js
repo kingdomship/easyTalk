@@ -225,7 +225,7 @@ function drawColorFields() {
 function spawnPixelSprites(data) {
   const spawnX = 0.5, spawnY = 0.35;
   for (const s of data) {
-    if (!s.grid || !s.palette) { console.warn('[sprite] skip: no grid or palette', s.name); continue; }
+    if (!s.grid || !s.palette) { continue; }
     // Accept grid as array-of-strings, array-of-numbers, OR flat string (LLMs occasionally output any)
     var gridRows = Array.isArray(s.grid) ? s.grid : [];
     if (gridRows.length === 0 && typeof s.grid === 'string') {
@@ -245,7 +245,7 @@ function spawnPixelSprites(data) {
       }
       gridRows[ri] = row;
     }
-    if (gridRows.length === 0) { console.warn('[sprite] skip: empty grid', s.name); continue; }
+    if (gridRows.length === 0) { continue; }
     const gridSize = gridRows.length;  // use actual row count instead of s.size
     const spread = s.spread != null ? s.spread : 0.8;
     const weight = s.weight != null ? Math.max(0, Math.min(1, s.weight)) : 0.3;
@@ -279,8 +279,7 @@ function spawnPixelSprites(data) {
         texPixels++;
       }
     }
-    console.log('[sprite] spawned:', s.name || '?', 'count=' + count, 'grid=' + gridSize + '×' + gridSize, 'pixels=' + texPixels, 'weight=' + weight, 'anchor=' + (s.anchor || 'no'), 'grid[0]=' + (gridRows[0] || '').substring(0, 20), 'palette_len=' + s.palette.length, 'palette[1]=' + s.palette[1]);
-    if (texPixels === 0) { console.warn('[sprite] skip: zero visible pixels', s.name); continue; }
+    if (texPixels === 0) { continue; }
 
     // Spawn 'count' copies with randomized physics
     var isAnchored = !!s.anchor;

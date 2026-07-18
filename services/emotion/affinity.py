@@ -13,6 +13,7 @@ import logging
 import os
 
 from app.db import q, execute
+from app.config import MILESTONE_PATH
 
 DIMENSIONS = [
     "warmth", "trust", "intimacy", "curiosity", "patience", "tension",
@@ -229,7 +230,6 @@ _MILESTONES = [
     ("user_relatedness", 0.5, "心之桥梁", "用户真正感受到了与你的情感联结"),
 ]
 
-from app.config import MILESTONE_PATH
 _MILESTONE_PATH = MILESTONE_PATH
 
 
@@ -239,7 +239,6 @@ def check_milestones() -> str | None:
     Returns the milestone name if one was triggered, None otherwise.
     Each milestone only triggers once.
     """
-    import json
     triggered = set()
     if os.path.exists(_MILESTONE_PATH):
         with open(_MILESTONE_PATH) as f:
@@ -280,7 +279,6 @@ def check_milestones() -> str | None:
 
 def get_milestones() -> list[dict]:
     """Return all achieved milestones."""
-    import json
     milestones = []
     if os.path.exists(_MILESTONE_PATH):
         with open(_MILESTONE_PATH) as f:

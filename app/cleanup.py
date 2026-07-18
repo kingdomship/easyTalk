@@ -45,7 +45,7 @@ def _cleanup_chat_history(retention_days: int):
         "DELETE FROM chat_history WHERE created_at < %s",
         [cutoff],
     )
-    if deleted_ch:
+    if deleted_ch > 0:
         logger.info("Cleaned %d old chat rows (retention=%d days)", deleted_ch, retention_days)
 
 
@@ -53,7 +53,7 @@ def _cleanup_idle_thoughts(retention_days: int):
     """Delete old idle thoughts."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
     deleted = execute("DELETE FROM idle_thoughts WHERE created_at < %s", [cutoff])
-    if deleted:
+    if deleted > 0:
         logger.info("Cleaned %d old idle thoughts", deleted)
 
 
@@ -61,7 +61,7 @@ def _cleanup_mood_history(retention_days: int):
     """Delete old mood history entries."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
     deleted = execute("DELETE FROM mood_history WHERE created_at < %s", [cutoff])
-    if deleted:
+    if deleted > 0:
         logger.info("Cleaned %d old mood entries", deleted)
 
 

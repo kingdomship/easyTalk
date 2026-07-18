@@ -19,7 +19,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - LLM_API_KEY=${LLM_API_KEY:-${DEEPSEEK_API_KEY}}
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_NAME=emotion

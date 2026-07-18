@@ -95,7 +95,7 @@ AI角色的人设是：风趣、幽默、知性的漂亮女性，主动找话题
 只输出摘要内容，不要加额外说明。"""
 
 
-def condense(transcript: str, api_key: str) -> str:
+def condense(transcript: str) -> str:
     """Call DeepSeek to condense the transcript."""
     from app.utils import get_llm, get_llm_model
 
@@ -125,17 +125,12 @@ def main():
         print(f"File not found: {jsonl_path}")
         sys.exit(1)
 
-    api_key = os.getenv("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        print("DEEPSEEK_API_KEY not set")
-        sys.exit(1)
-
     print("Extracting transcript...")
     transcript = extract_transcript(jsonl_path)
     print(f"Transcript: {len(transcript)} chars, ~{len(transcript)//4} tokens")
 
     print("Calling DeepSeek to condense...")
-    summary = condense(transcript, api_key)
+    summary = condense(transcript)
 
     with open(output_path, "w") as f:
         f.write(summary)

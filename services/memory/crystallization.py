@@ -10,7 +10,9 @@ knowledge nodes. Crystals are stored in memory/crystals.jsonl.
 
 import json
 import logging
+import math
 import os
+import shutil
 import threading
 
 logger = logging.getLogger("emoji-chat")
@@ -216,7 +218,6 @@ def get_crystals(min_importance: float = 0.2) -> list[dict]:
     Crystals decay over time unless reinforced. Those below min_importance
     are marked dormant and excluded from prompt injection.
     """
-    import math
     crystals = []
     archive_path = ARCHIVE_PATH
     total_turns = 0
@@ -296,7 +297,6 @@ def reinforce_crystal(tag: str):
                             logger.warning("Operation failed", exc_info=True)
 
             if found:
-                import tempfile, shutil
                 tmp = CRYSTAL_PATH + ".tmp"
                 with open(tmp, "w") as f:
                     for c in crystals:

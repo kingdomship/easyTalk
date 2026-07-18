@@ -41,7 +41,7 @@ easytalk/
 │   │   ├── prompt.py       # 模块化提示词 + AI预分析组装 (见提示词系统章节)
 │   │   ├── sprite_prompt.py # 两段式精灵生成专用prompt (16×16高分辨率网格)
 │   │   ├── sprite_library.py # 精灵库查询/持久化 (新增)
-│   │   └── sprites/        # 预生成精灵JSON (11类: animals/weather/food/...) (新增)
+│   │   └── sprites/        # 预生成精灵JSON (10类: animals/weather/food/...) (新增)
 │   ├── drive/               # 驱动系统 (新增)
 │   │   ├── engine.py       # 动机引擎 (drive values + decay)
 │   │   └── prompts.py      # 驱动相关 prompt
@@ -78,6 +78,12 @@ easytalk/
 │   ├── episodes.jsonl      # 叙事章节
 │   ├── milestones.jsonl    # 关系里程碑
 │   ├── attachment_style.json # 依恋风格
+│   ├── drift_log.jsonl     # 人设漂移日志
+│   ├── prediction.json     # 预测代理状态
+│   ├── salience_prev.json  # 显著性快照
+│   ├── valence_prev.json   # 效价快照
+│   ├── personality_config.json # 人格配置
+│   ├── api_key.txt         # 自定义 API Key
 │   └── llm_config.json     # LLM 多供应商配置 (api_key/base_url/model)
 ├── scripts/                # 工具脚本
 │   ├── batch_generate_sprites.py  # 批量预生成精灵
@@ -233,7 +239,7 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
 
 - `services/identity/sprite_prompt.py` — 精灵生成专用 prompt
 - `services/identity/sprite_library.py` — `lookup_sprite()` / `persist_sprite()`
-- `services/identity/sprites/` — 11 类预生成精灵 (animals/weather/food/objects/...)
+- `services/identity/sprites/` — 10 类预生成精灵 (animals/weather/food/objects/...)
 - `static/js/visuals.js` — offscreen canvas 预渲染 + `drawImage`
 
 ## 驱动系统 (Drive)

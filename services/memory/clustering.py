@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import random
+import re
 
 from app.db import q
 
@@ -166,7 +167,6 @@ def _extract_tag(content: str, source: str = "emotion", members: list | None = N
         return _extract_group_tag(members)
 
     # Try to extract a quoted name or highlighted term
-    import re
     # 「...」or「...」
     bracket_match = re.search(r'[「「]([^」」]{2,10})[」」]', content)
     if bracket_match:
@@ -251,7 +251,6 @@ def _extract_summary(content: str, source: str = "emotion", members: list | None
       - merged group: show a composite from the most important members
       - emotion_cache: use the content, cut at a natural sentence boundary
     """
-    import re
 
     # Crystal: "tag：description" → return the description part
     if source == "crystal" and "：" in content:

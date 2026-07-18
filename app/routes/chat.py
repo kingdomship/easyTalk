@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import random
+import re
 import threading
 from datetime import datetime, timezone
 
@@ -53,7 +54,6 @@ _ARCHIVE_PATH = ARCHIVE_PATH
 
 def _strip_emoji(text: str) -> str:
     """Remove emoji from conversation history to prevent DeepSeek JSON-mode crash."""
-    import re
     return re.sub(
         r'[\U0001F300-\U0001F9FF☀-➿⭐❤✨✀-➿️‍]',
         '', text,

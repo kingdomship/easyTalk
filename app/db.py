@@ -60,10 +60,10 @@ def execute(sql, params=None):
     try:
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
-            return True
+            return cur.rowcount
     except Exception:
         logger.warning("Operation failed", exc_info=True)
-        return False
+        return -1
     finally:
         _get_pool().putconn(conn)
 

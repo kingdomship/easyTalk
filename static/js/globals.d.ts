@@ -215,6 +215,8 @@ declare function initAudio(): void;
 declare function playTypingSound(): void;
 declare function addDebugLog(level: string, title: string, msg: string, analysis?: string): void;
 declare function escapeHtml(s: string): string;
+declare var EMOJI_RE: RegExp;
+declare var EMOJI_SPLIT_RE: RegExp;
 declare function resize(): void;
 
 // visuals.js

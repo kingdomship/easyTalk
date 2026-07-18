@@ -297,15 +297,6 @@
   0%,100% { transform:translateY(0); }
   50%     { transform:translateY(-6px); }
 }
-/* AI diary content — serif feel for journal intimacy */
-.diary-body .diary-text {
-  font-family:inherit;
-  text-indent:0;
-}
-/* First line slightly emphasized */
-.diary-body .diary-text::first-line {
-  color:#d8d4f0;
-}
 .tl-node.glow { border-color:var(--gold) !important; }
 .tl-node.glow .tl-dot { box-shadow:0 0 20px rgba(255,215,0,0.5); }
 
@@ -339,17 +330,6 @@
   .diary-yr-nav:active { background:rgba(124,131,255,0.15); }
   .diary-yr-label { font-size:0.9rem; color:#c8b8e8; letter-spacing:0.06em; font-weight:500;
                      min-width:50px; text-align:center; user-select:none; }
-  .diary-ym-select {
-    appearance:none; -webkit-appearance:none;
-    background:rgba(18,18,42,0.5); border:1px solid rgba(124,131,255,0.12);
-    border-radius:8px; padding:4px 22px 4px 8px; color:#c8b8e8; font-size:0.7rem;
-    font-family:inherit; cursor:pointer; transition:all 0.2s;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23a0a0c0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 5px center; outline:none;
-  }
-  .diary-ym-select:hover { border-color:rgba(124,131,255,0.35); }
-  .diary-ym-select:focus { border-color:var(--accent); box-shadow:0 0 0 1px rgba(124,131,255,0.15); }
-  .diary-ym-select option { background:#12122a; color:#c8c0e0; }
   .diary-month-clear {
     background:none; border:1px solid rgba(255,255,255,0.1); border-radius:10px;
     padding:2px 10px; color:#6a6a8a; font-size:0.6rem; cursor:pointer;
@@ -465,11 +445,6 @@
   .news-tag.zhihu { background:rgba(0,100,255,0.15); color:#448aff; }
   .news-tag.weibo { background:rgba(255,60,60,0.15); color:#ff5252; }
   .news-tag.github { background:rgba(100,200,100,0.15); color:#66bb6a; }
-
-  /* Mood grid */
-  .mood-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(32px,1fr)); gap:4px; }
-  .mood-cell { aspect-ratio:1; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:14px; cursor:default; transition:transform 0.15s; }
-  .mood-cell:hover { transform:scale(1.2); z-index:1; }
 
   /* Sound toggle */
   #sound-toggle {

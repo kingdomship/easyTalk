@@ -61,9 +61,7 @@ function skipTypewriter() {
 }
 
 function formatDialogText(text) {
-  // Escape HTML and add news link styling
-  let escaped = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  // Highlight URLs as clickable news refs
+  let escaped = escapeHtml(text);
   escaped = escaped.replace(/(https?:\/\/\S+)/g, '<span class="news-ref" data-url="$1">$1</span>');
   return escaped;
 }
@@ -86,11 +84,12 @@ function checkChoices(reply) {
   if (existing) existing.remove();
 
   // Detect choice patterns: emoji + text pairs, numbered items, or "/" separated
-  const emojiItems = reply.match(/[🎭🤪🔇🧠😏😌✨😂🤔🫂💪]/g);
+  // Match any emoji (covers most common Unicode emoji ranges)
+  var emojiItems = reply.match(EMOJI_RE);
   if (!emojiItems || emojiItems.length < 2) return;
 
   // Extract possible choices (emoji-prefixed segments)
-  const segments = reply.split(/(?=[🎭🤪🔇🧠😏😌✨😂🤔🫂💪])/).filter(s => s.trim().length > 2 && s.trim().length < 40);
+  var segments = reply.split(EMOJI_SPLIT_RE).filter(function(s) { return s.trim().length > 2 && s.trim().length < 40; });
   if (segments.length < 2) return;
 
   const container = document.createElement('div');
@@ -1382,19 +1381,6 @@ async function sendMessage() {
             bgColorTarget = (evt.background && typeof evt.background === 'string') ? evt.background : null;
           } else if (evt.type === 'pixel_sprites') {
             if (evt.sprites && Array.isArray(evt.sprites) && typeof spawnPixelSprites === 'function') {
-              console.log('[sprite] SSE received:', evt.sprites.length, 'sprites');
-              for (var si = 0; si < evt.sprites.length; si++) {
-                var sp = evt.sprites[si];
-                console.log('[sprite] SSE sp[' + si + ']: grid_type=' + (Array.isArray(sp.grid) ? 'array[' + sp.grid.length + ']' : typeof sp.grid) + ' palette_len=' + (sp.palette ? sp.palette.length : 0) + ' count=' + sp.count + ' weight=' + sp.weight + ' anchor=' + sp.anchor);
-                if (sp.grid && Array.isArray(sp.grid) && sp.grid.length > 0) {
-                  // Show all 16 rows to check if any have non-zero content
-                  var hasNonZero = false;
-                  for (var ri = 0; ri < sp.grid.length; ri++) {
-                    if (sp.grid[ri] !== '0000000000000000') { hasNonZero = true; break; }
-                  }
-                  console.log('[sprite] SSE sp[' + si + '] all_rows_zero=' + !hasNonZero + ' grid[0]=' + sp.grid[0] + ' grid[7]=' + (sp.grid[7] || 'N/A'));
-                }
-              }
               spawnPixelSprites(evt.sprites);
             }
           } else if (evt.type === 'scene_done') {
@@ -1450,8 +1436,8 @@ async function sendMessage() {
             }
           }
         } catch(e) {
-          // Partial JSON, keep in buffer
-          buffer = line;
+          // Prepend any buffered non-data line before the partial data line
+          buffer = (buffer ? buffer + '\n' : '') + line;
         }
       }
     }

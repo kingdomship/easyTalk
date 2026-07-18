@@ -3,6 +3,10 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Emoji regex for choice-button detection (covers all common Unicode emoji ranges)
+var EMOJI_RE = /[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿‍️]/g;
+var EMOJI_SPLIT_RE = /(?=[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿])/;
+
 // ═══════════════════════════════════════════
 // DOM refs
 // ═══════════════════════════════════════════
