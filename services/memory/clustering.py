@@ -47,6 +47,13 @@ def _classify_topic(text: str) -> str:
     return best if scores[best] > 0 else "events"
 
 
+def _all_matching_topics(text: str) -> set[str]:
+    """Return all galaxy topics that have at least one keyword match."""
+    text_lower = text.lower()
+    return {topic for topic, info in GALAXY_TOPICS.items()
+            if any(kw in text_lower for kw in info["keywords"])}
+
+
 def _star_position(galaxy_angle: float, index: int, total: int) -> tuple[float, float]:
     """Compute a star's position within its galaxy's elliptical orbit."""
     rng = random.Random(index * 137 + hash(str(galaxy_angle)) % 1000)
@@ -98,6 +105,47 @@ def _load_episode_terms() -> set[str]:
     except Exception:
         pass
     return terms
+
+
+def _chinese_bigrams(text: str) -> set[str]:
+    """Extract Chinese bigrams from a text string."""
+    bigrams = set()
+    for i in range(len(text) - 1):
+        chunk = text[i:i + 2]
+        if all('一' <= c <= '鿿' for c in chunk):
+            bigrams.add(chunk)
+    return bigrams
+
+
+def _chinese_unigrams(text: str) -> set[str]:
+    """Extract Chinese characters from text."""
+    return {c for c in text if '一' <= c <= '鿿'}
+
+
+def _bigram_jaccard(text_a: str, text_b: str) -> float:
+    """Compute Jaccard similarity between two texts.
+
+    Uses a blend of unigram (char) and bigram overlap.
+    Unigrams capture semantic similarity when texts are short (<20 chars);
+    bigrams capture phrase-level overlap for longer texts.
+    """
+    ua, ub = _chinese_unigrams(text_a), _chinese_unigrams(text_b)
+    ba, bb = _chinese_bigrams(text_a), _chinese_bigrams(text_b)
+    if (not ua or not ub) and (not ba or not bb):
+        return 0.0
+    # Unigram Jaccard
+    u_inter = len(ua & ub)
+    u_union = len(ua | ub) or 1
+    u_jac = u_inter / u_union
+    # Bigram Jaccard
+    b_inter = len(ba & bb)
+    b_union = len(ba | bb) or 1
+    b_jac = b_inter / b_union
+    # Blend: weight bigrams higher when available, fall back to unigrams
+    if b_union > 3:
+        return round(b_jac * 0.7 + u_jac * 0.3, 4)
+    else:
+        return round(u_jac, 4)
 
 
 # Keywords that signal a significant event / declaration / decision
@@ -554,6 +602,7 @@ def build_constellation() -> dict:
                 "y": y,
                 "size": round(size, 1),
                 "importance": round(mem["importance"], 2),
+                "_topic": topic,
             })
 
         galaxies.append({
@@ -565,16 +614,61 @@ def build_constellation() -> dict:
             "stars": stars,
         })
 
-    # ── Connections (lowered threshold from 0.4 → 0.25 for richer graph) ──
+    # ── Connections ──
     connections = []
+    seen_pairs = set()  # track (min_id, max_id) to avoid duplicates
+
+    # 1) Same-galaxy adjacency (importance-sorted)
     for galaxy in galaxies:
         important_stars = [s for s in galaxy["stars"] if s["importance"] > 0.25]
         for i in range(len(important_stars)):
             for j in range(i + 1, min(i + 3, len(important_stars))):
-                connections.append({
-                    "from_id": important_stars[i]["id"],
-                    "to_id": important_stars[j]["id"],
-                })
+                a, b = important_stars[i]["id"], important_stars[j]["id"]
+                key = (min(a, b), max(a, b))
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    connections.append({"from_id": a, "to_id": b, "weight": 0.5})
+
+    # 2) Cross-galaxy semantic connections (bigram Jaccard)
+    id_to_content = {mem["id"]: mem["content"] for mem in merged}
+    all_stars = []
+    for g in galaxies:
+        all_stars.extend(g["stars"])
+    # Only consider stars with importance > 0.2 for cross-galaxy linking
+    candidates = [s for s in all_stars if s["importance"] > 0.2 and s["id"] in id_to_content]
+    # Cap: max 5 cross-galaxy edges per star
+    cross_counts = {s["id"]: 0 for s in candidates}
+    for i in range(len(candidates)):
+        a = candidates[i]
+        content_a = id_to_content.get(a["id"], "")
+        if not content_a:
+            continue
+        for j in range(i + 1, len(candidates)):
+            b = candidates[j]
+            # Skip same-galaxy pairs (already handled by adjacency above)
+            if a.get("_topic") == b.get("_topic"):
+                continue
+            if cross_counts[a["id"]] >= 5:
+                break  # a is at cap, no need to check further b's for this a
+            if cross_counts[b["id"]] >= 5:
+                continue
+            content_b = id_to_content.get(b["id"], "")
+            if not content_b:
+                continue
+            sim = _bigram_jaccard(content_a, content_b)
+            # Bonus: secondary-topic keyword overlap between texts
+            topics_a = _all_matching_topics(content_a)
+            topics_b = _all_matching_topics(content_b)
+            shared = topics_a & topics_b
+            if shared:
+                sim += min(len(shared), 2) * 0.03
+            if sim >= 0.04:
+                key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    connections.append({"from_id": a["id"], "to_id": b["id"], "weight": round(sim, 3)})
+                    cross_counts[a["id"]] += 1
+                    cross_counts[b["id"]] += 1
 
     # ── Core labels from persona/profile ──
     user_label = "我"

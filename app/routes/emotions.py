@@ -16,3 +16,13 @@ def list_emotions():
 def delete_emotion(label: str):
     execute("DELETE FROM emotion_cache WHERE label = %s", [label])
     return {"ok": True}
+
+
+@router.get("/api/emotions/self")
+def get_self_affect():
+    """Return AI's own current emotional state for frontend display."""
+    try:
+        from services.emotion.self_affect import get_self_mood_display
+        return get_self_mood_display()
+    except Exception:
+        return {"emoji": "😶", "label": "未知", "values": {}}

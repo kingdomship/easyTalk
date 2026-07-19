@@ -3,9 +3,50 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-// Emoji regex for choice-button detection (covers all common Unicode emoji ranges)
-var EMOJI_RE = /[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿‍️]/g;
-var EMOJI_SPLIT_RE = /(?=[🌀-🗿😀-🙏🚀-🛿🤀-🧿☀-➿🇦-🇿🌀-🏿])/;
+// Emoji detection via code-point ranges (avoids regex character-class issues)
+function isEmojiCodePoint(cp) {
+  // Common emoji Unicode ranges (same coverage as the old regex)
+  return (cp >= 0x1F300 && cp <= 0x1F5FF) ||  // Misc Symbols
+         (cp >= 0x1F600 && cp <= 0x1F64F) ||  // Emoticons
+         (cp >= 0x1F680 && cp <= 0x1F6FF) ||  // Transport
+         (cp >= 0x1F900 && cp <= 0x1F9FF) ||  // Supplemental
+         (cp >= 0x2600  && cp <= 0x27BF)  ||  // Misc Symbols
+         (cp >= 0x1F1E6 && cp <= 0x1F1FF) ||  // Regional Indicators
+         cp === 0x200D || cp === 0xFE0F;       // ZWJ + VS16
+}
+
+var EMOJI_RE = {
+  // Minimal drop-in: returns all emoji code points found (Array-like for .length)
+  _re: /([\uD800-\uDBFF][\uDC00-\uDFFF])/g,
+  test: function(s) {
+    // Reset regex state
+    this._re.lastIndex = 0;
+    var m;
+    while ((m = this._re.exec(s)) !== null) {
+      var cp = (m[1].charCodeAt(0) - 0xD800) * 0x400 +
+               (m[1].charCodeAt(1) - 0xDC00) + 0x10000;
+      if (isEmojiCodePoint(cp)) return true;
+    }
+    return false;
+  }
+};
+
+function emojiSplit(s) {
+  var result = [];
+  var pos = 0;
+  var re = /([\uD800-\uDBFF][\uDC00-\uDFFF])/g, m;
+  while ((m = re.exec(s)) !== null) {
+    var cp = (m[1].charCodeAt(0) - 0xD800) * 0x400 +
+             (m[1].charCodeAt(1) - 0xDC00) + 0x10000;
+    if (isEmojiCodePoint(cp)) {
+      result.push(s.slice(pos, m.index));
+      result.push(m[1]);
+      pos = m.index + m[1].length;
+    }
+  }
+  result.push(s.slice(pos));
+  return result;
+}
 
 // ═══════════════════════════════════════════
 // DOM refs
@@ -824,7 +865,8 @@ function saveVisualState() {
       seqElapsed: seqElapsed,
       replyText: replyText,
       dlgText: (typeof dlgText !== 'undefined' ? dlgText : ''),
-      state: (typeof state !== 'undefined' ? state : STATE.STARFIELD),
+      // Don't persist transient states — they need async content loading on restore
+      state: (typeof state !== 'undefined' && state !== STATE.AUXILIARY && state !== STATE.CONSTELLATION ? state : STATE.STARFIELD),
       storyPaused: (typeof storyPaused !== 'undefined' ? storyPaused : false),
       storyBuffer: (typeof storyBuffer !== 'undefined' ? storyBuffer : []),
     };

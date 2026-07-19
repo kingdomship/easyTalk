@@ -48,6 +48,8 @@ logger = logging.getLogger("emoji-chat")
 _CONDENSE_EVERY = 50
 _condense_lock = threading.Lock()
 _last_condense_count = 0
+_turn_counter = 0
+_turn_counter_lock = threading.Lock()
 
 _ARCHIVE_PATH = ARCHIVE_PATH
 
@@ -106,6 +108,39 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     update_affect(msg)
     update_salience(msg, label)
     adjust_expression_amplitude(msg)
+    # ── New modules: zero-LLM lightweight tracking ──
+    from services.emotion.affect import get_affect
+    try:
+        from services.emotion.contagion import update_contagion_on_reply
+        _affect = get_affect()
+        _drives = get_drive_values()
+        _mode = determine_mode(False, _affect, drives=_drives)
+        update_contagion_on_reply(label, _mode)
+    except Exception:
+        logger.warning("Contagion update failed", exc_info=True)
+    try:
+        from services.emotion.self_affect import update_on_chat
+        update_on_chat(msg, reply, emotion_label=label)
+    except Exception:
+        logger.warning("Self-affect update failed", exc_info=True)
+    try:
+        from services.psych.conversation_goal import update_conversation_goal
+        update_conversation_goal(msg, get_affect())
+    except Exception:
+        logger.warning("Conversation goal update failed", exc_info=True)
+    try:
+        from services.psych.life_domains import update_life_domains
+        update_life_domains(msg, get_affect())
+    except Exception:
+        logger.warning("Life domains update failed", exc_info=True)
+    try:
+        from services.psych.entry_point import seed_from_message
+        global _turn_counter
+        with _turn_counter_lock:
+            _turn_counter += 1
+        seed_from_message(msg, turn_count=_turn_counter)
+    except Exception:
+        logger.warning("Curiosity seeding failed", exc_info=True)
     _archive_conversation(msg, reply, thinking)
     get_background_executor().submit(update_drives_on_chat, msg, label, is_deep=is_deep)
     get_background_executor().submit(generate_prediction, msg, reply)
@@ -518,6 +553,23 @@ def _build_context(msg: str, thinking: str | None = None,
     if affinity_ctx:
         system_msg += "\n\n" + affinity_ctx
 
+    # ── Conversation continuity & proactive care ──
+    try:
+        from services.psych.user_model import (
+            get_proactive_care_context, get_session_anchor, get_timeline_context,
+        )
+        care_ctx = get_proactive_care_context()
+        if care_ctx:
+            system_msg += "\n\n" + care_ctx
+        anchor = get_session_anchor()
+        if anchor:
+            system_msg += "\n\n" + anchor
+        timeline = get_timeline_context()
+        if timeline:
+            system_msg += "\n\n" + timeline
+    except Exception:
+        logger.warning("Failed to get continuity/care context", exc_info=True)
+
     affect_ctx = get_affect_context()
     if affect_ctx:
         system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
@@ -529,6 +581,51 @@ def _build_context(msg: str, thinking: str | None = None,
     salience_ctx = get_salience_context()
     if salience_ctx:
         system_msg += "\n" + salience_ctx
+
+    # ── Emotion contagion effectiveness feedback ──
+    try:
+        from services.emotion.contagion import get_contagion_context
+        contagion_ctx = get_contagion_context()
+        if contagion_ctx:
+            system_msg += "\n" + contagion_ctx
+    except Exception:
+        logger.warning("Failed to get contagion context", exc_info=True)
+
+    # ── AI's own emotional state ──
+    try:
+        from services.emotion.self_affect import get_self_affect_context
+        self_ctx = get_self_affect_context()
+        if self_ctx:
+            system_msg += "\n\n" + self_ctx
+    except Exception:
+        logger.warning("Failed to get self-affect context", exc_info=True)
+
+    # ── Conversation goal tracking ──
+    try:
+        from services.psych.conversation_goal import get_goal_context
+        goal_ctx = get_goal_context()
+        if goal_ctx:
+            system_msg += "\n" + goal_ctx
+    except Exception:
+        logger.warning("Failed to get goal context", exc_info=True)
+
+    # ── Life domain awareness ──
+    try:
+        from services.psych.life_domains import get_life_domain_context
+        domain_ctx = get_life_domain_context()
+        if domain_ctx:
+            system_msg += "\n\n" + domain_ctx
+    except Exception:
+        logger.warning("Failed to get life domain context", exc_info=True)
+
+    # ── Curiosity queue hint ──
+    try:
+        from services.psych.entry_point import get_curiosity_hint
+        curiosity = get_curiosity_hint()
+        if curiosity:
+            system_msg += "\n\n" + curiosity
+    except Exception:
+        logger.warning("Failed to get curiosity hint", exc_info=True)
 
     # Drive state context (inner motivational state)
     drive_ctx = get_drive_context()
@@ -595,6 +692,15 @@ def _build_context(msg: str, thinking: str | None = None,
             system_msg += "\n\n" + pred_ctx
     except Exception:
         logger.warning("Failed to get prediction context", exc_info=True)
+
+    # Unified user portrait (aggregates ~20 sources, zero LLM)
+    try:
+        from services.psych.user_model import get_user_portrait
+        portrait = get_user_portrait()
+        if portrait:
+            system_msg += "\n\n" + portrait
+    except Exception:
+        logger.warning("Failed to get user portrait", exc_info=True)
 
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],

@@ -5,10 +5,10 @@
 ```
 easytalk/
 ├── app/                    # 应用核心（FastAPI 入口、DB、路由、模型）
-│   ├── main.py             # 入口 + lifespan + seed memory + 8个定时任务
+│   ├── main.py             # 入口 + lifespan + seed memory + 9个定时任务
 │   ├── db.py               # PostgreSQL 连接池 + init_db + migration
 │   ├── models.py           # Pydantic 模型 (ChatRequest)
-│   ├── config.py           # 路径常量 (MEMORY_DIR 下各文件路径)
+│   ├── config.py           # 路径常量 + atomic_write 原子写入工具
 │   ├── utils.py            # LLM 客户端 (get_llm/get_llm_model/reset_llm) + 后台线程池
 │   ├── llm_config.py       # LLM 配置中心 (12家供应商预设 + load/save)
 │   ├── catchup.py          # 启动补漏 (停机期间遗漏的日记/情绪随机游走)
@@ -16,10 +16,10 @@ easytalk/
 │   ├── emotion_params.py   # 27维情感参数权威定义 (default/min/max/jitter)
 │   └── routes/             # API 路由（thin layer）
 │       ├── __init__.py     # 聚合所有子路由
-│       ├── chat.py         # /api/chat + SSE流式 + 核心管线 + 两段式精灵生成
+│       ├── chat.py         # /api/chat + SSE流式 + 核心管线 + 两段式精灵生成 + context注入
 │       ├── config.py       # /api/config/apikey (自定义 API Key 管理)
 │       ├── diary.py        # /api/diary/*
-│       ├── emotions.py     # /api/emotions/*
+│       ├── emotions.py     # /api/emotions/* + /api/emotions/self (AI自身情绪)
 │       ├── memory.py       # /api/memory/* + affinity + mood + idle + missing-you
 │       └── news.py         # /api/news/*
 ├── services/               # 业务逻辑 (按领域分6个子目录)
@@ -33,6 +33,8 @@ easytalk/
 │   │   ├── affect.py       # Panksepp六系统情绪评估 + Gross调节 + 效价追踪
 │   │   ├── affinity.py     # 10D亲密度追踪 + 表达幅度学习 + 关系里程碑
 │   │   ├── attachment.py   # 依恋风格识别 (焦虑/回避/安全, 每30轮)
+│   │   ├── contagion.py    # 双向情绪感染建模 (lag-1因果追踪 + 安抚有效性)
+│   │   ├── self_affect.py  # AI自身情绪状态 (6D Panksepp + 昼夜节律 + 对话质量)
 │   │   └── salience.py     # SNARC显著性 (Surprise/Novelty/Arousal/Reward/Conflict)
 │   ├── identity/           # 身份系统
 │   │   ├── drift_detector.py # 人设漂移检测 (每30轮)
@@ -47,8 +49,13 @@ easytalk/
 │   │   └── prompts.py      # 驱动相关 prompt
 │   ├── info/               # 信息获取
 │   │   └── news.py         # 多源热榜抓取 (B站/GitHub/Tophub/百度, 4源异步)
+│   ├── psych/              # 心理系统 (零LLM启发式追踪)
+│   │   ├── user_model.py   # 统一用户画像 (聚合~20数据源, 60s缓存)
+│   │   ├── conversation_goal.py # 多轮对话目标追踪 (倾诉/求助/分享/辩论)
+│   │   ├── life_domains.py # 6大生活领域 (工作/关系/健康/兴趣/财务/成长)
+│   │   └── entry_point.py  # 好奇心队列 (信息缺口检测 + LLM富化)
 │   ├── memory/             # 记忆系统
-│   │   ├── clustering.py   # 记忆聚类
+│   │   ├── clustering.py   # 记忆聚类 (跨星系语义连线 + bigram Jaccard)
 │   │   ├── condense.py     # 对话摘要压缩 (每50轮 + standalone CLI)
 │   │   ├── crystallization.py # 模式结晶 + Ebbinghaus遗忘曲线
 │   │   ├── knowledge_graph.py # 知识图谱
@@ -65,7 +72,7 @@ easytalk/
 │   └── js/
 │       ├── engine.js       # 全局变量、工具函数、表情系统、音频引擎、调试面板、localStorage状态持久化
 │       ├── visuals.js      # 星空渲染、流星、记忆星点、像素头像(64x64)、精灵系统(offscreen canvas预渲染)
-│       ├── constellation.js # 交互式星图 (Obsidian风格, 力导向图 + 缩放/拖拽 + 触摸手势)
+│       ├── constellation.js # 交互式星图 (力导向图 + 缩放/拖拽 + 触摸手势 + 惯性平移 + 长按选择 + 双指锚点缩放)
 │       ├── ui.js           # 对话框、SSE流、面板、话题气泡、日记模态框、设置面板、主循环
 │       └── globals.d.ts    # TypeScript 类型声明
 ├── memory/                 # 记忆数据（volume 挂载到 /app/memory）
@@ -83,6 +90,12 @@ easytalk/
 │   ├── salience_prev.json  # 显著性快照
 │   ├── valence_prev.json   # 效价快照
 │   ├── personality_config.json # 人格配置
+│   ├── contagion_state.json # 情绪感染状态
+│   ├── self_affect.json    # AI自身情绪状态
+│   ├── conversation_goal.json # 对话目标追踪
+│   ├── life_domains.json   # 6大生活领域状态
+│   ├── curiosity_queue.json # 好奇心队列
+│   ├── timeline.json       # 关系时间线 (首聊日期/消息数/里程碑)
 │   ├── api_key.txt         # 自定义 API Key
 │   └── llm_config.json     # LLM 多供应商配置 (api_key/base_url/model)
 ├── scripts/                # 工具脚本
@@ -136,7 +149,7 @@ easytalk/
 - **表达学习**: `adjust_expression_amplitude()` 根据用户回复长度/情绪词调整幅度，缓慢趋近 1.0
 - **里程碑**: 5个关系阈值 (温暖默契/信任分享/深刻联结/无话不谈/心之桥梁)
 
-## 定时任务 (8个)
+## 定时任务 (9个)
 
 | 任务 | 时间 | 说明 |
 |------|------|------|
@@ -148,6 +161,7 @@ easytalk/
 | 数据清理 | 每天 03:07 | 语义保留式修剪旧对话数据 (app/cleanup.py) |
 | 离线分析 | 每7分钟 | 预测代理离线分析 (predictive_agent.py) |
 | System2巩固 | 每23分钟 | 慢速推理结果巩固 (consciousness_loop.py) |
+| 驱动心跳 | 每3分钟 | 驱动值衰减 + 自我情绪空闲衰减 (drive/engine.py) |
 
 ## 提示词系统 (模块化 + AI 预分析)
 
@@ -251,6 +265,72 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
 - **关键函数**: `get_drive_values()`, `update_drives_on_chat()`, `get_drive_context()`, `get_drive_temp_mod()`
 - 影响 temperature、行为模式、token 预算
 
+## 心理系统 (Psych) — 零 LLM 启发式追踪
+
+轻量级心理建模，复用已有 affect 数据，不增加 LLM 调用。
+
+### 情绪感染 (contagion.py)
+
+追踪 AI 的情绪表达对用户情绪的因果影响（lag-1 延迟关联）：
+- `update_contagion_on_reply()` — 每轮从 `_post_reply_pipeline` 调用，使用**上轮** AI 标签判定因果
+- `get_contagion_context()` — 安抚有效性 <30% 时注入调整建议到 system prompt
+- 追踪舒适模式有效性 (uses / improved / worsened / unchanged)
+- 持久化到 `memory/contagion_state.json`
+
+### AI 自我情绪 (self_affect.py)
+
+AI 自身的 6D Panksepp 情绪状态，跨会话持久化：
+- `update_on_chat()` — 每轮更新：用户情绪感染 + 昼夜节律 + 对话质量加成
+- `update_on_idle()` — 后台定时衰减到基线值
+- `get_self_affect_context()` — 注入 AI 当前心情到 system prompt
+- API: `GET /api/emotions/self` → `{emoji, label, values}`
+- 持久化到 `memory/self_affect.json`
+
+### 对话目标追踪 (conversation_goal.py)
+
+识别多轮对话意图（倾诉/求助/分享/辩论/闲聊）：
+- `update_conversation_goal()` — 关键词 + affect 信号分类
+- `get_goal_context()` — 持续≥2轮的非闲聊目标注入行为提示
+- 追踪情绪趋势 (improving / worsening / stable)
+
+### 生活领域 (life_domains.py)
+
+6 大领域的结构化感知（工作/关系/健康/兴趣/财务/成长）：
+- `update_life_domains()` — 关键词匹配 + Panksepp affect 推断正负面
+- `get_life_domain_context()` — Top-3 高显著度领域注入 system prompt
+
+### 好奇心队列 (entry_point.py)
+
+追踪 AI "想知道但还没问" 的事情：
+- `seed_from_message()` — 启发式检测信息缺口（用户提了但没细说）
+- `enrich_with_llm()` — 每 30 轮 LLM 深度富化
+- `get_curiosity_hint()` — 随机抽取一个待追问项注入 context
+
+### 统一用户画像 (user_model.py)
+
+聚合 ~20 个数据源，60s 缓存，纯规则合成：
+- `get_user_portrait()` — 200-500 字中文画像：人格 + 情绪 + 关系 + 生活领域 + KG事实 + 依恋
+- `get_proactive_care_context()` — 主动关怀触发：久别重逢 / 持续低落 / 重要日期
+- `get_session_anchor()` — 跨会话记忆锚点（上轮话题 + 时间间隔）
+- `get_timeline_context()` — 关系时间线（相识天数/消息数/里程碑）
+
+## Context 注入管线 (_build_context)
+
+所有 context source 按优先级组装到 system prompt：
+
+```
+_build_context(msg, thinking, intent_tags)
+  ├── 基础层: 模块化提示词 + 时间节律 + 人格
+  ├── 关系层: user_context → affinity → 连续性/关怀/锚点/时间线
+  ├── 情绪层: affect → valence → salience → contagion → self_affect
+  ├── 认知层: goal → life_domains → curiosity → drive → attachment
+  ├── 信息层: news → crystals → narrative → memory → kg
+  ├── 反思层: thinking → mode → drift → self_eval → prediction
+  └── 整合层: user_portrait (聚合画像) + 最近4轮对话历史
+```
+
+每个 context 函数返回空字符串时不增加 token 开销。除必须的模块外，大部分 context 条件性注入。
+
 ## 部署
 
 - 使用 `docker-compose.yml` 构建和启动
@@ -272,6 +352,8 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
 | LLM 配置 | `memory/llm_config.json` | llm_config.py |
 | SSE 流式间隔 | 每 2 字符，30ms | routes/chat.py:chat_stream |
 | 前端缓存版本 | `?v=N` (index.html) | 每次部署更新以强制刷新 |
+| 记忆文件原子写入 | `config.py:atomic_write()` | temp file + os.replace, 防写入崩溃损坏 |
+| 用户画像缓存 TTL | 60s | user_model.py |
 
 ## 修改指南
 
@@ -312,6 +394,8 @@ pixel_sprites SSE 事件 → 前端 offscreen canvas 预渲染 + drawImage
   - **注意**: 使用 `RLock`（可重入锁），因为 `maybe_crystallize()` 和 `reinforce_crystal()` 获取锁后会调用内部函数（`_save_crystals()` 等），内部函数也会获取同一把锁
 - `_situation_lock` / `_episode_lock` (`threading.Lock`, `narrative.py`) — 非阻塞守卫，防止叙事检测并发运行
 - `_guard_lock` (`threading.Lock`, `guard.py`) — 非阻塞守卫，防止身份守护并发运行
+- `_lock` (各 psych/emotion 模块) — 保护各自 JSON 文件的读写一致性
+- `_turn_counter_lock` (`threading.Lock`, `chat.py`) — 保护轮次计数器的原子递增
 
 ### 非阻塞守卫模式
 后台任务使用 `lock.acquire(blocking=False)` 模式，若已有实例在运行则静默跳过：
@@ -338,7 +422,24 @@ finally:
 
 - `saveVisualState()` (`engine.js`) — 每2秒保存表情参数、背景颜色、颜色场、对话框到 `localStorage.easytalk_visual`
 - `loadVisualState()` — 读取并恢复，5分钟过期自动清除
+- AUXILIARY / CONSTELLATION 等瞬态不持久化，刷新后自动回到 STARFIELD
 - 刷新后恢复对话框 DOM（`ui.js` init 段）
+- 渲染循环 + init 关键路径包裹 `try/catch`，防止单点错误杀死动画循环
+
+## 前端 emoji 检测
+
+- `isEmojiCodePoint(cp)` (`engine.js`) — 基于 Unicode 码点范围的检测，替代旧的正则字符类
+- `emojiSplit(s)` — 按 emoji 分割文本，用于选择按钮检测
+- 覆盖范围: Misc Symbols, Emoticons, Transport, Supplemental, Regional Indicators, ZWJ, VS16
+
+## 星图增强 (constellation.js)
+
+- **跨星系语义连线**: 基于 bigram Jaccard 相似度 + 共享主题加成（上限 2 个），阈值 0.04
+- **惯性平移**: 拖拽松手后保留动量衰减 (`viewVX/VY * 0.85`)
+- **双指锚点缩放**: 以双指中点为锚点固定缩放，避免漂移
+- **长按选择**: 触摸设备 600ms 长按选中星点，防止误触
+- **物理调优**: 降低排斥力/弹性系数，增加阻尼/中心引力，减少震荡
+- **连线粗细**: 基于 `weight` 属性动态线宽，悬停高亮
 
 ## 前端安全规范
 

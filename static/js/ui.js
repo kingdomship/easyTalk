@@ -85,11 +85,30 @@ function checkChoices(reply) {
 
   // Detect choice patterns: emoji + text pairs, numbered items, or "/" separated
   // Match any emoji (covers most common Unicode emoji ranges)
-  var emojiItems = reply.match(EMOJI_RE);
-  if (!emojiItems || emojiItems.length < 2) return;
+  // Scan for surrogate pairs that could be emoji
+  var hasEmoji = false;
+  for (var i = 0; i < reply.length; i++) {
+    if (reply.charCodeAt(i) >= 0xD800 && reply.charCodeAt(i) <= 0xDBFF) {
+      var cp = 0x10000 + ((reply.charCodeAt(i) - 0xD800) * 0x400) +
+               (reply.charCodeAt(i + 1) - 0xDC00);
+      if (isEmojiCodePoint(cp)) { hasEmoji = true; break; }
+      i++; // skip low surrogate
+    }
+  }
+  if (!hasEmoji) return;
 
   // Extract possible choices (emoji-prefixed segments)
-  var segments = reply.split(EMOJI_SPLIT_RE).filter(function(s) { return s.trim().length > 2 && s.trim().length < 40; });
+  var segments = emojiSplit(reply).filter(function(s, idx, arr) {
+    // Keep text that follows an emoji (emoji-prefixed choices)
+    if (idx === 0) return false;
+    var prev = arr[idx - 1];
+    if (prev && prev.length >= 2 && s.trim().length > 2 && s.trim().length < 40) {
+      var cp = 0x10000 + ((prev.charCodeAt(0) - 0xD800) * 0x400) +
+               (prev.charCodeAt(1) - 0xDC00);
+      return isEmojiCodePoint(cp);
+    }
+    return false;
+  });
   if (segments.length < 2) return;
 
   const container = document.createElement('div');
@@ -1495,34 +1514,40 @@ sendBtn.addEventListener('click', sendMessage);
 let lastT = performance.now();
 
 function loop(t) {
-  const dt = Math.min((t - lastT) / 1000, 0.1);
-  lastT = t;
+  try {
+    const dt = Math.min((t - lastT) / 1000, 0.1);
+    lastT = t;
 
-  switch (state) {
-    case STATE.STARFIELD:
-      updateStarfield(dt);
-      drawStarfield();
-      drawPokeSparkles();
-      break;
-    case STATE.CONVERGING:
-      updateConvergence(dt);
-      drawConvergence();
-      break;
-    case STATE.CHAT:
-      updateChat(dt);
-      drawChat();
-      drawMeteors();
-      drawMemoryStars();
-      drawPokeSparkles();
-      break;
-    case STATE.AUXILIARY:
-      // Static background
-      ctx.fillStyle = '#0a0a1a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      break;
+    switch (state) {
+      case STATE.STARFIELD:
+        updateStarfield(dt);
+        drawStarfield();
+        drawPokeSparkles();
+        break;
+      case STATE.CONVERGING:
+        updateConvergence(dt);
+        drawConvergence();
+        break;
+      case STATE.CHAT:
+        updateChat(dt);
+        drawChat();
+        drawMeteors();
+        drawMemoryStars();
+        drawPokeSparkles();
+        break;
+      case STATE.AUXILIARY:
+      default:
+        // Static background (covers AUXILIARY, CONSTELLATION, and any unknown state)
+        ctx.fillStyle = '#0a0a1a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        break;
+    }
+
+    saveVisualState();
+  } catch(e) {
+    // Never let a rendering error kill the animation loop
+    console.error('loop error', e);
   }
-
-  saveVisualState();
 
   requestAnimationFrame(loop);
 }
@@ -1530,40 +1555,49 @@ function loop(t) {
 // ═══════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════
-initStarfield();
-initMemoryStars();
-recomputeFaceLayout();
-initSparkleParticles();
+try { initStarfield(); } catch(e) { console.error('initStarfield', e); }
+initMemoryStars();  // async, already has internal try/catch
+try { recomputeFaceLayout(); } catch(e) { console.error('recomputeFaceLayout', e); }
+try { initSparkleParticles(); } catch(e) { console.error('initSparkleParticles', e); }
 // Restore visual state from before refresh (mood, face, atmosphere)
 var restored = false;
 if (typeof loadVisualState === 'function') {
-  restored = loadVisualState();
+  try { restored = loadVisualState(); } catch(e) { console.error('loadVisualState', e); }
+}
+// AUXILIARY and CONSTELLATION states need async content loading
+// that is lost on refresh — reset to STARFIELD for a clean start
+if (restored && (state === STATE.AUXILIARY || state === STATE.CONSTELLATION)) {
+  state = STATE.STARFIELD;
 }
 // Initial face pixel computation for convergence targets (skip if restored)
 if (!restored) {
-  curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, eye_tension:0, iris_size:0.5, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, lip_pout:0, lip_stretch:0, lip_bite:0, jaw_drop:0, tongue_out:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, nose_wrinkle:0, cheek_raise:0, cheek_puff:0, blush:0.15, head_tilt:0, tear:0, sweat_drop:0, vein_pop:0 };
-  tgtParams = { ...curParams };
+  try {
+    curParams = { eye_curve:0, eye_open:0.5, eye_pupil:0, eye_wink:0, eye_tension:0, iris_size:0.5, mouth_curve:0, mouth_open:0, mouth_width:0.8, mouth_asym:0, lip_pout:0, lip_stretch:0, lip_bite:0, jaw_drop:0, tongue_out:0, sparkle:0.5, brow_angle:0, brow_height:0.5, brow_asym:0, nose_wrinkle:0, cheek_raise:0, cheek_puff:0, blush:0.15, head_tilt:0, tear:0, sweat_drop:0, vein_pop:0 };
+    tgtParams = { ...curParams };
+  } catch(e) { console.error('init curParams', e); }
 }
-	// Restore dialog bubble if we were in chat mode before refresh
-	if (restored && dlgText && state === STATE.CHAT) {
-	  var fcX = canvas.width / 2, fcY = canvas.height / 2, fcR = 29 * faceCS;
-	  var isNr = window.innerWidth < 600, dW = isNr ? 260 : 340;
-	  var dX = fcX + fcR + 20, dY = fcY - 60;
-	  if (dX + dW > window.innerWidth - 20) dX = Math.max(10, fcX - fcR - dW);
-	  if (isNr && dX < 10) { dX = (window.innerWidth - dW) / 2; dY = fcY + fcR + 30; }
-	  if (dY < 60) dY = fcY + fcR + 20;
-	  if (dY + 120 > window.innerHeight - 20) dY = fcY - 120;
-	  dialog.style.left = dX + 'px';
-	  dialog.style.top = dY + 'px';
-	  dialog.classList.add('visible');
-	  dlgBody.innerHTML = formatDialogText(dlgText) + '<span class="dlg-arrow">▼</span>';
-	  dlgDisplayed = dlgText.length;
-	  inputRow.classList.add('visible');
-	}
-	// Rebuild story continue button if we were paused before refresh
-	if (restored && storyPaused) {
-	  showStoryContinueBtn();
-	}
+// Restore dialog bubble if we were in chat mode before refresh
+try {
+  if (restored && dlgText && state === STATE.CHAT) {
+    var fcX = canvas.width / 2, fcY = canvas.height / 2, fcR = 29 * faceCS;
+    var isNr = window.innerWidth < 600, dW = isNr ? 260 : 340;
+    var dX = fcX + fcR + 20, dY = fcY - 60;
+    if (dX + dW > window.innerWidth - 20) dX = Math.max(10, fcX - fcR - dW);
+    if (isNr && dX < 10) { dX = (window.innerWidth - dW) / 2; dY = fcY + fcR + 30; }
+    if (dY < 60) dY = fcY + fcR + 20;
+    if (dY + 120 > window.innerHeight - 20) dY = fcY - 120;
+    dialog.style.left = dX + 'px';
+    dialog.style.top = dY + 'px';
+    dialog.classList.add('visible');
+    dlgBody.innerHTML = formatDialogText(dlgText) + '<span class="dlg-arrow">▼</span>';
+    dlgDisplayed = dlgText.length;
+    inputRow.classList.add('visible');
+  }
+} catch(e) { console.error('init restore dialog', e); }
+// Rebuild story continue button if we were paused before refresh
+try {
+  if (restored && storyPaused) { showStoryContinueBtn(); }
+} catch(e) { console.error('init story button', e); }
 requestAnimationFrame(loop);
 
 // ═══════════════════════════════════════════
