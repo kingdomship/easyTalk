@@ -14,6 +14,7 @@ import math
 import os
 import shutil
 import threading
+from datetime import datetime, timezone
 
 logger = logging.getLogger("emoji-chat")
 
@@ -213,45 +214,65 @@ def maybe_crystallize():
 
 
 def get_crystals(min_importance: float = 0.2) -> list[dict]:
-    """Load active crystals with Ebbinghaus decay applied.
+    """Load active crystals with gentle time-based decay applied.
 
-    Crystals decay over time unless reinforced. Those below min_importance
-    are marked dormant and excluded from prompt injection.
+    Decay: 0.004/hour (~10% per day), floor at 0.1 so memories never vanish.
+    Supports both legacy timestamp strings and integer turn counts in last_reinforced.
     """
+    import math as _math
+    from datetime import datetime, timezone as _timezone
+
     crystals = []
-    archive_path = ARCHIVE_PATH
-    total_turns = 0
-    try:
-        if os.path.exists(archive_path):
-            with archive_lock:
-                with open(archive_path) as f:
-                    total_turns = sum(1 for _ in f)
-    except Exception:
-        logger.warning("Operation failed", exc_info=True)
+    now = datetime.now(_timezone.utc)
 
     try:
         if os.path.exists(CRYSTAL_PATH):
-            with _crystal_lock, open(CRYSTAL_PATH) as f:
-                for line in f:
-                    try:
-                        c = json.loads(line)
-                        imp = c.get("importance", 0.5)
-                        last = c.get("last_reinforced", 0)
-                        count = c.get("reinforcement_count", 1)
+            with _crystal_lock:
+                with open(CRYSTAL_PATH) as f:
+                    for line in f:
+                        try:
+                            c = json.loads(line)
+                            imp = c.get("importance", 0.5)
+                            last = c.get("last_reinforced", 0)
+                            count = c.get("reinforcement_count", 1)
 
-                        # Ebbinghaus decay: importance decays with turns since last reinforcement
-                        # More reinforcements → slower decay (consolidation)
-                        turns_since = max(0, total_turns - last)
-                        decay_rate = 0.02 / math.sqrt(count)  # slower with more reinforcements
-                        imp *= math.exp(-decay_rate * turns_since)
+                            # Compute hours since last reinforced
+                            if isinstance(last, str):
+                                # Legacy: ISO timestamp string
+                                try:
+                                    last_dt = datetime.fromisoformat(last)
+                                    hours_since = (now - last_dt).total_seconds() / 3600.0
+                                except Exception:
+                                    hours_since = 0
+                            elif isinstance(last, (int, float)) and last > 100000:
+                                # Unix timestamp (seconds)
+                                try:
+                                    last_dt = datetime.fromtimestamp(last, tz=_timezone.utc)
+                                    hours_since = (now - last_dt).total_seconds() / 3600.0
+                                except Exception:
+                                    hours_since = 0
+                            else:
+                                # Legacy integer turn count — no timestamp to compare, apply no decay
+                                hours_since = 0
 
-                        c["current_importance"] = round(imp, 3)
-                        c["dormant"] = imp < 0.3
-                        crystals.append(c)
-                    except Exception:
-                        logger.warning("Operation failed", exc_info=True)
+                            # Cap decay at 14 days (336 hours) to prevent over-decay after long gaps
+                            hours_since = min(hours_since, 336)
+
+                            # Time-based Ebbinghaus decay
+                            # rate = 0.004/hour → ~10% per day; slower with more reinforcements
+                            decay_rate = 0.004 / _math.sqrt(count)
+                            imp *= _math.exp(-decay_rate * hours_since)
+                            # Floor at 0.1 so crystals never truly vanish from star map
+                            imp = max(0.1, imp)
+
+                            c["current_importance"] = round(imp, 3)
+                            c["dormant"] = imp < 0.3
+                            crystals.append(c)
+                        except Exception:
+                            logger.warning("Failed to load crystal", exc_info=True)
     except Exception:
-        logger.warning("Operation failed", exc_info=True)
+        logger.warning("Failed to load crystals", exc_info=True)
+
     return sorted(crystals, key=lambda c: c.get("current_importance", 0), reverse=True)
 
 
@@ -283,14 +304,7 @@ def reinforce_crystal(tag: str):
                                     logger.warning("Operation failed", exc_info=True)
                                 c["importance"] = min(1.0, c.get("importance", 0.5) + boost)
                                 c["reinforcement_count"] = c.get("reinforcement_count", 1) + 1
-                                archive_path = ARCHIVE_PATH
-                                try:
-                                    if os.path.exists(archive_path):
-                                        with archive_lock:
-                                            with open(archive_path) as af:
-                                                c["last_reinforced"] = sum(1 for _ in af)
-                                except Exception:
-                                    logger.warning("Operation failed", exc_info=True)
+                                c["last_reinforced"] = datetime.now(timezone.utc).isoformat()
                                 found = True
                             crystals.append(c)
                         except Exception:

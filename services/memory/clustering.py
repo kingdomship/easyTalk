@@ -18,6 +18,7 @@ import os
 import random
 import re
 
+from app.config import ARCHIVE_PATH, archive_lock
 from app.db import q
 
 logger = logging.getLogger("emoji-chat")
@@ -552,6 +553,63 @@ def build_constellation() -> dict:
             imp = round(min(0.7, 0.35 + (salience_mult - 1.0) * 0.5), 3)
             _add_memory(r["id"] + 10000, content, imp,
                         r.get("use_count", 1), source="insight")
+
+    # ── Source 5: Knowledge Graph entities (persistent, no decay) ──
+    try:
+        from services.memory.knowledge_graph import get_current_state
+        kg_state = get_current_state()
+        entity_seen = set()
+        for s in kg_state[:30]:
+            name = (s.get("name") or "")[:40]
+            etype = s.get("type", "")
+            relation = s.get("relation", "")
+            if not name or name in entity_seen:
+                continue
+            entity_seen.add(name)
+            relation_cn = {
+                "likes": "喜欢", "loves": "热爱", "prefers": "偏好",
+                "dislikes": "不喜欢", "hates": "讨厌",
+                "works_at": "工作于", "studies": "学习", "uses": "使用",
+            }
+            rel_text = relation_cn.get(relation, "")
+            content = f"{rel_text}{name}"[:100]
+            # KG entities are stable facts — moderate importance, no decay
+            kg_imp = 0.35 + s.get("strength", 0.5) * 0.15
+            _add_memory(next_artificial_id, content,
+                        round(min(0.65, kg_imp), 3),
+                        max(1, int(s.get("strength", 0.5) * 10)),
+                        source="kg")
+            next_artificial_id += 1
+    except Exception:
+        logger.warning("Failed to load KG entities for constellation", exc_info=True)
+
+    # ── Source 6: Recent conversation moments (last ~15 turns, temporal texture) ──
+    try:
+        if os.path.exists(ARCHIVE_PATH):
+            with archive_lock:
+                with open(ARCHIVE_PATH) as f:
+                    all_lines = f.readlines()
+            recent_lines = all_lines[-30:]  # last 15 turns = 30 lines
+            moment_count = 0
+            for line in reversed(recent_lines):
+                if moment_count >= 15:
+                    break
+                try:
+                    rec = json.loads(line.strip())
+                    user_msg = rec.get("user", "")
+                    if user_msg and len(user_msg) > 3:
+                        content = user_msg[:60]
+                        # Recent moments have low-but-nonzero importance, fading by recency
+                        moment_imp = 0.15 + moment_count * 0.01
+                        _add_memory(next_artificial_id, content,
+                                    round(moment_imp, 3),
+                                    1, source="moment")
+                        next_artificial_id += 1
+                        moment_count += 1
+                except Exception:
+                    pass
+    except Exception:
+        logger.warning("Failed to load recent moments for constellation", exc_info=True)
 
     # ── Fallback: if nothing loaded, use plain emotion_cache ──
     if not all_memories:
