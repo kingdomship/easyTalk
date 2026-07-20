@@ -1,4 +1,4 @@
-"""心理健康辅助模块 — 危机检测 + 治疗意图分析 + 模块化干预框架.
+"""心理健康辅助模块 — 危机检测 + 治疗意图分析 + 情绪降级 + 模块化干预框架.
 
 三层危机检测 (crisis.py):
   1. 关键词启发式 (零 LLM 成本)
@@ -8,9 +8,11 @@
 治疗意图分析 (intent.py):
   独立轻量 prompt, 与现有 _INTENT_PROMPT 并行运行
 
+情绪降级 (deescalation.py):
+  两层 LLM: Layer1 轻量分类器 + Layer2 主LLM引导注入
+
 模块化内容 (modules.py):
-  venting / cbt / mindfulness / crisis 四个治疗模块桩
-  Phase 1 为最小实现, Phase 2 将扩展完整内容
+  venting / cbt / mindfulness / crisis / deescalation 五个治疗模块
 """
 
 from services.therapy.crisis import (
@@ -27,6 +29,12 @@ from services.therapy.intent import (
 )
 from services.therapy.modules import (
     assemble_therapy_modules,
+    assemble_deescalation_module,
+)
+from services.therapy.deescalation import (
+    analyze_deescalation,
+    analyze_deescalation_sync,
+    get_deescalation_context,
 )
 from services.therapy.seed_data import (
     seed_crisis_resources,

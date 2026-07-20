@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════
 const NUM_STARS = 180;
 let stars = [];
-let functionalPoints = []; // {starIndex, type:'diary'|'news', data:{...}}
+let functionalPoints = []; // {starIndex, type:'diary'|'mood', data:{...}}
 let faceCS = 10; // cell size for face rendering
 let faceOx = 0, faceOy = 0; // face origin on canvas
 
@@ -36,7 +36,7 @@ function initStarfield() {
   functionalPoints = [];
   // Generation counter prevents race condition on rapid re-init
   const gen = ++_starfieldGen;
-  // Fetch diary and news data to create functional points
+  // Fetch diary data to create functional points
   fetch('/api/diary').then(r=>r.json()).then(diaries => {
     if (_starfieldGen !== gen) return;
     if (!Array.isArray(diaries) || diaries.length === 0) return;
@@ -52,24 +52,6 @@ function initStarfield() {
       s.color = '#ffd700';
       s.speed = 0.8 + Math.random() * 0.4;
       functionalPoints.push({ star: s, type: 'diary', data: d });
-    });
-  }).catch(()=>{});
-  fetch('/api/news').then(r=>r.json()).then(news => {
-    if (_starfieldGen !== gen) return;
-    if (!Array.isArray(news) || news.length === 0) return;
-    const top = news.slice(0, 7);
-    top.forEach((n, i) => {
-      const idx = 20 + i * 13;
-      if (idx >= stars.length) return;
-      const s = stars[idx];
-      if (!s || s.isFunctional) return;
-      s.isFunctional = true;
-      s.funcType = 'news';
-      s.funcData = n;
-      s.size = 2 + Math.random() * 1.8;
-      s.color = '#00e5ff';
-      s.speed = 0.9 + Math.random() * 0.5;
-      functionalPoints.push({ star: s, type: 'news', data: n });
     });
   }).catch(()=>{});
 }

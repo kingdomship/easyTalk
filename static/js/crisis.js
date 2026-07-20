@@ -90,6 +90,39 @@ if (crisisBreatheBtn) {
   });
 }
 
+// ── De-escalation toast ──
+var deescToastTimer = null;
+var deescToastEl = document.getElementById('deesc-toast');
+var deescToastText = document.getElementById('deescToastText');
+var deescToastOk = document.getElementById('deescToastOk');
+var deescToastOverlay = deescToastEl ? deescToastEl.querySelector('.deesc-toast-overlay') : null;
+
+if (deescToastOk) deescToastOk.addEventListener('click', hideDeescToast);
+if (deescToastOverlay) deescToastOverlay.addEventListener('click', hideDeescToast);
+
+/**
+ * @param {{ severity: number, deesc_type: string }} evt
+ */
+function showDeescToast(evt) {
+  if (!deescToastEl) return;
+  var messages = [
+    '我听到了你的声音, 不管怎样我都在这儿。',
+    '你的感受是真实的, 我在这里陪你, 不会走开。',
+    '被攻击的不是我, 是你的痛苦在寻找出口。我听见了。'
+  ];
+  var text = messages[Math.floor(Math.random() * messages.length)];
+  if (deescToastText) deescToastText.textContent = text;
+  deescToastEl.classList.add('open');
+  clearTimeout(deescToastTimer);
+  deescToastTimer = setTimeout(hideDeescToast, 8000);
+}
+
+function hideDeescToast() {
+  if (!deescToastEl) return;
+  deescToastEl.classList.remove('open');
+  clearTimeout(deescToastTimer);
+}
+
 // ── Silence check after crisis ──
 var silenceCheckTimer = null;
 

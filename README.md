@@ -1,4 +1,4 @@
-# easyTalk
+# Psychology
 
 LLM 驱动的像素风虚拟伴侣 —— 住在数字星空里的 AI 角色，通过文字 + 实时像素表情与用户互动。
 
@@ -18,7 +18,7 @@ open http://localhost:9010
 ## 项目结构
 
 ```
-easytalk/
+psychology/
 ├── app/                          # FastAPI 核心
 │   ├── main.py                   # 入口 + lifespan 初始化 + 5个定时任务
 │   ├── db.py                     # PostgreSQL (pgvector) 连接池 + 建表迁移
@@ -200,14 +200,14 @@ easytalk/
 | `DB_PASSWORD` | 否 | 123456 |
 | `DB_HOST` | 否 | postgres |
 | `DB_PORT` | 否 | 5432 |
-| `DB_NAME` | 否 | emotion |
+| `DB_NAME` | 否 | psychology |
 | `DB_USER` | 否 | postgres |
 
 ## 数据持久化
 
-- **记忆文件宿主路径**: `/home/xuwl/app/easyChat/memory`
+- **记忆文件宿主路径**: `/home/xuwl/app/psychology/memory`
 - **容器内挂载点**: `/app/memory`
-- **PostgreSQL 数据**: named volume `pgdata`
+- **PostgreSQL 数据**: named volume `psychology_pgdata`
 - 更新容器时使用宿主路径挂载，避免记忆数据丢失
 
 ## 部署

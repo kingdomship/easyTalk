@@ -75,7 +75,7 @@ canvas.addEventListener('click', e => {
         const s = fp.star;
         const dx = cx - s.x, dy = cy - s.y;
         if (Math.sqrt(dx*dx + dy*dy) < s.size * 3) {
-          openAuxiliary(fp.type === 'diary' ? 'diary' : 'news');
+          openAuxiliary(fp.type === 'diary' ? 'diary' : 'mood');
           return;
         }
       }
@@ -435,6 +435,8 @@ async function sendMessage() {
           } else if (evt.type === 'crisis_alert') {
             showCrisisToast(evt);
             startSilenceCheck();
+          } else if (evt.type === 'de_escalation') {
+            if (typeof showDeescToast === 'function') showDeescToast(evt);
           } else if (evt.type === 'breathing_exercise') {
             startBreathingExercise(evt.pattern || 'simple', evt.duration || 120);
           } else if (evt.type === 'cbt_trigger') {
@@ -483,26 +485,32 @@ async function sendMessage() {
   }
 }
 
-// Topic bubbles
-async function loadTopics() {
-  try {
-    const resp = await fetch('/api/news/topics');
-    const topics = await resp.json();
-    if (!topics.length) { topicBubbles.classList.remove('visible'); return; }
-    topicBubbles.innerHTML = topics.map(t =>
-      `<span class="topic-bubble" data-prompt="${escapeHtml(t.prompt)}">${escapeHtml(t.prompt)}</span>`
-    ).join('');
-    topicBubbles.classList.add('visible');
-    topicBubbles.querySelectorAll('.topic-bubble').forEach(/** @param {HTMLElement} b */ b => {
-      b.addEventListener('click', () => {
-        const prompt = b.dataset.prompt;
-        textarea.value = prompt;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        topicBubbles.classList.remove('visible');
-        sendMessage();
-      });
+// Conversation starters — psychology-themed prompts
+var CONVERSATION_STARTERS = [
+  "我今天心情不太好",
+  "陪我聊聊最近的事",
+  "最近总是焦虑",
+  "不知道怎么了，就是觉得累",
+  "我今天特别开心！",
+  "想不通一些事情",
+  "陪我一起感受当下",
+  "我刚刚做了一个奇怪的梦",
+];
+
+function loadTopics() {
+  topicBubbles.innerHTML = CONVERSATION_STARTERS.map(function(t) {
+    return '<span class="topic-bubble" data-prompt="' + escapeHtml(t) + '">' + escapeHtml(t) + '</span>';
+  }).join('');
+  topicBubbles.classList.add('visible');
+  topicBubbles.querySelectorAll('.topic-bubble').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var prompt = b.dataset.prompt;
+      textarea.value = prompt;
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      topicBubbles.classList.remove('visible');
+      sendMessage();
     });
-  } catch(e) { topicBubbles.classList.remove('visible'); }
+  });
 }
 
 sendBtn.addEventListener('click', sendMessage);

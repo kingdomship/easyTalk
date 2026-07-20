@@ -179,18 +179,6 @@ def init_db():
         except Exception:
             pass
 
-    # News items
-    execute("""
-        CREATE TABLE IF NOT EXISTS news_items (
-            id SERIAL PRIMARY KEY,
-            title TEXT NOT NULL,
-            url TEXT NOT NULL DEFAULT '',
-            source VARCHAR(50) NOT NULL DEFAULT '',
-            rank INTEGER NOT NULL DEFAULT 0,
-            fetched_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-
     # Panksepp affect state (6 primary emotional dimensions)
     execute("""
         CREATE TABLE IF NOT EXISTS affect_state (
@@ -395,6 +383,18 @@ def init_db():
             fear REAL DEFAULT 0.1,
             rage REAL DEFAULT 0.05,
             panic REAL DEFAULT 0.1,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+    # ── Mood self-checkin ──────────────────────────────────────────
+    execute("""
+        CREATE TABLE IF NOT EXISTS mood_checkins (
+            id SERIAL PRIMARY KEY,
+            mood_emoji VARCHAR(10) NOT NULL,
+            intensity INTEGER NOT NULL DEFAULT 5,
+            tags TEXT[] DEFAULT '{}',
+            note TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)

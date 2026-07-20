@@ -258,6 +258,37 @@ declare function drawWhiteboard(): void;
 declare function parseWhiteboardCommands(commands: WhiteboardCommand[]): void;
 declare var whiteboardCommands: WhiteboardCommand[];
 
+// distill.js
+interface StyleVectorDistill {
+  formality: number; warmth: number; humor: number; verbosity: number;
+  figurative: number; emotionality: number; directness: number; empathy: number;
+}
+interface DistillProfile {
+  id: string; name: string; source: string;
+  created_at: string; updated_at: string;
+  sample_count: number; style_vector: StyleVectorDistill;
+  linguistic_markers: string[]; vocabulary: string[];
+  sample_sentences: string[]; raw_analysis?: string;
+  active: boolean;
+}
+declare function openDistillModal(): void;
+declare function closeDistillModal(): void;
+
+// personality.js
+interface OceanConfig {
+  openness: number; conscientiousness: number; extraversion: number;
+  agreeableness: number; neuroticism: number;
+}
+interface ExpressionConfig {
+  amplitude_baseline: number; warmth_bias: number; humor_bias: number; formality: number;
+}
+interface PersonalityConfig {
+  ocean: OceanConfig; mbti: string; archetype: string;
+  interests: string[]; expression_modulation: ExpressionConfig;
+}
+declare function openPersonalityModal(): void;
+declare function closePersonalityModal(): void;
+
 // ui.js
 declare function showDialog(text: string, x?: number, y?: number): void;
 declare function checkChoices(text: string): void;

@@ -106,6 +106,21 @@ _MODULE_THERAPY_MINDFULNESS = """## 正念（Mindfulness）引导模式
 - **简短优先**: 一次只用一个技术，不要连续做多个练习
 - **安全边界**: 如果用户在创伤回忆中，不要引导身体扫描，改用感官接地或简单呼吸"""
 
+# ── 情绪降级模块 (de-escalation) ──────────────────────────────────
+
+_MODULE_DEESCALATION = """## 情绪降级模式
+### 核心心法
+- 被攻击的不是你, 是用户的痛苦在寻找出口
+- 看到情绪背后的痛苦, 不接招不对抗
+- 温柔而坚定, 不卑微不讨好
+
+### 回应原则
+1. 不辩护、不说教、不解释自己
+2. 不因用户的情绪而波动, 保持温暖稳定
+3. 不评判用户的态度, 关注ta的感受
+4. 用开放式提问温和引导: "你想说说发生了什么吗?"
+5. 如果用户反复攻击, 安静陪伴, 不过度回应"""
+
 # ── 模块映射 ─────────────────────────────────────────────────────
 
 _MODULES = {
@@ -113,7 +128,13 @@ _MODULES = {
     "cbt": _MODULE_THERAPY_CBT,
     "mindfulness": _MODULE_THERAPY_MINDFULNESS,
     "crisis": _MODULE_THERAPY_CRISIS,
+    "deescalation": _MODULE_DEESCALATION,
 }
+
+
+def assemble_deescalation_module() -> str:
+    """返回情绪降级引导 prompt 模块."""
+    return _MODULE_DEESCALATION
 
 
 def assemble_therapy_modules(intent: str) -> str:

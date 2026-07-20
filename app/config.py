@@ -1,4 +1,4 @@
-"""Centralized path configuration for easyTalk."""
+"""Centralized path configuration for Psychology."""
 
 import os
 import threading
@@ -26,6 +26,7 @@ LIFE_DOMAINS_PATH = os.path.join(MEMORY_DIR, "life_domains.json")
 CURIOSITY_PATH = os.path.join(MEMORY_DIR, "curiosity_queue.json")
 
 CRISIS_LOG_PATH = os.path.join(MEMORY_DIR, "crisis_log.jsonl")
+DISTILL_DIR = os.path.join(MEMORY_DIR, "distilled_profiles")
 
 # Lock for thread-safe archive file access
 archive_lock = threading.Lock()

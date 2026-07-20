@@ -19,7 +19,6 @@ from app.emotion_params import (
     make_default_frame, clamp_frame, jitter_frame,
     frame_to_db_values, row_to_frame_dict, PARAM_DEFAULTS, EMOTION_PARAMS,
 )
-from services.info.news import get_recent_news
 from services.memory.loader import build_user_context
 from services.memory.search import index_turn, build_memory_context
 from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
@@ -41,7 +40,8 @@ from services.cognition.prediction import generate_prediction, check_prediction
 from services.drive.engine import update_drives_on_chat, get_drive_context, get_drive_values
 from services.therapy.crisis import crisis_keyword_check, crisis_llm_verify, get_crisis_context, log_crisis_event, update_risk_snapshot
 from services.therapy.intent import analyze_therapy_intent, get_therapy_modules
-from services.therapy.modules import assemble_therapy_modules
+from services.therapy.modules import assemble_therapy_modules, assemble_deescalation_module
+from services.therapy.deescalation import analyze_deescalation
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -544,7 +544,8 @@ def _build_context(msg: str, thinking: str | None = None,
                    modules_config: dict | None = None,
                    crisis_result: dict | None = None,
                    therapy_intent: dict | None = None,
-                   therapy_mode: bool = False) -> list:
+                   therapy_mode: bool = False,
+                   deescalation_result: dict | None = None) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
@@ -557,6 +558,40 @@ def _build_context(msg: str, thinking: str | None = None,
     except Exception:
         from services.identity.prompt import SYSTEM_PROMPT
         system_msg = SYSTEM_PROMPT + f"\n\n[当前时间节律]\n{time_context}"
+
+    # ── 风格蒸馏注入 (仅在非治疗模式下) ──────────────────────
+    if not therapy_mode:
+        try:
+            from services.distill.profile_store import get_active_profile
+            active_profile = get_active_profile()
+            if active_profile:
+                sv_text = active_profile.style_vector.to_prompt_segment()
+                markers_text = "；".join(active_profile.linguistic_markers[:6])
+                vocab_text = "、".join(active_profile.vocabulary[:10])
+                samples_text = "\n".join(
+                    f'  - "{s}"' for s in active_profile.sample_sentences[:3]
+                )
+                distill_section = f"""## 对话风格模仿指令
+你正在模仿"{active_profile.name}"的说话风格。请自然地融入你的回复，不要刻意声明你在模仿。
+
+### 风格特征
+{sv_text}
+
+### 语言特征
+- 常用语气/语用特点: {markers_text if markers_text else "无明显特征"}
+- 高频词汇: {vocab_text if vocab_text else "无明显特征"}
+- 代表性语句:
+{samples_text if samples_text else "  无明显特征"}
+
+### 执行原则
+1. 模仿语气和节奏，而不是复制内容
+2. 保持自然，不要过度使用某几个特征词
+3. 在保持风格的同时，根据当前对话上下文灵活调整
+4. 风格是为对话服务的，不要让风格压过内容的表达
+5. 如果用户说"别模仿了"或要求切换回默认风格，立即停止模仿"""
+                system_msg += "\n\n" + distill_section
+        except Exception:
+            logger.warning("Failed to inject distill profile", exc_info=True)
 
     user_context = build_user_context()
     if user_context:
@@ -580,9 +615,25 @@ def _build_context(msg: str, thinking: str | None = None,
 
     # ── 治疗模块注入 (按需, 在情绪上下文之前) ──────────────
     if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
-        therapy_prompt = assemble_therapy_modules(therapy_intent["intent"])
-        if therapy_prompt:
-            system_msg += "\n\n" + therapy_prompt
+        intent = therapy_intent["intent"]
+        # 高严重度降级时抑制 CBT/mindfulness 模块
+        if deescalation_result and deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4:
+            if intent in ("cbt_needed", "mindfulness"):
+                pass  # 抑制, 不追加
+            else:
+                therapy_prompt = assemble_therapy_modules(intent)
+                if therapy_prompt:
+                    system_msg += "\n\n" + therapy_prompt
+        else:
+            therapy_prompt = assemble_therapy_modules(intent)
+            if therapy_prompt:
+                system_msg += "\n\n" + therapy_prompt
+
+    # ── 情绪降级注入 (在治疗模块之后, 情绪上下文之前) ────
+    if deescalation_result and deescalation_result.get("hostile"):
+        deesc_prompt = assemble_deescalation_module()
+        if deesc_prompt:
+            system_msg += "\n\n" + deesc_prompt
 
     affect_ctx = get_affect_context()
     if affect_ctx:
@@ -623,14 +674,6 @@ def _build_context(msg: str, thinking: str | None = None,
     attachment_ctx = get_attachment_context()
     if attachment_ctx:
         system_msg += "\n" + attachment_ctx
-
-    news_items = get_recent_news(5)
-    if news_items:
-        lines = ["", "## 今天的热门话题（可以在对话中自然地提）："]
-        for n in news_items:
-            src_label = {"zhihu": "知乎", "weibo": "微博", "github": "GitHub", "bilibili": "B站", "baidu": "百度", "tophub": "热榜"}.get(n.get("source", ""), n.get("source", ""))
-            lines.append(f"- [{src_label}] {n['title']}")
-        system_msg += "\n" + "\n".join(lines)
 
     crystal_ctx = get_crystal_context()
     if crystal_ctx:
@@ -954,8 +997,9 @@ async def chat(req: ChatRequest):
         modules_config, _, creativity = await _analyze_intent(msg)
         batch_mode = modules_config.pop("__batch_mode", False) if modules_config else False
 
-        # ── 治疗管线 ──────────────────────────────────────
+        # ── 治疗管线: 并行意图分析 + 降级检测 + 危机检测 ──
         therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
+        deescalation_task = asyncio.create_task(analyze_deescalation(msg))
         crisis_result = crisis_keyword_check(msg)
         crisis_result["llm_verified"] = False
         crisis_result["urgency"] = "none"
@@ -972,11 +1016,17 @@ async def chat(req: ChatRequest):
         except Exception:
             logger.warning("治疗意图分析失败", exc_info=True)
             therapy_intent = {"intent": "none", "confidence": 0.0}
+        try:
+            deescalation_result = await deescalation_task
+        except Exception:
+            logger.warning("降级检测失败", exc_info=True)
+            deescalation_result = {"hostile": False, "type": "none", "severity": 0}
 
         messages = _build_context(msg, thinking, modules_config=modules_config,
                                   crisis_result=crisis_result,
                                   therapy_intent=therapy_intent,
-                                  therapy_mode=req.therapy_mode)
+                                  therapy_mode=req.therapy_mode,
+                                  deescalation_result=deescalation_result)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
     finally:
         llm_foreground_clear(fg_token)
@@ -1082,8 +1132,9 @@ async def chat_stream(req: ChatRequest):
             modules_config, _, creativity = await _analyze_intent(msg)
             batch_mode = modules_config.pop("__batch_mode", False) if modules_config else False
 
-            # ── 治疗管线: 并行意图分析 + 危机检测 ────────────
+            # ── 治疗管线: 并行意图分析 + 降级检测 + 危机检测 ──
             therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
+            deescalation_task = asyncio.create_task(analyze_deescalation(msg))
             # 第一层: 关键词危机检测 (同步, 零 LLM)
             crisis_result = crisis_keyword_check(msg)
             crisis_result["llm_verified"] = False
@@ -1103,6 +1154,12 @@ async def chat_stream(req: ChatRequest):
             except Exception:
                 logger.warning("治疗意图分析失败(stream)", exc_info=True)
                 therapy_intent = {"intent": "none", "confidence": 0.0}
+            # 等待降级检测完成
+            try:
+                deescalation_result = await deescalation_task
+            except Exception:
+                logger.warning("降级检测失败(stream)", exc_info=True)
+                deescalation_result = {"hostile": False, "type": "none", "severity": 0}
 
             # ── 危机告警 SSE (severity>=1.5 或 LLM确认时立即推送) ──
             sev = crisis_result.get("severity", 0)
@@ -1110,18 +1167,25 @@ async def chat_stream(req: ChatRequest):
             if sev >= 1.5 or llm_ok:
                 yield f"data: {json.dumps({'type': 'crisis_alert', 'severity': sev, 'level': crisis_result.get('level', 'none'), 'urgency': crisis_result.get('urgency', 'moderate'), 'llm_verified': llm_ok, 'has_method': crisis_result.get('has_method', False)}, ensure_ascii=False)}\n\n"
 
-            # ── 结构化干预 SSE: 呼吸练习 (mindfulness intent 时触发) ──
-            if therapy_intent.get("intent") == "mindfulness" and therapy_intent.get("confidence", 0) >= 0.6:
-                yield f"data: {json.dumps({'type': 'breathing_exercise', 'pattern': 'simple', 'duration': 120}, ensure_ascii=False)}\n\n"
+            # ── 降级通知 SSE (高严重度时推送) ──
+            if deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4:
+                yield f"data: {json.dumps({'type': 'de_escalation', 'severity': deescalation_result.get('severity', 1), 'deesc_type': deescalation_result.get('type', 'none')}, ensure_ascii=False)}\n\n"
 
-            # ── 结构化干预 SSE: CBT 思维记录 (cbt_needed intent 时触发) ──
+            # ── 结构化干预 SSE: 呼吸练习 (mindfulness intent 时触发, 降级高严重度时抑制) ──
+            if therapy_intent.get("intent") == "mindfulness" and therapy_intent.get("confidence", 0) >= 0.6:
+                if not (deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4):
+                    yield f"data: {json.dumps({'type': 'breathing_exercise', 'pattern': 'simple', 'duration': 120}, ensure_ascii=False)}\n\n"
+
+            # ── 结构化干预 SSE: CBT 思维记录 (cbt_needed intent 时触发, 降级高严重度时抑制) ──
             if therapy_intent.get("intent") == "cbt_needed" and therapy_intent.get("confidence", 0) >= 0.5:
-                yield f"data: {json.dumps({'type': 'cbt_trigger', 'thought': msg[:100]}, ensure_ascii=False)}\n\n"
+                if not (deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4):
+                    yield f"data: {json.dumps({'type': 'cbt_trigger', 'thought': msg[:100]}, ensure_ascii=False)}\n\n"
 
             messages = _build_context(msg, thinking, modules_config=modules_config,
                                       crisis_result=crisis_result,
                                       therapy_intent=therapy_intent,
-                                      therapy_mode=req.therapy_mode)
+                                      therapy_mode=req.therapy_mode,
+                                      deescalation_result=deescalation_result)
             data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
         finally:
             llm_foreground_clear(fg_token)

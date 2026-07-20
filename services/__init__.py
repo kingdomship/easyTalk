@@ -1,4 +1,4 @@
-"""easyTalk services — modularized into 6 functional sub-packages.
+"""Psychology services — modularized into 8 functional sub-packages.
 
 For backward compatibility, all public APIs are re-exported here.
 New code should import from the sub-packages directly:
@@ -7,7 +7,6 @@ New code should import from the sub-packages directly:
   from services.emotion.affect import get_affect
   from services.cognition.state_machine import determine_mode
   from services.reflection.diary import generate_diary
-  from services.info.news import fetch_all
 """
 
 from services.memory import *

@@ -1,8 +1,7 @@
-"""Memory, affinity, and mood endpoints."""
+"""Memory, affinity, and constellation endpoints."""
 
 from fastapi import APIRouter
 from app.db import q, init_db
-from services.emotion.affinity import init_affinity_db, get_affinity
 
 router = APIRouter()
 
@@ -21,6 +20,7 @@ def get_user_profile():
 
 @router.get("/api/affinity")
 def show_affinity():
+    from services.emotion.affinity import init_affinity_db, get_affinity
     init_db()
     init_affinity_db()
     aff = get_affinity()
@@ -98,39 +98,6 @@ def list_episodes():
     return get_episodes()
 
 
-@router.get("/api/mood/calendar")
-def mood_calendar(days: int = 60, date_from: str = "", date_to: str = ""):
-    init_db()
-    if date_from or date_to:
-        where = []
-        params = []
-        if date_from:
-            where.append("date >= %s")
-            params.append(date_from)
-        if date_to:
-            where.append("date <= %s")
-            params.append(date_to)
-        clause = "WHERE " + " AND ".join(where)
-        rows = q(
-            f"SELECT date, chat_count, mood_emoji, content FROM diary_entries {clause} ORDER BY date DESC",
-            params,
-        )
-    else:
-        rows = q(
-            "SELECT date, chat_count, mood_emoji, content FROM diary_entries ORDER BY date DESC LIMIT %s",
-            [days],
-        )
-    result = []
-    for r in rows:
-        result.append({
-            "date": str(r["date"]),
-            "chat_count": r["chat_count"],
-            "mood_emoji": r.get("mood_emoji") or "✨",
-            "has_diary": bool(r.get("content")),
-        })
-    return result
-
-
 @router.get("/api/kg/entities")
 def kg_entities(limit: int = 50):
     """List all known entities ordered by last_seen."""
@@ -155,74 +122,3 @@ def kg_relationships(limit: int = 50):
         "ORDER BY r.valid_at DESC LIMIT %s",
         [limit],
     )
-
-
-@router.get("/api/mood/affect-history")
-def mood_affect_history(days: int = 7):
-    """Return daily Panksepp 6-dimension averages for the last N days.
-
-    Reads from affect_history table; if no data, falls back to current affect_state.
-    """
-    init_db()
-    rows = q(
-        "SELECT date, seeking, play, care, fear, rage, panic "
-        "FROM affect_history "
-        "WHERE date >= CURRENT_DATE - INTERVAL '%s days' "
-        "ORDER BY date ASC",
-        [days],
-    )
-    if rows:
-        return rows
-    # Fallback: return today's current affect as single data point
-    from services.emotion.affect import get_affect
-    aff = get_affect()
-    today = __import__("datetime").date.today().isoformat()
-    return [{
-        "date": today,
-        "seeking": aff.get("seeking", 0.35),
-        "play": aff.get("play", 0.25),
-        "care": aff.get("care", 0.2),
-        "fear": aff.get("fear", 0.1),
-        "rage": aff.get("rage", 0.05),
-        "panic": aff.get("panic", 0.1),
-    }]
-
-
-@router.get("/api/mood/timeline")
-def mood_timeline(days: int = 7):
-    """Return daily emotion distribution for the last N days.
-
-    Returns [{date, emotion_label, count}] grouped by date + emotion_label,
-    plus daily totals for chart rendering.
-    """
-    init_db()
-    rows = q(
-        "SELECT DATE(created_at) AS date, emotion_label, COUNT(*) AS cnt "
-        "FROM chat_history "
-        "WHERE created_at >= NOW() - INTERVAL '%s days' "
-        "GROUP BY DATE(created_at), emotion_label "
-        "ORDER BY date DESC",
-        [days],
-    )
-    # Build a per-date summary: {date: {label: count, total: N}}
-    by_date = {}
-    for r in (rows or []):
-        d = str(r["date"])
-        if d not in by_date:
-            by_date[d] = {"total": 0, "labels": {}}
-        by_date[d]["total"] += int(r["cnt"])
-        by_date[d]["labels"][r["emotion_label"]] = int(r["cnt"])
-
-    # Compute dominant emotion per day
-    timeline = []
-    for d in sorted(by_date.keys(), reverse=True):
-        entry = by_date[d]
-        labels = entry["labels"]
-        dominant = max(labels, key=labels.get) if labels else ""
-        timeline.append({
-            "date": d,
-            "total": entry["total"],
-            "dominant": dominant,
-            "labels": labels,
-        })
-    return timeline

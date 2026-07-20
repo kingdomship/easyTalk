@@ -35,6 +35,10 @@ document.querySelectorAll('.aux-tab').forEach(/** @param {HTMLElement} tab */ ta
     document.querySelectorAll('.aux-tab').forEach(/** @param {HTMLElement} t */ t => t.classList.toggle('active', t.dataset.tab === auxTab));
     if (auxTab === 'settings') {
       openSettings();
+    } else if (auxTab === 'personality') {
+      openPersonalityModal();
+    } else if (auxTab === 'distill') {
+      openDistillModal();
     } else {
       loadAuxContent();
     }
@@ -52,7 +56,6 @@ function loadAuxContent() {
     auxContent.innerHTML = '';
   }
   if (auxTab === 'diary') loadDiaryContent(true);
-  else if (auxTab === 'news') loadNewsContent();
   else if (auxTab === 'mood') loadMoodContent();
   else if (auxTab === 'memory') loadMemoryContent();
   else if (auxTab === 'constellation') loadConstellationContent();
@@ -232,45 +235,4 @@ async function loadConstellationContent() {
     console.error('[Constellation] load failed:', e);
     auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">星图加载失败: ' + escapeHtml(e.message) + '</div>';
   }
-}
-
-async function loadNewsContent() {
-  auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#6a6a8a;">加载新闻中...</div>';
-  try {
-    const resp = await fetch('/api/news');
-    const news = await resp.json();
-    if (!Array.isArray(news) || news.length === 0) {
-      auxContent.innerHTML = '<div style="text-align:center;padding:60px 20px;color:#6a6a8a;line-height:2;"><img src="/icons/newspaper.svg" class="empty-state-icon" alt=""><br>还没有新闻<br><button id="fetchNewsBtn" style="margin-top:12px;background:var(--accent);color:#fff;border:none;padding:8px 20px;border-radius:16px;cursor:pointer;font-family:inherit;">立即拉取</button></div>';
-      const btn = /** @type {HTMLButtonElement} */ (document.getElementById('fetchNewsBtn'));
-      if (btn) btn.addEventListener('click', async () => {
-        btn.textContent = '拉取中...'; btn.disabled = true;
-        await fetch('/api/news/fetch', { method: 'POST' });
-        loadNewsContent();
-      });
-      return;
-    }
-    auxContent.innerHTML = news.map(n => `
-      <div class="news-card" data-url="${escapeHtml(n.url || '')}">
-        <div class="news-title">${escapeHtml(n.title)}</div>
-        <div class="news-meta">
-          <span class="news-tag ${n.source}">${n.source}</span>
-          <span style="color:#6a6a8a">#${n.rank}</span>
-        </div>
-      </div>
-    `).join('');
-    auxContent.querySelectorAll('.news-card').forEach(/** @param {HTMLElement} card */ card => {
-      card.addEventListener('click', () => {
-        const url = card.dataset.url;
-        if (url) window.open(url, '_blank');
-      });
-    });
-  } catch(e) {
-    auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">加载失败</div>';
-  }
-}
-
-function extractMoodEmoji(text) {
-  const emojiRegex = /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u;
-  const match = text.match(emojiRegex);
-  return match ? match[0] : '✨';
 }

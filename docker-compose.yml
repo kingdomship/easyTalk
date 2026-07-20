@@ -2,14 +2,14 @@ services:
   postgres:
     image: pgvector/pgvector:pg15
     environment:
-      POSTGRES_DB: emotion
+      POSTGRES_DB: psychology
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 123456
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-123456}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - psychology_pgdata:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d emotion"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d psychology"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -22,7 +22,7 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-${DEEPSEEK_API_KEY}}
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_NAME=emotion
+      - DB_NAME=psychology
       - DB_USER=postgres
       - DB_PASSWORD=${DB_PASSWORD:-123456}
     volumes:
@@ -39,4 +39,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  pgdata:
+  psychology_pgdata:

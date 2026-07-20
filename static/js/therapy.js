@@ -1,6 +1,6 @@
 // ── Therapy mode toggle ──
 var therapyMode = (function() {
-  try { return localStorage.getItem('easytalk_therapy_mode') === '1'; } catch(e) { return false; }
+  try { return localStorage.getItem('psychology_therapy_mode') === '1'; } catch(e) { return false; }
 })();
 var therapyToggleEl = document.getElementById('therapy-toggle');
 
@@ -12,7 +12,7 @@ function applyTherapyMode() {
     document.body.classList.remove('therapy-mode');
     if (therapyToggleEl) therapyToggleEl.classList.remove('active');
   }
-  try { localStorage.setItem('easytalk_therapy_mode', therapyMode ? '1' : '0'); } catch(e) {}
+  try { localStorage.setItem('psychology_therapy_mode', therapyMode ? '1' : '0'); } catch(e) {}
 }
 
 if (therapyToggleEl) {

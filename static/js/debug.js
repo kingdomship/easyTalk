@@ -7,7 +7,7 @@ var debugPanel = document.getElementById('debug-panel');
 var debugClicks = 0, debugTimer = null;
 var ERROR_PATTERNS = {
   'fetch': { cause: '网络请求被阻断或服务器未响应', fix: '检查容器运行状态: docker ps, 检查端口映射' },
-  'HTTP 5': { cause: '服务器内部错误', fix: '查看容器日志: docker logs emoji-chat-app-1' },
+  'HTTP 5': { cause: '服务器内部错误', fix: '查看容器日志: docker logs psychology-app-1' },
   'HTTP 4': { cause: '请求参数错误或端点不存在', fix: '检查API路径和请求格式' },
   'timeout': { cause: '请求超时', fix: 'DeepSeek API 响应慢或网络延迟高，考虑降低max_tokens' },
   'rate': { cause: 'API 速率限制', fix: '等待几秒后重试，或检查API配额' },

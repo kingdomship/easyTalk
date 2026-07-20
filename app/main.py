@@ -1,4 +1,4 @@
-"""Emoji Chat — LLM-driven pixel avatar with emotion sequences."""
+"""Psychology — LLM-driven therapeutic companion with emotion sequences."""
 
 import logging
 import os
@@ -18,7 +18,6 @@ logger = logging.getLogger("emoji-chat")
 from app.routes import router
 from app.db import init_db
 from app.utils import get_background_executor
-from services.info.news import fetch_all
 from services.reflection.diary import generate_diary, generate_user_diary
 from services.emotion.affinity import init_affinity_db
 from services.emotion.affect import init_affect_db
@@ -84,7 +83,6 @@ async def lifespan(app: FastAPI):
     seed_crisis_resources()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
-    scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)
     scheduler.add_job(idle_thought, "cron", minute="*/5")
     scheduler.add_job(mood_fluctuation, "cron", minute="*/30")
     scheduler.add_job(diary_seed, "cron", minute="0")
@@ -122,10 +120,6 @@ def generate_daily_diary():
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     generate_diary(yesterday)
     generate_user_diary(yesterday)
-
-
-async def fetch_all_news():
-    await fetch_all()
 
 
 app = FastAPI(lifespan=lifespan)

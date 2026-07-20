@@ -1,4 +1,4 @@
-"""Shared utilities for easyTalk services."""
+"""Shared utilities for Psychology services."""
 
 import contextvars
 import json

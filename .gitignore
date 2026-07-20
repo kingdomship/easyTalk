@@ -10,3 +10,4 @@ venv/
 dist/
 .pytest_cache/
 /memory/
+screenshot.png

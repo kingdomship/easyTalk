@@ -30,16 +30,16 @@ function saveVisualState() {
       storyPaused: (typeof storyPaused !== 'undefined' ? storyPaused : false),
       storyBuffer: (typeof storyBuffer !== 'undefined' ? storyBuffer : []),
     };
-    localStorage.setItem('easytalk_visual', JSON.stringify(st));
+    localStorage.setItem('psychology_visual', JSON.stringify(st));
   } catch(e) { /* quota exceeded, ignore */ }
 }
 
 function loadVisualState() {
   try {
-    var raw = localStorage.getItem('easytalk_visual');
+    var raw = localStorage.getItem('psychology_visual');
     if (!raw) return false;
     var saved = JSON.parse(raw);
-    if (Date.now() - saved.ts > 5 * 60 * 1000) { localStorage.removeItem('easytalk_visual'); return false; }
+    if (Date.now() - saved.ts > 5 * 60 * 1000) { localStorage.removeItem('psychology_visual'); return false; }
     if (saved.curParams) curParams = saved.curParams;
     if (saved.tgtParams) tgtParams = saved.tgtParams;
     if (saved.moodColor) moodColor = saved.moodColor;
