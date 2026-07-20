@@ -25,6 +25,9 @@ APIKEY_PATH = os.path.join(MEMORY_DIR, "api_key.txt")
 LIFE_DOMAINS_PATH = os.path.join(MEMORY_DIR, "life_domains.json")
 CURIOSITY_PATH = os.path.join(MEMORY_DIR, "curiosity_queue.json")
 
+USER_VALUES_PATH = os.path.join(MEMORY_DIR, "user_values.json")
+USER_STRENGTHS_PATH = os.path.join(MEMORY_DIR, "user_strengths.json")
+
 CRISIS_LOG_PATH = os.path.join(MEMORY_DIR, "crisis_log.jsonl")
 DISTILL_DIR = os.path.join(MEMORY_DIR, "distilled_profiles")
 

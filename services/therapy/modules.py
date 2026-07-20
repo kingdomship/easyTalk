@@ -121,6 +121,30 @@ _MODULE_DEESCALATION = """## 情绪降级模式
 4. 用开放式提问温和引导: "你想说说发生了什么吗?"
 5. 如果用户反复攻击, 安静陪伴, 不过度回应"""
 
+# ── ACT 接纳承诺疗法模块 (Phase 2: 认知解离 + 价值观) ──────────────
+
+_MODULE_THERAPY_ACT = """## 接纳承诺疗法（ACT）引导模式
+
+### 认知解离技术
+当用户表达自我批判或陷入负面思维循环时，帮助用户拉开与想法的距离：
+
+1. **标签式重述**: "我注意到你对自己说 '[原文]'" — 创造观察者与内容之间的距离
+2. **为想法命名**: "如果给这个想法取个名字，你会叫它什么？'我做不到'先生又来了？"
+3. **外部化**: "把这个想法想象成收音机里的一个频道，你可以选择不收听"
+4. **用不同声音默念**: 邀请用户在心里用搞笑的卡通声音复述那个自我批评的念头
+
+### 价值观引导
+- 帮助用户连接内心珍视的方向（关系、成长、创造力、贡献...）
+- 用开放式问题探索: "什么让你感到有意义？" "你希望被怎样记住？"
+- 将当前困扰和价值观联系起来: "你之前说过___对你很重要，这个选择是否与它一致？"
+
+### 核心原则
+- **不挑战想法是否"正确"** — 改变与想法的关系，而非内容
+- **解离不是消除** — 想法还在，但控制力减弱
+- **用故事和比喻，不说教**
+- **与CBT配合**: CBT 挑战思维内容，ACT 改变思维功能，二者互补"""
+
+
 # ── 模块映射 ─────────────────────────────────────────────────────
 
 _MODULES = {
@@ -129,12 +153,25 @@ _MODULES = {
     "mindfulness": _MODULE_THERAPY_MINDFULNESS,
     "crisis": _MODULE_THERAPY_CRISIS,
     "deescalation": _MODULE_DEESCALATION,
+    "act": _MODULE_THERAPY_ACT,
 }
 
 
 def assemble_deescalation_module() -> str:
     """返回情绪降级引导 prompt 模块."""
     return _MODULE_DEESCALATION
+
+
+def assemble_act_module(intent_type: str = "defusion") -> str:
+    """返回 ACT 模块.
+
+    参数:
+        intent_type: "defusion" (认知解离) / "values" (价值观引导)
+
+    返回:
+        对应的 ACT 提示词模块.
+    """
+    return _MODULE_THERAPY_ACT
 
 
 def assemble_therapy_modules(intent: str) -> str:

@@ -26,11 +26,15 @@ _SITUATIONS_PATH = SITUATIONS_PATH
 _EPISODES_PATH = EPISODES_PATH
 
 _SITUATION_CHECK_EVERY = 10
+_MIN_SITUATION_GAP = 5
+_MAX_SITUATION_GAP = 20
+_SITUATION_ERROR_THRESHOLD = 0.35
 _EPISODE_CHECK_THRESHOLD = 5  # min situations before distilling episode
 
 _situation_lock = threading.Lock()
 _episode_lock = threading.Lock()
 _last_situation_check = 0
+_last_situation_consolidation = 0
 _last_episode_check = 0
 
 _SITUATION_PROMPT = """你是一个对话分析助手。分析以下对话记录，识别话题的切换点。
@@ -125,12 +129,26 @@ def detect_situations():
     Runs every _SITUATION_CHECK_EVERY turns. Uses LLM to find topic
     boundaries and stores situation records.
     """
-    global _last_situation_check
+    global _last_situation_check, _last_situation_consolidation
     if not _situation_lock.acquire(blocking=False):
         return
     try:
         total = _count_archive_lines()
-        if total - _last_situation_check < _SITUATION_CHECK_EVERY:
+
+        # Prediction-error gating (same pattern as crystallization)
+        since_last = total - _last_situation_consolidation
+        if since_last < _MIN_SITUATION_GAP:
+            return
+        should_check = since_last >= _MAX_SITUATION_GAP  # fallback
+        if not should_check:
+            try:
+                from services.cognition.prediction import get_last_prediction_error
+                error = get_last_prediction_error()
+                if error > _SITUATION_ERROR_THRESHOLD:
+                    should_check = True
+            except Exception:
+                pass
+        if not should_check and total - _last_situation_check < _SITUATION_CHECK_EVERY:
             return
 
         # Check how many turns we've already analyzed
@@ -206,6 +224,7 @@ def detect_situations():
         if new_situations:
             _save_situations(new_situations)
             _last_situation_check = total
+            _last_situation_consolidation = total
             logger.info("Detected %d situations: %s",
                          len(new_situations),
                          [s["title"] for s in new_situations])

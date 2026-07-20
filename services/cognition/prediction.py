@@ -52,7 +52,7 @@ def generate_prediction(user_msg: str, avatar_reply: str):
         if prediction:
             os.makedirs(os.path.dirname(_PREDICTION_PATH), exist_ok=True)
             with open(_PREDICTION_PATH, "w") as f:
-                json.dump({"prediction": prediction, "user_msg": user_msg[:80]}, f)
+                json.dump({"prediction": prediction, "user_msg": user_msg[:80], "error": None}, f)
             logger.info("Prediction: %s", prediction[:50])
     except Exception:
         logger.warning("Operation failed", exc_info=True)
@@ -65,7 +65,8 @@ def check_prediction(user_msg: str) -> float:
     1 = completely unexpected. Uses simple text overlap heuristic
     since a full semantic comparison would require another LLM call.
 
-    The score feeds into salience.surprise boost.
+    The score feeds into salience.surprise boost. Also persists error
+    to prediction.json for memory consolidation gating.
     """
     try:
         if not os.path.exists(_PREDICTION_PATH):
@@ -91,9 +92,34 @@ def check_prediction(user_msg: str) -> float:
         combined = (overlap_ratio + word_overlap) / 2
         error = max(0.0, min(1.0, 1.0 - combined))
 
+        # Persist error for downstream gating (memory consolidation etc.)
+        try:
+            prev["error"] = error
+            with open(_PREDICTION_PATH, "w") as f:
+                json.dump(prev, f)
+        except Exception:
+            pass
+
         return error
     except Exception:
         logger.warning("Operation failed", exc_info=True)
+        return 0.0
+
+
+def get_last_prediction_error() -> float:
+    """Read the most recent prediction error from persisted storage.
+
+    Used by memory consolidation gating (crystallization, narrative)
+    to decide whether the current interaction is surprising enough
+    to warrant consolidation.
+    """
+    try:
+        if not os.path.exists(_PREDICTION_PATH):
+            return 0.0
+        with open(_PREDICTION_PATH) as f:
+            prev = json.load(f)
+        return float(prev.get("error", 0.0) or 0.0)
+    except Exception:
         return 0.0
 
 
