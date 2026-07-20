@@ -30,8 +30,14 @@ archive_lock = threading.Lock()
 
 
 def atomic_write(path: str, data: str):
-    """Write data to a file atomically via temp file + rename."""
+    """Write data to a file atomically via temp file + rename.
+
+    Ensures data is flushed to disk before the atomic rename, preventing
+    partial writes from surviving a crash.
+    """
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)

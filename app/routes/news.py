@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 from app.db import q, init_db
-from services.info.news import fetch_all
+from services.info.news import fetch_all, get_suggested_news
 
 router = APIRouter()
 
@@ -33,3 +33,10 @@ def news_topics(limit: int = 4):
             prompt = f"你怎么看「{title[:25]}」？"
         topics.append({"prompt": prompt, "source": r["source"]})
     return topics
+
+
+@router.get("/api/news/suggest")
+def suggest_news():
+    """Return personalized + general news for topic bubbles."""
+    init_db()
+    return get_suggested_news()

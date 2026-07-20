@@ -56,6 +56,22 @@ def get_background_executor() -> ThreadPoolExecutor:
         _background_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="bg")
     return _background_executor
 
+
+_low_priority_executor: ThreadPoolExecutor | None = None
+
+
+def get_low_priority_executor() -> ThreadPoolExecutor:
+    """Dedicated executor for analysis / batch tasks that can be delayed.
+
+    Kept separate from the main background executor so that core state
+    updates (affect, affinity, indexing) are never starved by slow
+    analysis tasks (crystallize, guard, narrative, deep_audit, etc.).
+    """
+    global _low_priority_executor
+    if _low_priority_executor is None:
+        _low_priority_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bg-lo")
+    return _low_priority_executor
+
 _llm_client = None
 _current_config_hash: str | None = None
 

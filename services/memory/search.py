@@ -124,6 +124,23 @@ def search_similar(query: str, limit: int = 5, use_rerank: bool = True) -> list[
     return rows[:limit]
 
 
+# Heuristic patterns for detecting third-party narratives in user messages.
+# When a user tells a story about someone else (masseuse, colleague, friend),
+# the memory should be labeled as a "story" not "self-disclosure" to prevent
+# the LLM from attributing third-party actions to the user.
+_THIRD_PARTY_PATTERNS = [
+    "他", "她", "那个女人", "那个男人", "按摩师", "按摩女",
+    "同事", "朋友", "老板", "领导", "同学", "老师", "医生",
+    "司机", "服务员", "店员", "路人", "陌生人", "邻居", "亲戚",
+    "我妈", "我爸", "老公", "老婆", "男朋友", "女朋友", "前女友", "前男友",
+]
+
+
+def _is_third_party_narrative(text: str) -> bool:
+    """Quick heuristic: does this message describe someone else's actions?"""
+    return any(p in text for p in _THIRD_PARTY_PATTERNS)
+
+
 def build_memory_context(user_msg: str, limit: int = 5) -> str:
     """Search for relevant memories and format as context for the system prompt.
 
@@ -133,7 +150,14 @@ def build_memory_context(user_msg: str, limit: int = 5) -> str:
     if not results:
         return ""
 
-    lines = ["## 相关的过往回忆（可在对话中自然提及）："]
+    lines = [
+        "## 相关的过往回忆（可在对话中自然提及，但务必区分角色归属——用户讲的故事中的人物 ≠ 用户本人）："
+    ]
     for r in results:
-        lines.append(f"- 用户曾说过：「{r['user_msg'][:80]}」→ 你回复：「{r['avatar_reply'][:60]}」")
+        um = r["user_msg"][:100]
+        ar = r["avatar_reply"][:80]
+        if _is_third_party_narrative(um):
+            lines.append(f"- 用户讲过一个经历/故事：「{um}」→ 你回复：「{ar}」")
+        else:
+            lines.append(f"- 关于用户自己：「{um}」→ 你回复：「{ar}」")
     return "\n".join(lines)

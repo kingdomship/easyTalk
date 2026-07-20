@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ /app/app/
 COPY services/ /app/services/
 COPY static/ /app/static/
+COPY scripts/ /app/scripts/
+RUN python3 scripts/generate_pwa_icons.py
 COPY memory/ /app/memory_seed/
 
 EXPOSE 8000

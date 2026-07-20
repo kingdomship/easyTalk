@@ -21,6 +21,7 @@ import logging
 import hashlib
 import math
 import os
+import time
 
 from app.db import q, execute
 
@@ -38,10 +39,10 @@ class Level:
     BLACK  = "black"
 
 _THRESHOLDS = [
-    (Level.GREEN,  2.0),
-    (Level.YELLOW, 3.0),
-    (Level.ORANGE, 4.0),
-    (Level.RED,    6.0),
+    (Level.GREEN,  0.35),
+    (Level.YELLOW, 0.55),
+    (Level.ORANGE, 0.75),
+    (Level.RED,    0.90),
     (Level.BLACK,  float("inf")),
 ]
 
@@ -57,6 +58,13 @@ _CORESET_MAX = 128
 _CORESET_DECAY = 0.995
 _TREND_WINDOW = 32
 _BASELINE_SAMPLES = 50
+
+# Baseline staleness tracking
+_baseline_built_at: float = 0.0
+_last_rebuild_at: float = 0.0
+_REBUILD_INTERVAL = 7 * 24 * 3600  # 7 days
+_REBUILD_COOLDOWN = 3600  # minimum 1 hour between rebuilds
+_MAX_CONSECUTIVE_HIGH = 30  # rebuild if 30 consecutive distances all > 10 sigma
 
 
 def _classify(distance: float) -> str:
@@ -127,13 +135,10 @@ def _build_baseline() -> dict | None:
             mean[i] += emb[i]
     mean = [m / n for m in mean]
 
-    # Diagonal covariance
+    # Covariance column is kept for DB schema compat but no longer used.
+    # Cosine distance on unit vectors replaces Mahalanobis — no need for
+    # variance estimation which was the root cause of 100% false-positive black.
     cov_diag = [0.0] * VEC_DIM
-    for emb in embeddings:
-        for i in range(VEC_DIM):
-            diff = emb[i] - mean[i]
-            cov_diag[i] += diff * diff
-    cov_diag = [max(1e-6, c / max(1, n - 1)) for c in cov_diag]  # avoid division by zero
 
     baseline = {
         "mean": mean,
@@ -185,32 +190,106 @@ def _load_baseline() -> dict | None:
     }
 
 
-def ensure_baseline() -> dict | None:
-    """Get or build the drift baseline."""
-    baseline = _load_baseline()
-    if baseline is None:
-        baseline = _build_baseline()
+def rebuild_baseline() -> dict | None:
+    """Force rebuild the drift baseline from recent chat history.
+
+    Can be called manually or triggered automatically when staleness is
+    detected. Clears coreset and drift log so old data doesn't skew the
+    new baseline.
+    """
+    global _baseline_built_at, _last_rebuild_at
+    execute("DELETE FROM drift_baseline")
+    execute("DELETE FROM drift_coreset")
+    execute("DELETE FROM drift_log")
+    baseline = _build_baseline()
+    if baseline:
+        _baseline_built_at = time.time()
+        _last_rebuild_at = time.time()
     return baseline
 
 
-# ── Mahalanobis distance ─────────────────────────────────────────────
+def _is_baseline_stale() -> bool:
+    """Check if baseline is stale by examining recent drift log entries.
 
-def mahalanobis_distance(embedding: list[float], baseline: dict) -> float:
-    """Compute Mahalanobis distance: D_M(x) = sqrt(sum((x_i - mu_i)^2 / sigma_ii)).
+    Returns True if the most recent drift logs show extreme distances,
+    indicating the baseline no longer represents current reply patterns.
+    """
+    rows = q(
+        "SELECT mahalanobis_distance FROM drift_log ORDER BY id DESC LIMIT %s",
+        [_MAX_CONSECUTIVE_HIGH],
+    )
+    if len(rows) < 10:
+        return False
+    return all(r["mahalanobis_distance"] > 0.95 for r in rows)
 
-    Uses diagonal covariance for efficiency. Captures directional deviation —
-    sensitive dimensions (narrower variance) get higher weight.
+
+def ensure_baseline() -> dict | None:
+    """Get or build the drift baseline, with periodic rebuild and staleness detection.
+
+    Rebuilds when:
+    - No baseline exists yet
+    - Baseline is older than 7 days
+    - Last 30 drift_log entries all show distance > 10 sigma (stale baseline)
+    """
+    global _baseline_built_at, _last_rebuild_at
+
+    baseline = _load_baseline()
+    if baseline is None:
+        baseline = _build_baseline()
+        if baseline:
+            _baseline_built_at = time.time()
+            _last_rebuild_at = time.time()
+        return baseline
+
+    # Periodic rebuild by age
+    if _baseline_built_at > 0 and time.time() - _baseline_built_at > _REBUILD_INTERVAL:
+        logger.info("Drift baseline: periodic rebuild (7-day interval)")
+        execute("DELETE FROM drift_baseline")
+        baseline = _build_baseline()
+        if baseline:
+            _baseline_built_at = time.time()
+            _last_rebuild_at = time.time()
+        return baseline
+
+    # Staleness detection: if recent checks are all extreme, rebuild
+    # Guarded by cooldown to prevent repeated rebuilds from old drift_log entries
+    if (time.time() - _last_rebuild_at > _REBUILD_COOLDOWN
+            and _is_baseline_stale()):
+        logger.warning("Drift baseline: stale detected, rebuilding from recent data")
+        execute("DELETE FROM drift_baseline")
+        execute("DELETE FROM drift_coreset")
+        execute("DELETE FROM drift_log")
+        baseline = _build_baseline()
+        if baseline:
+            _baseline_built_at = time.time()
+            _last_rebuild_at = time.time()
+        return baseline
+
+    # Track build time from DB if we lost the in-memory value (e.g. restart)
+    if _baseline_built_at == 0.0:
+        _baseline_built_at = time.time()
+
+    return baseline
+
+
+# ── Cosine distance ───────────────────────────────────────────────────
+
+def cosine_distance(embedding: list[float], baseline: dict) -> float:
+    """Cosine distance between a reply embedding and the baseline mean.
+
+    Range 0–2: 0 = identical direction, 1 = orthogonal, 2 = opposite.
+    Suitable for unit-length hash embeddings where Mahalanobis fails
+    (covariance is near-zero, inflating every small fluctuation to 10+ sigma).
     """
     mean = baseline["mean"]
-    cov_diag = baseline["cov_diag"]
     if len(embedding) != len(mean):
-        return 0.0
+        return 1.0
 
-    total = 0.0
-    for i in range(len(mean)):
-        diff = embedding[i] - mean[i]
-        total += (diff * diff) / cov_diag[i]
-    return math.sqrt(total)
+    dot = sum(e * m for e, m in zip(embedding, mean))
+    norm_mean = math.sqrt(sum(m * m for m in mean))
+    if norm_mean == 0:
+        return 1.0
+    return 1.0 - dot / norm_mean
 
 
 # ── Weighted coreset ─────────────────────────────────────────────────
@@ -278,17 +357,17 @@ def _predict_trend(distances: list[float]) -> dict:
     predicted = slope * (n + 5 - 1) + intercept
     predicted = max(0, predicted)
 
-    # Turns until each threshold
+    # Turns until each threshold (cosine distance thresholds)
     def turns_until(threshold):
         if slope <= 0:
-            return float("inf") if distances[-1] < threshold else 0
+            return -1.0 if distances[-1] < threshold else 0.0
         return max(0, (threshold - distances[-1]) / slope)
 
     return {
         "predicted_distance": round(predicted, 3),
-        "turns_until_yellow": round(turns_until(3.0), 1),
-        "turns_until_orange": round(turns_until(4.0), 1),
-        "turns_until_red": round(turns_until(6.0), 1),
+        "turns_until_yellow": round(turns_until(0.55), 1),
+        "turns_until_orange": round(turns_until(0.75), 1),
+        "turns_until_red": round(turns_until(0.90), 1),
     }
 
 
@@ -335,7 +414,7 @@ def check_and_intervene(reply_text: str) -> str:
         return Level.GREEN
 
     embedding = _text_to_embedding(reply_text)
-    distance = mahalanobis_distance(embedding, baseline)
+    distance = cosine_distance(embedding, baseline)
 
     _add_to_coreset(reply_text, embedding, distance)
 

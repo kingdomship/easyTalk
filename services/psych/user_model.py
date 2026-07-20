@@ -409,7 +409,8 @@ def get_timeline_context() -> str:
     """Return the relationship timeline for context injection.
 
     Tracks: first chat date, total chat days, total messages exchanged.
-    Persisted to timeline.json.
+    Persisted to timeline.json. Line count is cached and only re-read
+    when the archive file's mtime changes.
     """
     try:
         from app.config import ARCHIVE_PATH
@@ -422,8 +423,16 @@ def get_timeline_context() -> str:
             with open(_TIMELINE_PATH) as f:
                 timeline = _stdlib_json.load(f)
 
-        with open(ARCHIVE_PATH) as f:
-            total_lines = sum(1 for _ in f)
+        # Use cached line count when archive mtime hasn't changed
+        archive_mtime = os.path.getmtime(ARCHIVE_PATH)
+        cached_mtime = timeline.get("_archive_mtime", 0)
+        if cached_mtime == archive_mtime and "total_lines" in timeline:
+            total_lines = timeline["total_lines"]
+        else:
+            with open(ARCHIVE_PATH) as f:
+                total_lines = sum(1 for _ in f)
+            timeline["_archive_mtime"] = archive_mtime
+            timeline["total_lines"] = total_lines
 
         first_date = timeline.get("first_date", "")
         if not first_date and total_lines > 0:
@@ -452,7 +461,6 @@ def get_timeline_context() -> str:
 
         # Save updated timeline
         timeline["first_date"] = first_date
-        timeline["total_lines"] = total_lines
         os.makedirs(os.path.dirname(_TIMELINE_PATH), exist_ok=True)
         with open(_TIMELINE_PATH, "w") as f:
             _stdlib_json.dump(timeline, f, ensure_ascii=False, indent=2)

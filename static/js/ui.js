@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════
 let dlgTyping = false, dlgTimer = null, thinkingTimer = null;
 let dlgText = '', dlgDisplayed = 0;
+let lastMessageTime = Date.now();
 
 function showDialog(text, x, y) {
   // Position dialog near the face but not covering it
@@ -1323,6 +1324,7 @@ async function sendMessage() {
   if (state !== STATE.CHAT) return;
 
   initAudio(); // warm up AudioContext inside user gesture
+  lastMessageTime = Date.now();
   topicBubbles.classList.remove('visible');
   closeKaomojiPanel();
   resetTextarea(); pending = true; sendBtn.disabled = true;
@@ -1346,6 +1348,7 @@ async function sendMessage() {
   dialog.classList.add('visible');
   dlgBody.innerHTML = '<span class="cursor-blink"></span>';
   let streamedReply = '';
+  let streamedEmotionLabel = '?';
 
   try {
     abortController = new AbortController();
@@ -1383,6 +1386,7 @@ async function sendMessage() {
             setSequence(evt.emotions, '');
             if (evt.affect) updateMoodFromAffect(evt.affect);
             else updateMoodFromEmotion(evt.label || '');
+            streamedEmotionLabel = evt.label || evt.emotions?.[0]?.label || '?';
             if (evt.color_fields && Array.isArray(evt.color_fields)) {
               colorFieldsTarget = evt.color_fields.map(function(f) {
                 return {
@@ -1446,11 +1450,14 @@ async function sendMessage() {
             dlgBody.innerHTML = escapeHtml(streamedReply);
             addDebugLog('error', 'LLM调用失败', evt.text, 'DeepSeek API 可能超时或返回异常，检查 API Key 和网络连接');
           } else if (evt.type === 'done') {
+            if (evt.raw) console.log('%c📦 LLM 原始回复', 'color:#a78bfa;font-weight:bold;font-size:14px', evt.raw);
             if (storyPaused) {
               storyBuffer.push({ type: 'done' });
             } else {
               clearInterval(thinkingTimer);
               dlgBody.innerHTML = escapeHtml(streamedReply);
+              console.log('%c💬 LLM → %c' + streamedEmotionLabel + '%c | ' + streamedReply.slice(0, 200),
+                'color:#a78bfa', 'color:#f59e0b;font-weight:bold', 'color:inherit');
               checkChoices(streamedReply);
             }
           }
@@ -1487,12 +1494,19 @@ async function sendMessage() {
 // Topic bubbles
 async function loadTopics() {
   try {
-    const resp = await fetch('/api/news/topics');
-    const topics = await resp.json();
-    if (!topics.length) { topicBubbles.classList.remove('visible'); return; }
-    topicBubbles.innerHTML = topics.map(t =>
-      `<span class="topic-bubble" data-prompt="${escapeHtml(t.prompt)}">${escapeHtml(t.prompt)}</span>`
-    ).join('');
+    const resp = await fetch('/api/news/suggest');
+    const data = await resp.json();
+    const matched = data.matched || [];
+    const general = data.general || [];
+    // Merge: matched first (interest-based), then general to fill up to 4
+    const items = [...matched, ...general].slice(0, 4);
+    if (!items.length) { topicBubbles.classList.remove('visible'); return; }
+    topicBubbles.innerHTML = items.map(n => {
+      const prompt = n.title.includes('？') || n.title.includes('?')
+        ? n.title.slice(0, 40)
+        : `你怎么看「${n.title.slice(0, 25)}」？`;
+      return `<span class="topic-bubble" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</span>`;
+    }).join('');
     topicBubbles.classList.add('visible');
     topicBubbles.querySelectorAll('.topic-bubble').forEach(/** @param {HTMLElement} b */ b => {
       b.addEventListener('click', () => {
@@ -1600,6 +1614,16 @@ try {
 } catch(e) { console.error('init story button', e); }
 requestAnimationFrame(loop);
 
+// Idle topic suggestion: poll every 30s, show bubbles when user hasn't sent a
+// message for >30s — gives them a conversation starter when the chat goes quiet.
+setInterval(() => {
+  if (state === STATE.CHAT
+      && !topicBubbles.classList.contains('visible')
+      && Date.now() - lastMessageTime > 30000) {
+    loadTopics();
+  }
+}, 30000);
+
 // ═══════════════════════════════════════════
 // Settings panel (LLM provider config)
 // ═══════════════════════════════════════════
@@ -1669,6 +1693,37 @@ settingsClear.addEventListener('click', async function () {
     showStatus('网络错误：' + e.message, 'error');
   }
 });
+
+async function clearAllCaches() {
+  showStatus('正在清除缓存...', 'success');
+  try {
+    // Clear service worker caches (may need secure context)
+    if (typeof caches !== 'undefined') {
+      var keys = await caches.keys();
+      for (var i = 0; i < keys.length; i++) {
+        await caches.delete(keys[i]);
+      }
+    }
+    // Unregister all service workers
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      var registrations = await navigator.serviceWorker.getRegistrations();
+      for (var j = 0; j < registrations.length; j++) {
+        await registrations[j].unregister();
+      }
+    }
+    // Clear localStorage
+    localStorage.removeItem('easytalk_visual');
+    showStatus('缓存已清除，即将刷新...', 'success');
+    setTimeout(function() { window.location.reload(); }, 800);
+  } catch (e) {
+    showStatus('清除失败：' + e.message, 'error');
+  }
+}
+
+var cacheClearBtn = document.getElementById('settingsCacheClear');
+if (cacheClearBtn) {
+  cacheClearBtn.addEventListener('click', clearAllCaches);
+}
 
 async function loadSettings() {
   try {

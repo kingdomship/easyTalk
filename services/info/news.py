@@ -195,3 +195,143 @@ async def fetch_all() -> int:
 def get_recent_news(limit: int = 10) -> list[dict]:
     """Get recent news for chat context injection."""
     return q("SELECT title, url, source FROM news_items ORDER BY rank ASC LIMIT %s", [limit])
+
+
+# ── Smart topic recommendation ────────────────────────────────────────────────
+
+# Interest-related KG entity types (subset of profile_types from knowledge_graph.py)
+_INTEREST_KG_TYPES = {"hobby", "food", "media", "tech", "activity"}
+
+
+def get_user_interest_keywords() -> set[str]:
+    """Extract user interest keywords from life_domains + knowledge graph.
+
+    Returns empty set for new users — the system degrades gracefully to
+    showing general news instead of personalized recommendations.
+    """
+    keywords: set[str] = set()
+
+    # 1) From life domains: salience > 0.15 → add domain keywords
+    try:
+        from services.psych.life_domains import DOMAINS, _load
+        data = _load()
+        for key, dom in DOMAINS.items():
+            salience = data.get(key, {}).get("salience", 0)
+            if salience > 0.15:
+                for kw in dom.get("keywords", []):
+                    if len(kw) >= 2:  # skip single-char keywords to reduce noise
+                        keywords.add(kw)
+    except Exception:
+        logger.debug("Failed to load life domains for interest keywords", exc_info=True)
+
+    # 2) From knowledge graph: hobby/food/media/tech/activity entities
+    try:
+        from services.memory.knowledge_graph import get_current_state
+        state = get_current_state()
+        for s in state:
+            if s.get("type") in _INTEREST_KG_TYPES:
+                name = s.get("name", "").strip()
+                if len(name) >= 2:
+                    keywords.add(name)
+    except Exception:
+        logger.debug("Failed to load KG for interest keywords", exc_info=True)
+
+    return keywords
+
+
+def _score_news(items: list[dict], keywords: set[str]) -> list[tuple[int, dict]]:
+    """Score news items by keyword overlap. Returns [(score, item), ...] sorted desc."""
+    if not keywords:
+        return []
+    scored = []
+    for item in items:
+        title = item.get("title", "").lower()
+        score = sum(1 for kw in keywords if kw in title)
+        if score > 0:
+            scored.append((score, item))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def get_smart_news_context(idle_min: float = 0) -> str:
+    """Build a single-line news hint for system prompt injection.
+
+    Strategy:
+    - If user has interests and a news item matches → inject 1 matched item
+    - Else if idle > 10 min (returning after a gap) → inject 1 general item
+    - Otherwise → empty string (no injection, keeps prompt clean)
+
+    Returns empty string when there's nothing worth injecting.
+    """
+    items = get_recent_news(20)
+    if not items:
+        return ""
+
+    keywords = get_user_interest_keywords()
+
+    # Path A: interest-matched news
+    if keywords:
+        scored = _score_news(items, keywords)
+        if scored:
+            _, item = scored[0]
+            src_label = _source_label(item.get("source", ""))
+            return (
+                f"\n\n## 你可能感兴趣的新闻（和用户的兴趣相关，自然聊到时可提）\n"
+                f"- [{src_label}] {item['title']}"
+            )
+
+    # Path B: cold start / idle return — general topic as icebreaker
+    if idle_min > 10:
+        item = items[0]
+        src_label = _source_label(item.get("source", ""))
+        return (
+            f"\n\n## 闲聊话题（用户刚回来，如果冷场可以自然提起）\n"
+            f"- [{src_label}] {item['title']}"
+        )
+
+    return ""
+
+
+def get_suggested_news(matched_limit: int = 3, general_limit: int = 3) -> dict:
+    """Return personalized + general news for the frontend topic bubbles API.
+
+    Returns: {"matched": [...], "general": [...]}
+    Each item: {"title", "url", "source"}
+    """
+    items = get_recent_news(30)
+    if not items:
+        return {"matched": [], "general": []}
+
+    keywords = get_user_interest_keywords()
+    matched = []
+    general = []
+
+    if keywords:
+        scored = _score_news(items, keywords)
+        matched = [
+            {"title": item["title"], "url": item.get("url", ""), "source": item.get("source", "")}
+            for _, item in scored[:matched_limit]
+        ]
+        # General = top items NOT in matched
+        matched_titles = {m["title"] for m in matched}
+        general = [
+            {"title": item["title"], "url": item.get("url", ""), "source": item.get("source", "")}
+            for item in items
+            if item["title"] not in matched_titles
+        ][:general_limit]
+    else:
+        general = [
+            {"title": item["title"], "url": item.get("url", ""), "source": item.get("source", "")}
+            for item in items[:general_limit]
+        ]
+
+    return {"matched": matched, "general": general}
+
+
+def _source_label(source: str) -> str:
+    """Human-readable label for a news source."""
+    labels = {
+        "zhihu": "知乎", "weibo": "微博", "github": "GitHub",
+        "bilibili": "B站", "baidu": "百度", "tophub": "热榜",
+    }
+    return labels.get(source, source)

@@ -80,6 +80,11 @@ def update_contagion(ai_label: str, user_affect: dict | None, mode: str):
     Called from _post_reply_pipeline. Compares current user affect with
     the previous turn's to measure the AI's emotional influence.
 
+    Uses a volatility-aware baseline: the user's typical per-turn emotional
+    fluctuation (EMA of |delta|) is tracked separately. Only attribute
+    changes to AI influence when |delta| exceeds 1.5× baseline volatility
+    — reducing false attribution from natural mood swings.
+
     Args:
         ai_label: The AI's expressed emotion label THIS turn (stored for next)
         user_affect: Current user Panksepp affect (updated from current msg)
@@ -90,7 +95,6 @@ def update_contagion(ai_label: str, user_affect: dict | None, mode: str):
 
     with _lock:
         state = _load_state()
-        # Use PREVIOUS turn's AI category (which actually influenced the user)
         prev_ai_cat = state.get("last_ai_category", "neutral")
         prev_mode = state.get("last_mode", "chat")
         current_neg = max(
@@ -100,22 +104,31 @@ def update_contagion(ai_label: str, user_affect: dict | None, mode: str):
         )
         prev_neg = state.get("last_user_neg", 0.0)
 
+        neg_delta = current_neg - prev_neg
+        abs_delta = abs(neg_delta)
+
+        # ── Volatility baseline: EMA of per-turn absolute deltas ──
+        baseline_vol = state.get("baseline_volatility", 0.03)
+        baseline_vol = round(baseline_vol * 0.95 + abs_delta * 0.05, 4)
+        state["baseline_volatility"] = baseline_vol
+
+        # Only attribute to AI influence when delta exceeds noise floor
+        # (1.5× baseline volatility, minimum 0.02 to prevent over-fitting)
+        noise_floor = max(0.02, baseline_vol * 1.5)
+        significant = abs_delta > noise_floor
+
         # Update contagion strength (EMA, alpha=0.05)
         # Expectation: positive AI → user neg decrease; negative AI → increase
-        neg_delta = current_neg - prev_neg
-        if prev_ai_cat == "positive" and neg_delta < -0.02:
-            # Previous positive AI expression + user distress decreased → works
+        if significant and prev_ai_cat == "positive" and neg_delta < -0.02:
             state["contagion_strength"] = round(
                 state.get("contagion_strength", 0.0) * 0.95 + 0.05, 4)
-        elif prev_ai_cat == "positive" and neg_delta > 0.02:
-            # Previous positive AI expression + user distress increased → not working
+        elif significant and prev_ai_cat == "positive" and neg_delta > 0.02:
             state["contagion_strength"] = round(
                 state.get("contagion_strength", 0.0) * 0.95 - 0.03, 4)
         elif prev_ai_cat == "negative" and neg_delta > 0.02:
-            # Previous negative AI expression + user distress increased → expected
             pass  # neutral, this is normal mirroring
         else:
-            # Decay toward 0
+            # Decay toward 0 (slower when delta is within noise floor)
             state["contagion_strength"] = round(
                 state.get("contagion_strength", 0.0) * 0.98, 4)
 

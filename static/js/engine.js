@@ -159,7 +159,19 @@ const ERROR_PATTERNS = {
   '嗯...': { cause: 'LLM 返回异常或 JSON 解析失败', fix: '检查 DeepSeek 控制台是否有报错，尝试简化 system prompt' },
 };
 
+var _MAX_DEBUG_ENTRIES = 200;
+
 function addDebugLog(level, title, msg, analysis) {
+  // Trim old entries when exceeding max to prevent memory leak
+  while (debugPanel.children.length > _MAX_DEBUG_ENTRIES) {
+    var last = debugPanel.lastElementChild;
+    if (last && last.classList.contains('log-entry')) {
+      last.remove();
+    } else {
+      break;
+    }
+  }
+
   const now = new Date().toLocaleTimeString();
   const entry = document.createElement('div');
   entry.className = 'log-entry';
@@ -227,9 +239,12 @@ addDebugLog('info', '启动', '页面加载完成', '正常启动，等待用户
 // ═══════════════════════════════════════════
 let soundOn = true;
 
+const SVG_SOUND_ON  = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+const SVG_SOUND_OFF = '<svg class="svg-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+
 soundToggle.addEventListener('click', () => {
   soundOn = !soundOn;
-  soundToggle.textContent = soundOn ? '🔊' : '🔇';
+  soundToggle.innerHTML = soundOn ? SVG_SOUND_ON : SVG_SOUND_OFF;
   soundToggle.classList.toggle('muted', !soundOn);
 });
 
@@ -238,10 +253,11 @@ soundToggle.addEventListener('click', () => {
 // ═══════════════════════════════════════════
 function resize() {
   canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.height = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
   if (state === STATE.CHAT) updateFacePixelTargets();
 }
 window.addEventListener('resize', resize);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 resize();
 
 // ═══════════════════════════════════════════

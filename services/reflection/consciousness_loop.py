@@ -189,7 +189,7 @@ def diary_seed():
     thoughts = q(
         "SELECT content FROM idle_thoughts "
         "WHERE EXTRACT(EPOCH FROM (NOW() - created_at)) < 7200 "
-        "AND content NOT LIKE '[灵感]%' "
+        "AND content NOT LIKE '[灵感]%%' "
         "ORDER BY id DESC"
     )
     if len(thoughts) < 3:
@@ -198,7 +198,7 @@ def diary_seed():
     # Check if we already seeded recently (within last 2 hours)
     last_seed = q(
         "SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs "
-        "FROM idle_thoughts WHERE content LIKE '[灵感]%' "
+        "FROM idle_thoughts WHERE content LIKE '[灵感]%%' "
         "ORDER BY id DESC LIMIT 1",
         fetch="one",
     )

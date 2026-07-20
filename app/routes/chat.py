@@ -14,13 +14,14 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.db import q, execute, init_db
-from app.utils import get_background_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear
+from app.utils import get_background_executor, get_low_priority_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear
 from app.models import ChatRequest
+from app.tracer import set_request_id, step
 from app.emotion_params import (
     make_default_frame, clamp_frame, jitter_frame,
     frame_to_db_values, row_to_frame_dict, PARAM_DEFAULTS, EMOTION_PARAMS,
 )
-from services.info.news import get_recent_news
+from services.info.news import get_recent_news, get_smart_news_context
 from services.memory.loader import build_user_context
 from services.memory.search import index_turn, build_memory_context
 from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
@@ -142,21 +143,29 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     except Exception:
         logger.warning("Curiosity seeding failed", exc_info=True)
     _archive_conversation(msg, reply, thinking)
+    # ── Priority 1: core state updates (main executor, 8 workers) ──
     get_background_executor().submit(update_drives_on_chat, msg, label, is_deep=is_deep)
     get_background_executor().submit(generate_prediction, msg, reply)
-    get_background_executor().submit(pre_dialogue_analyze)
     get_background_executor().submit(feedback, actual_emotion=label)
     get_background_executor().submit(_maybe_condense)
     get_background_executor().submit(_maybe_update_memory_files)
-    get_background_executor().submit(maybe_crystallize)
-    get_background_executor().submit(maybe_guard)
-    get_background_executor().submit(detect_situations)
-    get_background_executor().submit(distill_episode)
-    get_background_executor().submit(analyze_attachment)
-    get_background_executor().submit(check_and_intervene, reply)
-    get_background_executor().submit(maybe_extract_kg, msg)
-    get_background_executor().submit(self_evaluate, msg, reply, turn_id)
-    get_background_executor().submit(maybe_deep_audit)
+    # ── Priority 2: analysis / batch tasks (low-priority executor, 4 workers) ──
+    _lo = get_low_priority_executor()
+    _lo.submit(pre_dialogue_analyze)
+    _lo.submit(maybe_crystallize)
+    _lo.submit(maybe_guard)
+    _lo.submit(detect_situations)
+    _lo.submit(distill_episode)
+    _lo.submit(analyze_attachment)
+    _lo.submit(maybe_extract_kg, msg)
+    # Run drift check synchronously — it's fast (no LLM) and avoids
+    # queuing up multiple checks in the low-priority executor.
+    try:
+        check_and_intervene(reply)
+    except Exception:
+        logger.warning("Drift check failed", exc_info=True)
+    _lo.submit(self_evaluate, msg, reply, turn_id)
+    _lo.submit(maybe_deep_audit)
 
 
 def _maybe_condense():
@@ -169,25 +178,34 @@ def _maybe_condense():
 
         transcript_parts = []
         line_count = 0
+        # Only read recent lines for condensation — older content was already
+        # summarized in previous runs. Last 120 lines (~60 turns) is sufficient.
+        from collections import deque
         with archive_lock:
             with open(_ARCHIVE_PATH) as f:
-                for line in f:
-                    line_count += 1
-                    try:
-                        rec = json.loads(line)
-                        user = rec.get("user", "")
-                        assistant = rec.get("assistant", "")
-                        thinking = rec.get("thinking", "")
-                        if user:
-                            transcript_parts.append(f"用户：{user}")
-                        if thinking:
-                            transcript_parts.append(f"AI内心分析：{thinking}")
-                        if assistant:
-                            transcript_parts.append(f"AI：{assistant}")
-                    except Exception:
-                        logger.warning("Operation failed", exc_info=True)
+                recent_lines = list(deque(f, maxlen=120))
+        for line in recent_lines:
+            line_count += 1
+            try:
+                rec = json.loads(line)
+                user = rec.get("user", "")
+                assistant = rec.get("assistant", "")
+                thinking = rec.get("thinking", "")
+                if user:
+                    transcript_parts.append(f"用户：{user}")
+                if thinking:
+                    transcript_parts.append(f"AI内心分析：{thinking}")
+                if assistant:
+                    transcript_parts.append(f"AI：{assistant}")
+            except Exception:
+                logger.warning("Operation failed", exc_info=True)
 
-        if line_count - _last_condense_count < _CONDENSE_EVERY:
+        # Get actual total line count for threshold comparison
+        with archive_lock:
+            with open(_ARCHIVE_PATH) as f:
+                total_lines = sum(1 for _ in f)
+
+        if total_lines - _last_condense_count < _CONDENSE_EVERY:
             return
 
         transcript = "\n\n".join(transcript_parts)
@@ -210,7 +228,7 @@ def _maybe_condense():
         summary_path = SUMMARY_PATH
         with open(summary_path, "w") as f:
             f.write(summary)
-        _last_condense_count = line_count
+        _last_condense_count = total_lines
     except Exception:
         logger.warning("Operation failed", exc_info=True)
     finally:
@@ -386,22 +404,18 @@ def _upsert(label: str, frame: dict, reply: str, seq: str | None, color_fields: 
     values = frame_to_db_values(frame)
     col_names = list(EMOTION_PARAMS.keys())
     cf_json = json.dumps(color_fields, ensure_ascii=False) if color_fields else None
-    existing = q("SELECT id FROM emotion_cache WHERE label = %s", [label], fetch="one")
-    if existing:
-        set_clause = ", ".join(f"{c}=%s" for c in col_names)
-        execute(
-            f"UPDATE emotion_cache SET {set_clause}, reply=%s, sequence_data=%s, "
-            f"color_fields=%s, use_count=use_count+1, updated_at=NOW() WHERE id=%s",
-            values + [reply, seq, cf_json, existing["id"]],
-        )
-    else:
-        cols = ", ".join(col_names)
-        phs = ", ".join(["%s"] * len(col_names))
-        execute(
-            f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data, color_fields) "
-            f"VALUES (%s, {phs}, %s, %s, %s)",
-            [label] + values + [reply, seq, cf_json],
-        )
+    cols = ", ".join(col_names)
+    phs = ", ".join(["%s"] * len(col_names))
+    set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in col_names)
+    execute(
+        f"INSERT INTO emotion_cache (label, {cols}, reply, sequence_data, color_fields) "
+        f"VALUES (%s, {phs}, %s, %s, %s) "
+        f"ON CONFLICT (label) DO UPDATE SET "
+        f"{set_clause}, reply=EXCLUDED.reply, sequence_data=EXCLUDED.sequence_data, "
+        f"color_fields=EXCLUDED.color_fields, use_count=emotion_cache.use_count+1, "
+        f"updated_at=NOW()",
+        [label] + values + [reply, seq, cf_json],
+    )
 
 
 def _row_to_response(row):
@@ -531,7 +545,8 @@ def _think(msg: str) -> str | None:
 
 
 def _build_context(msg: str, thinking: str | None = None,
-                   intent_tags: list[str] | None = None) -> list:
+                   intent_tags: list[str] | None = None,
+                   idle_min: float = 0) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
@@ -636,13 +651,9 @@ def _build_context(msg: str, thinking: str | None = None,
     if attachment_ctx:
         system_msg += "\n" + attachment_ctx
 
-    news_items = get_recent_news(5)
-    if news_items:
-        lines = ["", "## 今天的热门话题（可以在对话中自然地提）："]
-        for n in news_items:
-            src_label = {"zhihu": "知乎", "weibo": "微博", "github": "GitHub", "bilibili": "B站", "baidu": "百度", "tophub": "热榜"}.get(n.get("source", ""), n.get("source", ""))
-            lines.append(f"- [{src_label}] {n['title']}")
-        system_msg += "\n" + "\n".join(lines)
+    smart_news = get_smart_news_context(idle_min)
+    if smart_news:
+        system_msg += "\n" + smart_news
 
     crystal_ctx = get_crystal_context()
     if crystal_ctx:
@@ -777,6 +788,17 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
                 if not isinstance(tags, list):
                     tags = []
                 tags = [t for t in tags if isinstance(t, str)][:8]
+                # Console log: LLM reply
+                reply_text = data.get("reply", "")
+                emotions = data.get("emotions", [])
+                if isinstance(emotions, list) and emotions and isinstance(emotions[0], dict):
+                    emo_label = emotions[0].get("label", "?")
+                elif isinstance(emotions, dict):
+                    emo_label = next(iter(emotions), "?")
+                else:
+                    emo_label = "?"
+                tag_str = ", ".join(tags) if tags else "-"
+                logger.info("💬 LLM → %s | %s | [%s]", emo_label, reply_text[:120], tag_str)
                 return data, None, tags
         logger.warning("No valid JSON in response: %s", raw[:200])
         return None, "嗯...刚刚组织语言出了点小岔子，再说一次？", []
@@ -855,7 +877,7 @@ def _generate_sprites(keywords: list) -> list:
         resp = client.chat.completions.create(
             model=get_llm_model(), messages=messages,
             temperature=0.7, max_tokens=16384,
-            timeout=20.0,
+            timeout=8.0,
         )
         raw = resp.choices[0].message.content
         # Log without newlines so we can see the full response
@@ -948,7 +970,7 @@ async def chat(req: ChatRequest):
     try:
         thinking = await asyncio.to_thread(_think, msg) if is_deep else None
         intent_tags = await _analyze_intent(msg)
-        messages = _build_context(msg, thinking, intent_tags=intent_tags)
+        messages = _build_context(msg, thinking, intent_tags=intent_tags, idle_min=idle_min)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
     finally:
         llm_foreground_clear(fg_token)
@@ -996,6 +1018,7 @@ async def chat(req: ChatRequest):
 @router.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
     init_db()
+    set_request_id()
     msg = req.message.strip()
     if not msg:
         return {"error": "empty message"}
@@ -1047,13 +1070,17 @@ async def chat_stream(req: ChatRequest):
         try:
             if is_deep:
                 yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
-                thinking = await asyncio.to_thread(_think, msg)
+                with step("think_deep"):
+                    thinking = await asyncio.to_thread(_think, msg)
             else:
                 thinking = None
 
-            intent_tags = await _analyze_intent(msg)
-            messages = _build_context(msg, thinking, intent_tags=intent_tags)
-            data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
+            with step("analyze_intent"):
+                intent_tags = await _analyze_intent(msg)
+            with step("build_context"):
+                messages = _build_context(msg, thinking, intent_tags=intent_tags, idle_min=idle_min)
+            with step("llm_main"):
+                data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
         finally:
             llm_foreground_clear(fg_token)
         if fallback:
@@ -1084,9 +1111,10 @@ async def chat_stream(req: ChatRequest):
             [msg, full_reply, parsed[0]["label"]], fetch="one",
         )
         turn_id = new_row["id"] if new_row else None
-        _post_reply_pipeline(msg, reply, parsed[0]["label"],
-                             thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
-                             is_deep=is_deep)
+        with step("post_reply_pipeline"):
+            _post_reply_pipeline(msg, reply, parsed[0]["label"],
+                                 thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
+                                 is_deep=is_deep)
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
@@ -1114,13 +1142,14 @@ async def chat_stream(req: ChatRequest):
             logger.info("Sprite keywords: %s", sprite_keywords)
         sprite_task = None
         if sprite_keywords:
-            fg_token2 = llm_foreground()
-            try:
-                sprite_task = asyncio.create_task(
-                    asyncio.to_thread(_generate_sprites, sprite_keywords)
-                )
-            finally:
-                llm_foreground_clear(fg_token2)
+            with step("generate_sprites", detail=",".join(sprite_keywords[:3])):
+                fg_token2 = llm_foreground()
+                try:
+                    sprite_task = asyncio.create_task(
+                        asyncio.to_thread(_generate_sprites, sprite_keywords)
+                    )
+                finally:
+                    llm_foreground_clear(fg_token2)
 
         sprites_sent = False
         # Compute dynamic typing delay for this reply
@@ -1197,7 +1226,7 @@ async def chat_stream(req: ChatRequest):
             # Signal end of final scene
             yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
 
-        yield f"data: {json.dumps({'type': 'done', 'source': 'llm'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'source': 'llm', 'raw': data}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

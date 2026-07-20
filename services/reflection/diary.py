@@ -153,7 +153,7 @@ def _fetch_idle_seeds(for_date: str) -> str:
     try:
         rows = q(
             "SELECT content FROM idle_thoughts "
-            "WHERE created_at::date = %s AND content LIKE '[灵感]%' "
+            "WHERE created_at::date = %s AND content LIKE '[灵感]%%' "
             "ORDER BY id DESC LIMIT 3",
             [for_date],
         )

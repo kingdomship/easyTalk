@@ -20,6 +20,10 @@ DB_CONFIG = {
 _pool = None
 
 
+class DBError(Exception):
+    """Raised when a database operation fails unexpectedly."""
+
+
 def _get_pool():
     global _pool
     if _pool is None:
@@ -33,8 +37,18 @@ def _conn():
     return c
 
 
+# Only match $digit placeholders that are standalone tokens (not inside
+# identifiers or after word chars), but NOT inside SQL string literals.
+# The negative lookbehind for ' prevents matching inside single-quoted strings.
+_PG_RE = re.compile(r"(?<![a-zA-Z0-9_'])\$\d+(?![a-zA-Z0-9_])")
+
+
 def _pg(sql):
-    return re.sub(r'\$\d+', '%s', sql)
+    converted = _PG_RE.sub('%s', sql)
+    # Safety net: warn if there are leftover $digit patterns inside quotes
+    if re.search(r"'[^']*\$\d+[^']*'", converted):
+        logger.warning("Possible $digit inside SQL string literal: %s", sql[:120])
+    return converted
 
 
 def q(sql, params=None, fetch="all"):
@@ -47,9 +61,12 @@ def q(sql, params=None, fetch="all"):
                 row = cur.fetchone()
                 return dict(row) if row is not None else None
             return [dict(r) for r in cur.fetchall()]
-    except Exception:
-        logger.warning("Operation failed", exc_info=True)
+    except psycopg2.Error as e:
+        logger.warning("DB query failed: %s | SQL: %s", e, sql[:200])
         return [] if fetch == "all" else None
+    except Exception:
+        logger.warning("Unexpected query error", exc_info=True)
+        raise DBError(f"Unexpected error in q(): {sql[:120]}")
     finally:
         _get_pool().putconn(conn)
 
@@ -61,9 +78,12 @@ def execute(sql, params=None):
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
             return cur.rowcount
-    except Exception:
-        logger.warning("Operation failed", exc_info=True)
+    except psycopg2.Error as e:
+        logger.warning("DB execute failed: %s | SQL: %s", e, sql[:200])
         return -1
+    except Exception:
+        logger.warning("Unexpected execute error", exc_info=True)
+        raise DBError(f"Unexpected error in execute(): {sql[:120]}")
     finally:
         _get_pool().putconn(conn)
 
@@ -324,6 +344,30 @@ def init_db():
     execute("""
         CREATE INDEX IF NOT EXISTS idx_self_eval_log_turn_id
         ON self_eval_log (turn_id)
+    """)
+    execute("""
+        CREATE TABLE IF NOT EXISTS system_trace (
+            id SERIAL PRIMARY KEY,
+            request_id VARCHAR(24) NOT NULL,
+            step_name VARCHAR(64) NOT NULL,
+            detail VARCHAR(200) DEFAULT '',
+            elapsed_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+            status VARCHAR(8) NOT NULL DEFAULT 'ok',
+            error_msg VARCHAR(300) DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_system_trace_rid
+        ON system_trace (request_id)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_system_trace_step
+        ON system_trace (step_name)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_system_trace_created_at
+        ON system_trace (created_at)
     """)
 
     _init_done = True

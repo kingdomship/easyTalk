@@ -23,6 +23,7 @@ def cleanup_old_data():
         _cleanup_idle_thoughts(retention_days=30)
         _cleanup_mood_history(retention_days=30)
         _cleanup_conversation_archive(max_lines=500, keep_lines=250)
+        _cleanup_system_trace(retention_days=7)
         logger.info("Data lifecycle cleanup completed")
     except Exception:
         logger.warning("Data cleanup failed", exc_info=True)
@@ -84,3 +85,11 @@ def _cleanup_conversation_archive(max_lines: int, keep_lines: int):
                 logger.info("Archive truncated: %d → %d lines", len(lines), keep_lines)
     except Exception:
         logger.warning("Archive truncation failed", exc_info=True)
+
+
+def _cleanup_system_trace(retention_days: int):
+    """Delete old system trace records."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    deleted = execute("DELETE FROM system_trace WHERE created_at < %s", [cutoff])
+    if deleted > 0:
+        logger.info("Cleaned %d old system trace records", deleted)

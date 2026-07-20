@@ -17,7 +17,7 @@ logger = logging.getLogger("emoji-chat")
 
 from app.routes import router
 from app.db import init_db
-from app.utils import get_background_executor
+from app.utils import get_background_executor, get_low_priority_executor
 from services.info.news import fetch_all
 from services.reflection.diary import generate_diary, generate_user_diary
 from services.emotion.affinity import init_affinity_db
@@ -101,6 +101,8 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
     executor = get_background_executor()
     executor.shutdown(wait=False)
+    lo_executor = get_low_priority_executor()
+    lo_executor.shutdown(wait=False)
 
 
 def _run_diary_catchup():
@@ -134,6 +136,8 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.endswith((".js", ".css")):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        if path == "/manifest.json":
+            response.headers["Content-Type"] = "application/manifest+json"
         return response
 
 
