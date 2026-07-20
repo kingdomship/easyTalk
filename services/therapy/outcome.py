@@ -164,7 +164,7 @@ def get_recent_outcomes(
     rows = q(
         """SELECT id, turn_id, intervention_type, trigger_intent,
                   distress_reduction, valence_improvement,
-                  user_msg, created_at
+                  created_at
            FROM intervention_outcomes
            WHERE session_id = %s
            ORDER BY id DESC LIMIT %s""",
