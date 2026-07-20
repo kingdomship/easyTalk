@@ -60,6 +60,7 @@ function loadAuxContent() {
   else if (auxTab === 'memory') loadMemoryContent();
   else if (auxTab === 'constellation') loadConstellationContent();
   else if (auxTab === 'safety') loadSafetyContent();
+  else if (auxTab === 'report') loadReportContent();
 }
 
 async function loadSafetyContent() {

@@ -1737,3 +1737,109 @@ body.therapy-mode #sendBtn {
   background: rgba(255,215,0,0.06); border-color: rgba(255,215,0,0.12); color: #d0c080;
 }
 .distill-result-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* ═══════════════════════════════════════════
+   分析报告面板
+   ═══════════════════════════════════════════ */
+
+.report-loading { text-align: center; padding: 60px 20px; color: #6a6a9a; font-size: 0.85rem; }
+
+.report-empty { text-align: center; padding: 60px 20px; }
+.report-empty-icon { font-size: 3rem; margin-bottom: 16px; }
+.report-empty-text { color: #b0b0d0; font-size: 0.95rem; margin-bottom: 8px; }
+.report-empty-hint { color: #6a6a9a; font-size: 0.75rem; margin-bottom: 24px; }
+.report-empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+.report-header { margin-bottom: 16px; }
+.report-title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.report-download-btn {
+  margin-left: auto; padding: 5px 14px; border-radius: 8px;
+  border: 1px solid rgba(124,131,255,0.2); background: rgba(124,131,255,0.06);
+  color: #b0b0ff; font-size: 0.7rem; cursor: pointer; font-family: inherit;
+  transition: all 0.2s; white-space: nowrap;
+}
+.report-download-btn:hover { background: rgba(124,131,255,0.15); border-color: rgba(124,131,255,0.35); }
+.report-title { font-size: 1.1rem; font-weight: 700; color: #e0e0f0; }
+.report-subtitle { font-size: 0.72rem; color: #6a6a9a; }
+
+.report-badge { display: inline-block; padding: 3px 10px; border-radius: 10px; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.03em; }
+.report-badge.milestone { background: rgba(255,215,0,0.12); color: #ffd54f; border: 1px solid rgba(255,215,0,0.2); }
+.report-badge.manual { background: rgba(124,131,255,0.1); color: #a0a8ff; border: 1px solid rgba(124,131,255,0.15); }
+.report-badge.sm { padding: 1px 8px; font-size: 0.62rem; }
+
+.report-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.report-actions-label { font-size: 0.7rem; color: #6a6a9a; }
+.report-gen-btn {
+  padding: 5px 14px; border-radius: 8px; border: 1px solid rgba(124,131,255,0.2);
+  background: rgba(124,131,255,0.06); color: #b0b0ff; font-size: 0.7rem;
+  cursor: pointer; transition: all 0.2s; font-family: inherit;
+}
+.report-gen-btn:hover { background: rgba(124,131,255,0.15); border-color: rgba(124,131,255,0.35); }
+.report-gen-btn.sm { padding: 3px 10px; font-size: 0.65rem; }
+.report-gen-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 卡片网格 */
+.report-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+
+.report-card {
+  background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px; padding: 16px;
+}
+.report-card-title { font-size: 0.75rem; font-weight: 600; color: #b0b0d0; margin-bottom: 12px; letter-spacing: 0.03em; }
+.report-card-empty { text-align: center; padding: 20px 10px; color: #5a5a7a; font-size: 0.75rem; }
+
+/* 情绪六维条 */
+.report-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.report-bar-label { width: 32px; font-size: 0.65rem; color: #8a8aaa; text-align: right; flex-shrink: 0; }
+.report-bar-track { flex: 1; height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+.report-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; min-width: 2px; }
+.report-bar-val { width: 36px; font-size: 0.6rem; color: #6a6a9a; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* 统计数值 */
+.report-stat-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.report-stat-num { font-size: 1.3rem; font-weight: 700; color: #d0d0e0; font-variant-numeric: tabular-nums; }
+.report-stat-label { font-size: 0.65rem; color: #6a6a9a; }
+
+/* 指标行 */
+.report-metric { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.report-metric-label { font-size: 0.7rem; color: #8a8aaa; flex: 1; }
+.report-metric-val { font-size: 0.78rem; color: #c0c0d0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.report-metric-sub { font-size: 0.6rem; color: #5a5a7a; }
+
+/* AI 洞察 */
+.report-insight {
+  background: rgba(124,131,255,0.04); border: 1px solid rgba(124,131,255,0.1);
+  border-radius: 12px; padding: 20px; margin-bottom: 20px;
+}
+.report-insight-title { font-size: 0.85rem; font-weight: 600; color: #c0c0e0; margin-bottom: 12px; }
+.report-insight-text { font-size: 0.8rem; color: #a0a0c0; line-height: 1.75; }
+
+.report-findings { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.report-finding-tag {
+  display: inline-block; padding: 4px 12px; border-radius: 8px;
+  background: rgba(255,215,0,0.06); border: 1px solid rgba(255,215,0,0.1);
+  font-size: 0.68rem; color: #d0c080;
+}
+
+.report-suggestions { margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.05); }
+.report-suggestions-title { font-size: 0.75rem; color: #a0a0c0; margin-bottom: 8px; }
+.report-suggestion-item { font-size: 0.73rem; color: #9090b0; padding: 4px 0; line-height: 1.6; }
+
+/* 历史列表 */
+.report-history-title { font-size: 0.78rem; font-weight: 600; color: #a0a0c0; margin-bottom: 10px; }
+.report-history-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: 8px; cursor: pointer; transition: background 0.2s;
+  border: 1px solid transparent; margin-bottom: 4px;
+}
+.report-history-item:hover { background: rgba(255,255,255,0.03); }
+.report-history-item.active { background: rgba(124,131,255,0.06); border-color: rgba(124,131,255,0.12); }
+.report-history-date { font-size: 0.7rem; color: #8a8aaa; flex: 1; font-variant-numeric: tabular-nums; }
+.report-history-days { font-size: 0.62rem; color: #5a5a7a; }
+
+/* 响应式: 600px 以下单列 */
+@media (max-width: 600px) {
+  .report-grid { grid-template-columns: 1fr; }
+  .report-bar-label { width: 28px; font-size: 0.6rem; }
+  .report-bar-val { width: 30px; font-size: 0.55rem; }
+}

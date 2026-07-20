@@ -519,4 +519,28 @@ def init_db():
         ON therapy_session_steps (session_id, step_index)
     """)
 
+    # ── 分析报告缓存 ────────────────────────────────────────────
+    execute("""
+        CREATE TABLE IF NOT EXISTS report_cache (
+            id SERIAL PRIMARY KEY,
+            report_type VARCHAR(20) NOT NULL,
+            milestone_label VARCHAR(20),
+            period_days INTEGER NOT NULL,
+            active_days INTEGER NOT NULL DEFAULT 0,
+            date_from DATE NOT NULL,
+            date_to DATE NOT NULL,
+            dashboard JSONB NOT NULL DEFAULT '{}',
+            ai_insight JSONB NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_report_cache_created
+        ON report_cache (created_at DESC)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_report_cache_type
+        ON report_cache (report_type, milestone_label)
+    """)
+
     _init_done = True

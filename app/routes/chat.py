@@ -154,6 +154,16 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     get_background_executor().submit(maybe_extract_kg, msg)
     get_background_executor().submit(self_evaluate, msg, reply, turn_id)
     get_background_executor().submit(maybe_deep_audit)
+    get_background_executor().submit(_check_report_milestone)
+
+
+def _check_report_milestone():
+    """检查是否需要生成里程碑报告."""
+    try:
+        from services.report.aggregator import check_milestone
+        check_milestone()
+    except Exception:
+        logger.warning("里程碑报告检测失败", exc_info=True)
 
 
 def _maybe_condense():
