@@ -24,6 +24,7 @@ from services.emotion.affect import init_affect_db
 from services.reflection.consciousness_loop import init_loop_db, idle_thought, mood_fluctuation, diary_seed, system2_consolidation
 from services.emotion.salience import init_salience_db
 from services.drive.engine import init_drive_db, drive_heartbeat
+from services.psych.behavioral_markers import compute_behavioral_markers
 from app.cleanup import cleanup_old_data
 from services.cognition.predictive_agent import offline_analysis
 from app.config import MEMORY_DIR
@@ -90,6 +91,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(offline_analysis, "cron", minute="*/7")
     scheduler.add_job(system2_consolidation, "cron", minute="*/23")
     scheduler.add_job(drive_heartbeat, "cron", minute="*/10")
+    scheduler.add_job(compute_behavioral_markers, "cron", minute="7,37")
     scheduler.start()
 
     # ── Catch-up: fill gaps from downtime ──────────────────────

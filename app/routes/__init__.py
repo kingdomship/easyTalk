@@ -11,6 +11,7 @@ from app.routes.therapy import router as therapy_router
 from app.routes.distill import router as distill_router
 from app.routes.personality import router as personality_router
 from app.routes.mood import router as mood_router
+from app.routes.psych import router as psych_router
 
 router = APIRouter()
 router.include_router(chat_router)
@@ -22,3 +23,4 @@ router.include_router(therapy_router)
 router.include_router(distill_router)
 router.include_router(personality_router)
 router.include_router(mood_router)
+router.include_router(psych_router)

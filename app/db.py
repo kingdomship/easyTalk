@@ -399,4 +399,42 @@ def init_db():
         )
     """)
 
+    # Hebbian crystal associations (Module 6: Memory upgrade)
+    execute("""
+        CREATE TABLE IF NOT EXISTS crystal_associations (
+            id SERIAL PRIMARY KEY,
+            crystal_id_a TEXT NOT NULL,
+            crystal_id_b TEXT NOT NULL,
+            weight REAL DEFAULT 0.1,
+            last_co_accessed TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(crystal_id_a, crystal_id_b)
+        )
+    """)
+
+    # Behavioral markers (trend analysis)
+    execute("""
+        CREATE TABLE IF NOT EXISTS behavioral_markers (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(50) DEFAULT 'default',
+            window_start TIMESTAMPTZ NOT NULL,
+            window_end TIMESTAMPTZ NOT NULL,
+            avg_latency_seconds REAL DEFAULT 0,
+            latency_trend_slope REAL DEFAULT 0,
+            latency_trend_direction VARCHAR(20) DEFAULT 'stable',
+            avg_user_msg_length REAL DEFAULT 0,
+            length_trend_slope REAL DEFAULT 0,
+            length_trend_direction VARCHAR(20) DEFAULT 'stable',
+            late_night_ratio REAL DEFAULT 0,
+            late_night_frequency INTEGER DEFAULT 0,
+            rhythm_stability REAL DEFAULT 0,
+            preferred_hour REAL DEFAULT 12,
+            circadian_consistency REAL DEFAULT 0,
+            computed_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_behavioral_markers_window
+        ON behavioral_markers (window_start, window_end)
+    """)
+
     _init_done = True
