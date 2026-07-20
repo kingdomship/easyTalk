@@ -29,6 +29,7 @@ from services.emotion.affect import update_affect, get_affect_context, get_valen
 from services.memory.crystallization import maybe_crystallize, get_crystal_context
 from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod, get_drive_temp_mod
 from services.identity.guard import maybe_guard, get_drift_correction
+from services.therapy.positive_psych import maybe_detect_strengths
 from services.identity.drift_detector import check_and_intervene
 from services.memory.knowledge_graph import maybe_extract_kg
 from services.cognition.predictive_agent import pre_dialogue_analyze, feedback, get_prediction_context
@@ -42,6 +43,7 @@ from services.therapy.crisis import crisis_keyword_check, crisis_llm_verify, get
 from services.therapy.intent import analyze_therapy_intent, get_therapy_modules
 from services.therapy.modules import assemble_therapy_modules, assemble_deescalation_module
 from services.therapy.deescalation import analyze_deescalation
+from services.therapy.somatic import analyze_polyvagal_state
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -144,6 +146,7 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     get_background_executor().submit(_maybe_update_memory_files)
     get_background_executor().submit(maybe_crystallize)
     get_background_executor().submit(maybe_guard)
+    get_background_executor().submit(maybe_detect_strengths)
     get_background_executor().submit(detect_situations)
     get_background_executor().submit(distill_episode)
     get_background_executor().submit(analyze_attachment)
@@ -545,7 +548,9 @@ def _build_context(msg: str, thinking: str | None = None,
                    crisis_result: dict | None = None,
                    therapy_intent: dict | None = None,
                    therapy_mode: bool = False,
-                   deescalation_result: dict | None = None) -> list:
+                   deescalation_result: dict | None = None,
+                   mi_result: dict | None = None,
+                   polyvagal_result: dict | None = None) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
@@ -601,6 +606,15 @@ def _build_context(msg: str, thinking: str | None = None,
     if affinity_ctx:
         system_msg += "\n\n" + affinity_ctx
 
+    # ── 积极心理学上下文 (性格优势, 零 LLM 成本) ──────────────
+    try:
+        from services.therapy.positive_psych import get_positive_psych_context
+        pos_ctx = get_positive_psych_context()
+        if pos_ctx:
+            system_msg += "\n\n" + pos_ctx
+    except Exception:
+        pass
+
     # ── 治疗模式全局引导 (therapy_mode 开关开启时) ──────────
     if therapy_mode:
         system_msg += (
@@ -629,11 +643,69 @@ def _build_context(msg: str, thinking: str | None = None,
             if therapy_prompt:
                 system_msg += "\n\n" + therapy_prompt
 
+    # ── DBT 注入 (高 distress 或降级严重时) ──────────────────
+    dbt_should_inject = False
+    severity = (deescalation_result or {}).get("severity", 0)
+    dbt_affect = None
+    if severity >= 4:
+        dbt_should_inject = True
+    if not dbt_should_inject:
+        try:
+            from services.emotion.affect import get_affect
+            dbt_affect = get_affect()
+            if dbt_affect and dbt_affect.get("panic", 0) > 0.5 and dbt_affect.get("fear", 0) > 0.5:
+                dbt_should_inject = True
+        except Exception:
+            pass
+    if dbt_should_inject:
+        try:
+            from services.therapy.dbt import get_dbt_context
+            if dbt_affect is None:
+                from services.emotion.affect import get_affect as _get_aff2
+                dbt_affect = _get_aff2()
+            dbt_ctx = get_dbt_context(affect=dbt_affect, deescalation_severity=severity)
+            if dbt_ctx:
+                system_msg += "\n\n" + dbt_ctx
+        except Exception:
+            pass
+
     # ── 情绪降级注入 (在治疗模块之后, 情绪上下文之前) ────
     if deescalation_result and deescalation_result.get("hostile"):
         deesc_prompt = assemble_deescalation_module()
         if deesc_prompt:
             system_msg += "\n\n" + deesc_prompt
+
+    # ── ACT 认知解离注入 (当 CBT 或 mindfulness 激活时附加) ──
+    if therapy_intent and therapy_intent.get("intent") in ("cbt_needed", "mindfulness"):
+        try:
+            from services.therapy.modules import assemble_act_module
+            act_prompt = assemble_act_module()
+            if act_prompt:
+                system_msg += "\n\n" + act_prompt
+        except Exception:
+            pass
+
+    # ── 高级 MI 注入 (改变谈话检测结果) ──
+    if mi_result:
+        try:
+            from services.therapy.mi_advanced import get_mi_context
+            mi_ctx = get_mi_context(mi_result)
+            if mi_ctx:
+                system_msg += "\n\n" + mi_ctx
+        except Exception:
+            pass
+
+    # ── 多迷走神经接地注入 ──
+    if polyvagal_result:
+        try:
+            from services.therapy.somatic import get_somatic_context
+            from services.emotion.affect import get_affect as _get_aff3
+            aff3 = _get_aff3()
+            somatic_ctx = get_somatic_context(result=polyvagal_result, affect=aff3)
+            if somatic_ctx:
+                system_msg += "\n\n" + somatic_ctx
+        except Exception:
+            pass
 
     affect_ctx = get_affect_context()
     if affect_ctx:
@@ -1000,6 +1072,9 @@ async def chat(req: ChatRequest):
         # ── 治疗管线: 并行意图分析 + 降级检测 + 危机检测 ──
         therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
         deescalation_task = asyncio.create_task(analyze_deescalation(msg))
+        from services.therapy.mi_advanced import analyze_change_talk
+        mi_task = asyncio.create_task(analyze_change_talk(msg))
+        pv_task = asyncio.create_task(analyze_polyvagal_state(msg))
         crisis_result = crisis_keyword_check(msg)
         crisis_result["llm_verified"] = False
         crisis_result["urgency"] = "none"
@@ -1021,12 +1096,24 @@ async def chat(req: ChatRequest):
         except Exception:
             logger.warning("降级检测失败", exc_info=True)
             deescalation_result = {"hostile": False, "type": "none", "severity": 0}
+        try:
+            mi_result = await mi_task
+        except Exception:
+            logger.warning("MI检测失败", exc_info=True)
+            mi_result = None
+        try:
+            pv_result = await pv_task
+        except Exception:
+            logger.warning('多迷走神经检测失败', exc_info=True)
+            pv_result = None
 
         messages = _build_context(msg, thinking, modules_config=modules_config,
                                   crisis_result=crisis_result,
                                   therapy_intent=therapy_intent,
                                   therapy_mode=req.therapy_mode,
-                                  deescalation_result=deescalation_result)
+                                  deescalation_result=deescalation_result,
+                                  mi_result=mi_result,
+                                  polyvagal_result=pv_result)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
     finally:
         llm_foreground_clear(fg_token)
@@ -1135,6 +1222,9 @@ async def chat_stream(req: ChatRequest):
             # ── 治疗管线: 并行意图分析 + 降级检测 + 危机检测 ──
             therapy_task = asyncio.create_task(analyze_therapy_intent(msg))
             deescalation_task = asyncio.create_task(analyze_deescalation(msg))
+            from services.therapy.mi_advanced import analyze_change_talk
+            mi_task = asyncio.create_task(analyze_change_talk(msg))
+            pv_task = asyncio.create_task(analyze_polyvagal_state(msg))
             # 第一层: 关键词危机检测 (同步, 零 LLM)
             crisis_result = crisis_keyword_check(msg)
             crisis_result["llm_verified"] = False
@@ -1160,6 +1250,16 @@ async def chat_stream(req: ChatRequest):
             except Exception:
                 logger.warning("降级检测失败(stream)", exc_info=True)
                 deescalation_result = {"hostile": False, "type": "none", "severity": 0}
+            try:
+                mi_result = await mi_task
+            except Exception:
+                logger.warning("MI检测失败", exc_info=True)
+                mi_result = None
+            try:
+                pv_result = await pv_task
+            except Exception:
+                logger.warning('多迷走神经检测失败', exc_info=True)
+                pv_result = None
 
             # ── 危机告警 SSE (severity>=1.5 或 LLM确认时立即推送) ──
             sev = crisis_result.get("severity", 0)
@@ -1170,6 +1270,15 @@ async def chat_stream(req: ChatRequest):
             # ── 降级通知 SSE (高严重度时推送) ──
             if deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4:
                 yield f"data: {json.dumps({'type': 'de_escalation', 'severity': deescalation_result.get('severity', 1), 'deesc_type': deescalation_result.get('type', 'none')}, ensure_ascii=False)}\n\n"
+
+            # ── 趋势预警 SSE (零 LLM, 每6h最多推一次同类型) ──
+            try:
+                from services.therapy.trend_warning import check_all_trends
+                trend_warnings = check_all_trends()
+                for tw in trend_warnings:
+                    yield f"data: {json.dumps({'type': 'trend_warning', **tw}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
 
             # ── 结构化干预 SSE: 呼吸练习 (mindfulness intent 时触发, 降级高严重度时抑制) ──
             if therapy_intent.get("intent") == "mindfulness" and therapy_intent.get("confidence", 0) >= 0.6:
@@ -1185,7 +1294,9 @@ async def chat_stream(req: ChatRequest):
                                       crisis_result=crisis_result,
                                       therapy_intent=therapy_intent,
                                       therapy_mode=req.therapy_mode,
-                                      deescalation_result=deescalation_result)
+                                      deescalation_result=deescalation_result,
+                                      mi_result=mi_result,
+                                      polyvagal_result=pv_result)
             data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, creativity, modules_config, batch_mode)
         finally:
             llm_foreground_clear(fg_token)

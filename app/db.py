@@ -437,4 +437,25 @@ def init_db():
         ON behavioral_markers (window_start, window_end)
     """)
 
+    # Trend warnings (trend analysis alerts)
+    execute("""
+        CREATE TABLE IF NOT EXISTS trend_warnings (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(50) DEFAULT 'default',
+            warning_type VARCHAR(30) NOT NULL,
+            severity REAL NOT NULL DEFAULT 0,
+            details JSONB DEFAULT '{}',
+            acknowledged BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_trend_warnings_type
+        ON trend_warnings (warning_type)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_trend_warnings_created
+        ON trend_warnings (created_at)
+    """)
+
     _init_done = True

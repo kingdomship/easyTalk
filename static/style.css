@@ -1306,6 +1306,27 @@ body.therapy-mode #sendBtn {
 }
 .deesc-toast-btn.ok:hover { background: rgba(180,140,120,0.12); border-color: rgba(180,140,120,0.7); }
 
+/* ── Trend bar ── */
+.trend-bar {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: rgba(124,131,255,0.92); backdrop-filter: blur(16px);
+  border-radius: 24px; padding: 10px 20px;
+  display: flex; align-items: center; gap: 14px;
+  font-size: 0.82rem; color: #fff;
+  opacity: 0; pointer-events: none;
+  transition: opacity .35s ease, transform .35s ease;
+  z-index: 100; max-width: 90vw; box-shadow: 0 4px 24px rgba(124,131,255,0.3);
+}
+.trend-bar.visible {
+  opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0);
+}
+.trend-bar .trend-bar-text { flex: 1; min-width: 0; line-height: 1.5; }
+.trend-bar .trend-bar-close {
+  background: none; border: none; color: rgba(255,255,255,0.7);
+  font-size: 1rem; cursor: pointer; padding: 2px;
+}
+.trend-bar .trend-bar-close:hover { color: #fff; }
+
 /* ── Safety panel ── */
 .safety-panel {
   display: flex; flex-direction: column; gap: 18px;

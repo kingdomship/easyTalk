@@ -141,3 +141,34 @@ function startSilenceCheck() {
     silenceCheckTimer = null;
   }, 300000); // 5 min
 }
+
+// ── Trend warning bar ──
+var trendBarTimer = null;
+var trendBarEl = document.getElementById('trend-bar');
+var trendBarText = trendBarEl ? trendBarEl.querySelector('.trend-bar-text') : null;
+var trendBarClose = trendBarEl ? trendBarEl.querySelector('.trend-bar-close') : null;
+
+if (trendBarClose) trendBarClose.addEventListener('click', hideTrendBar);
+
+/**
+ * @param {{ warning_type: string, severity: number, details: object }} evt
+ */
+function showTrendWarning(evt) {
+  if (!trendBarEl) return;
+  var messages = {
+    distress_rising: '情绪困扰似乎在持续加重...可能需要更多的支持。',
+    rhythm_break: '你的作息规律好像被打乱了，最近还好吗？',
+    crisis_accel: '最近危机信号变得更频繁了，也许现在是寻求帮助的时机。'
+  };
+  var text = messages[evt.warning_type] || '检测到需要关注的趋势模式。';
+  if (trendBarText) trendBarText.textContent = text;
+  trendBarEl.classList.add('visible');
+  clearTimeout(trendBarTimer);
+  trendBarTimer = setTimeout(hideTrendBar, 15000);
+}
+
+function hideTrendBar() {
+  if (!trendBarEl) return;
+  trendBarEl.classList.remove('visible');
+  clearTimeout(trendBarTimer);
+}

@@ -337,6 +337,16 @@ def update_risk_snapshot(session_id: str = "default"):
             [session_id, valence_ema, round(distress_ema, 4), crisis_count_24h, risk_level,
              datetime.now(timezone.utc)],
         )
+
+        # 趋势预警检测 (零 LLM)
+        try:
+            from services.therapy.trend_warning import check_all_trends
+            active = check_all_trends(session_id)
+            if active:
+                logger.info("趋势预警: %s",
+                             [(w["warning_type"], w["severity"]) for w in active])
+        except Exception:
+            pass
     except Exception:
         logger.warning("update_risk_snapshot failed", exc_info=True)
 

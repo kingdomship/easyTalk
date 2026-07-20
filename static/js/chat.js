@@ -437,6 +437,8 @@ async function sendMessage() {
             startSilenceCheck();
           } else if (evt.type === 'de_escalation') {
             if (typeof showDeescToast === 'function') showDeescToast(evt);
+          } else if (evt.type === 'trend_warning') {
+            if (typeof showTrendWarning === 'function') showTrendWarning(evt);
           } else if (evt.type === 'breathing_exercise') {
             startBreathingExercise(evt.pattern || 'simple', evt.duration || 120);
           } else if (evt.type === 'cbt_trigger') {
