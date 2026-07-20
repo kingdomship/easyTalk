@@ -19,33 +19,31 @@ from app.emotion_params import (
     make_default_frame, clamp_frame, jitter_frame,
     frame_to_db_values, row_to_frame_dict, PARAM_DEFAULTS, EMOTION_PARAMS,
 )
-from services.memory.loader import build_user_context
-from services.memory.search import index_turn, build_memory_context
-from services.emotion.affinity import update_affinity, get_affinity_context, adjust_expression_amplitude, scale_emotion_params
-from services.identity.prompt import SYSTEM_PROMPT, build_time_context, get_rhythm_temperature
+from services.memory.search import index_turn
+from services.emotion.affinity import update_affinity, adjust_expression_amplitude, scale_emotion_params
+from services.identity.prompt import get_rhythm_temperature
 from services.identity.sprite_prompt import SPRITE_SYSTEM_PROMPT, build_sprite_user_prompt
 from services.identity.sprite_library import lookup_sprite, persist_sprite
-from services.emotion.affect import update_affect, get_affect_context, get_valence_context
-from services.memory.crystallization import maybe_crystallize, get_crystal_context
-from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod, get_drive_temp_mod
-from services.identity.guard import maybe_guard, get_drift_correction
+from services.emotion.affect import update_affect
+from services.memory.crystallization import maybe_crystallize
+from services.cognition.state_machine import determine_mode, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod, get_drive_temp_mod
+from services.identity.guard import maybe_guard
 from services.therapy.positive_psych import maybe_detect_strengths
 from services.identity.drift_detector import check_and_intervene
 from services.memory.knowledge_graph import maybe_extract_kg
-from services.cognition.predictive_agent import pre_dialogue_analyze, feedback, get_prediction_context
-from services.cognition.dual_system import gate_decision, self_evaluate, maybe_deep_audit, get_self_eval_correction
-from services.memory.narrative import detect_situations, distill_episode, get_narrative_context
-from services.emotion.salience import update_salience, get_salience_context
-from services.emotion.attachment import analyze_attachment, get_attachment_context
+from services.cognition.predictive_agent import pre_dialogue_analyze, feedback
+from services.cognition.dual_system import gate_decision, self_evaluate, maybe_deep_audit
+from services.memory.narrative import detect_situations, distill_episode
+from services.emotion.salience import update_salience
+from services.emotion.attachment import analyze_attachment
 from services.cognition.prediction import generate_prediction, check_prediction
-from services.drive.engine import update_drives_on_chat, get_drive_context, get_drive_values
-from services.therapy.crisis import crisis_keyword_check, crisis_llm_verify, get_crisis_context, log_crisis_event, update_risk_snapshot
+from services.drive.engine import update_drives_on_chat, get_drive_values
+from services.therapy.crisis import crisis_keyword_check, crisis_llm_verify, log_crisis_event, update_risk_snapshot
 from services.therapy.intent import analyze_therapy_intent, get_therapy_modules
-from services.therapy.modules import assemble_therapy_modules, assemble_deescalation_module
 from services.therapy.deescalation import analyze_deescalation
 from services.therapy.somatic import analyze_polyvagal_state
 from services.therapy.outcome import log_intervention_outcome
-from services.therapy.session_machine import create_session, get_session_context, advance_step, get_active_session
+from services.therapy.session_machine import create_session, advance_step, get_active_session
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -553,269 +551,21 @@ def _build_context(msg: str, thinking: str | None = None,
                    deescalation_result: dict | None = None,
                    mi_result: dict | None = None,
                    polyvagal_result: dict | None = None) -> list:
-    time_context = build_time_context()
+    """组装 system prompt — 通过 CognitiveBus 注册式上下文注入."""
+    from services.cognition.cognitive_bus import get_cognitive_bus
 
-    # Use dynamic personality-based prompt if config exists, else fallback
-    try:
-        from services.identity.personality import build_dynamic_system_prompt, get_personality_context
-        system_msg = build_dynamic_system_prompt(msg=msg, modules_config=modules_config) + f"\n\n[当前时间节律]\n{time_context}"
-        personality_ctx = get_personality_context()
-        if personality_ctx:
-            system_msg += "\n\n" + personality_ctx
-    except Exception:
-        from services.identity.prompt import SYSTEM_PROMPT
-        system_msg = SYSTEM_PROMPT + f"\n\n[当前时间节律]\n{time_context}"
-
-    # ── 风格蒸馏注入 (仅在非治疗模式下) ──────────────────────
-    if not therapy_mode:
-        try:
-            from services.distill.profile_store import get_active_profile
-            active_profile = get_active_profile()
-            if active_profile:
-                sv_text = active_profile.style_vector.to_prompt_segment()
-                markers_text = "；".join(active_profile.linguistic_markers[:6])
-                vocab_text = "、".join(active_profile.vocabulary[:10])
-                samples_text = "\n".join(
-                    f'  - "{s}"' for s in active_profile.sample_sentences[:3]
-                )
-                distill_section = f"""## 对话风格模仿指令
-你正在模仿"{active_profile.name}"的说话风格。请自然地融入你的回复，不要刻意声明你在模仿。
-
-### 风格特征
-{sv_text}
-
-### 语言特征
-- 常用语气/语用特点: {markers_text if markers_text else "无明显特征"}
-- 高频词汇: {vocab_text if vocab_text else "无明显特征"}
-- 代表性语句:
-{samples_text if samples_text else "  无明显特征"}
-
-### 执行原则
-1. 模仿语气和节奏，而不是复制内容
-2. 保持自然，不要过度使用某几个特征词
-3. 在保持风格的同时，根据当前对话上下文灵活调整
-4. 风格是为对话服务的，不要让风格压过内容的表达
-5. 如果用户说"别模仿了"或要求切换回默认风格，立即停止模仿"""
-                system_msg += "\n\n" + distill_section
-        except Exception:
-            logger.warning("Failed to inject distill profile", exc_info=True)
-
-    user_context = build_user_context()
-    if user_context:
-        system_msg += "\n\n" + user_context
-
-    affinity_ctx = get_affinity_context()
-    if affinity_ctx:
-        system_msg += "\n\n" + affinity_ctx
-
-    # ── 积极心理学上下文 (性格优势, 零 LLM 成本) ──────────────
-    try:
-        from services.therapy.positive_psych import get_positive_psych_context
-        pos_ctx = get_positive_psych_context()
-        if pos_ctx:
-            system_msg += "\n\n" + pos_ctx
-    except Exception:
-        pass
-
-    # ── 治疗模式全局引导 (therapy_mode 开关开启时) ──────────
-    if therapy_mode:
-        system_msg += (
-            "\n\n## 疗愈模式\n"
-            "你正在与用户进行心理支持性质的对话。请注意：\n"
-            "1. 采用更温和、更耐心、更专业的语气\n"
-            "2. 优先倾听和共情，不急于给建议\n"
-            "3. 适当运用心理咨询的微技能（开放式提问、反映性倾听、肯定）\n"
-            "4. 保持专业性边界，不做诊断\n"
-            "5. 适用时自然融入 CBT 认知重评或正念引导"
-        )
-
-    # ── 治疗模块注入 (按需, 在情绪上下文之前) ──────────────
-    if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
-        intent = therapy_intent["intent"]
-        # 高严重度降级时抑制 CBT/mindfulness 模块
-        if deescalation_result and deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4:
-            if intent in ("cbt_needed", "mindfulness"):
-                pass  # 抑制, 不追加
-            else:
-                therapy_prompt = assemble_therapy_modules(intent)
-                if therapy_prompt:
-                    system_msg += "\n\n" + therapy_prompt
-        else:
-            therapy_prompt = assemble_therapy_modules(intent)
-            if therapy_prompt:
-                system_msg += "\n\n" + therapy_prompt
-
-    # ── DBT 注入 (高 distress 或降级严重时) ──────────────────
-    dbt_should_inject = False
-    severity = (deescalation_result or {}).get("severity", 0)
-    dbt_affect = None
-    if severity >= 4:
-        dbt_should_inject = True
-    if not dbt_should_inject:
-        try:
-            from services.emotion.affect import get_affect
-            dbt_affect = get_affect()
-            if dbt_affect and dbt_affect.get("panic", 0) > 0.5 and dbt_affect.get("fear", 0) > 0.5:
-                dbt_should_inject = True
-        except Exception:
-            pass
-    if dbt_should_inject:
-        try:
-            from services.therapy.dbt import get_dbt_context
-            if dbt_affect is None:
-                from services.emotion.affect import get_affect as _get_aff2
-                dbt_affect = _get_aff2()
-            dbt_ctx = get_dbt_context(affect=dbt_affect, deescalation_severity=severity)
-            if dbt_ctx:
-                system_msg += "\n\n" + dbt_ctx
-        except Exception:
-            pass
-
-    # ── 情绪降级注入 (在治疗模块之后, 情绪上下文之前) ────
-    if deescalation_result and deescalation_result.get("hostile"):
-        deesc_prompt = assemble_deescalation_module()
-        if deesc_prompt:
-            system_msg += "\n\n" + deesc_prompt
-
-    # ── ACT 认知解离注入 (当 CBT 或 mindfulness 激活时附加) ──
-    if therapy_intent and therapy_intent.get("intent") in ("cbt_needed", "mindfulness"):
-        try:
-            from services.therapy.modules import assemble_act_module
-            act_prompt = assemble_act_module()
-            if act_prompt:
-                system_msg += "\n\n" + act_prompt
-        except Exception:
-            pass
-
-    # ── 高级 MI 注入 (改变谈话检测结果) ──
-    if mi_result:
-        try:
-            from services.therapy.mi_advanced import get_mi_context
-            mi_ctx = get_mi_context(mi_result)
-            if mi_ctx:
-                system_msg += "\n\n" + mi_ctx
-        except Exception:
-            pass
-
-    # ── 多迷走神经接地注入 ──
-    if polyvagal_result:
-        try:
-            from services.therapy.somatic import get_somatic_context
-            from services.emotion.affect import get_affect as _get_aff3
-            aff3 = _get_aff3()
-            somatic_ctx = get_somatic_context(result=polyvagal_result, affect=aff3)
-            if somatic_ctx:
-                system_msg += "\n\n" + somatic_ctx
-        except Exception:
-            pass
-
-    # ── 治疗会话状态机注入 (跨轮次步骤追踪) ──────────────────
-    try:
-        session_ctx = get_session_context()
-        if session_ctx:
-            system_msg += "\n\n" + session_ctx
-    except Exception:
-        pass
-
-    affect_ctx = get_affect_context()
-    if affect_ctx:
-        system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
-
-    valence_ctx = get_valence_context()
-    if valence_ctx:
-        system_msg += "\n[情绪变化]\n" + valence_ctx
-
-    salience_ctx = get_salience_context()
-    if salience_ctx:
-        system_msg += "\n" + salience_ctx
-
-    # ── 危机上下文注入 (仅当检测到危机时) ──────────────────
-    if crisis_result:
-        sev = crisis_result.get("severity", 0)
-        llm_verified = crisis_result.get("llm_verified", False)
-        urgency = crisis_result.get("urgency", "moderate")
-        if sev >= 1.5 or llm_verified:
-            crisis_ctx = get_crisis_context(sev, urgency=urgency, llm_verified=llm_verified)
-            if crisis_ctx:
-                system_msg += "\n\n" + crisis_ctx
-
-    # Life domain context (what the user cares about lately)
-    try:
-        from services.psych.life_domains import get_life_domain_context
-        life_ctx = get_life_domain_context()
-        if life_ctx:
-            system_msg += "\n\n" + life_ctx
-    except Exception:
-        pass
-
-    # Drive state context (inner motivational state)
-    drive_ctx = get_drive_context()
-    if drive_ctx:
-        system_msg += "\n\n[内心驱动状态]\n" + drive_ctx
-
-    attachment_ctx = get_attachment_context()
-    if attachment_ctx:
-        system_msg += "\n" + attachment_ctx
-
-    crystal_ctx = get_crystal_context()
-    if crystal_ctx:
-        system_msg += "\n\n" + crystal_ctx
-
-    narrative_ctx = get_narrative_context()
-    if narrative_ctx:
-        system_msg += "\n\n" + narrative_ctx
-
-    memory_ctx = build_memory_context(msg)
-    if memory_ctx:
-        system_msg += "\n\n" + memory_ctx
-
-    if thinking:
-        system_msg += (
-            "\n\n[深度思考]\n以下是针对用户最新问题的内部分析，"
-            "请参考这些视角来组织你的回复，但不要直接复述分析内容，"
-            "而是用你一贯的口吻自然地融入见解：\n\n" + thinking
-        )
-
-    # MentalProcesses state machine mode (with drive influence)
-    from services.emotion.affect import get_affect
-    drives = get_drive_values()
-    mode = determine_mode(_is_deep_question(msg), get_affect(), drives=drives)
-    system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
-
-    # Curiosity hint — only in explore/chat modes (not comfort/deep/play)
-    if mode in ("explore", "chat"):
-        try:
-            from services.psych.entry_point import get_curiosity_hint
-            global _turn_count
-            hint = get_curiosity_hint(_turn_count)
-            if hint:
-                system_msg += "\n\n" + hint
-        except Exception:
-            pass
-
-    drift_correction = get_drift_correction()
-    if drift_correction:
-        system_msg += "\n\n" + drift_correction
-
-    self_eval_correction = get_self_eval_correction()
-    if self_eval_correction:
-        system_msg += "\n\n" + self_eval_correction
-
-    try:
-        from services.memory.knowledge_graph import get_knowledge_graph_context
-        kg_ctx = get_knowledge_graph_context()
-        if kg_ctx:
-            system_msg += "\n\n" + kg_ctx
-    except Exception:
-        logger.warning("Failed to get knowledge graph context", exc_info=True)
-
-    # Predictive agent context
-    try:
-        pred_ctx = get_prediction_context()
-        if pred_ctx:
-            system_msg += "\n\n" + pred_ctx
-    except Exception:
-        logger.warning("Failed to get prediction context", exc_info=True)
+    bus = get_cognitive_bus()
+    system_msg = bus.build(
+        msg,
+        thinking=thinking,
+        modules_config=modules_config,
+        crisis_result=crisis_result,
+        therapy_intent=therapy_intent,
+        therapy_mode=therapy_mode,
+        deescalation_result=deescalation_result,
+        mi_result=mi_result,
+        polyvagal_result=polyvagal_result,
+    )
 
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
