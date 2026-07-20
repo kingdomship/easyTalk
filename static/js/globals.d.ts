@@ -295,3 +295,6 @@ declare function checkChoices(text: string): void;
 declare function openAuxiliary(tab?: string): void;
 declare function closeAuxiliary(): void;
 declare function sendMessage(): Promise<void>;
+declare function refreshSessionProgress(): void;
+declare function showSessionBar(session: any): void;
+declare function hideSessionBar(): void;

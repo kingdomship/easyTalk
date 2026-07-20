@@ -484,4 +484,39 @@ def init_db():
         ON intervention_outcomes (created_at)
     """)
 
+    # ── 治疗会话状态机 ────────────────────────────────────────────
+    execute("""
+        CREATE TABLE IF NOT EXISTS therapy_sessions (
+            id SERIAL PRIMARY KEY,
+            session_type VARCHAR(20) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            current_step INTEGER NOT NULL DEFAULT 0,
+            total_steps INTEGER NOT NULL,
+            step_names TEXT[] DEFAULT '{}',
+            context JSONB DEFAULT '{}',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE TABLE IF NOT EXISTS therapy_session_steps (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL REFERENCES therapy_sessions(id),
+            step_index INTEGER NOT NULL,
+            step_name VARCHAR(50) NOT NULL DEFAULT '',
+            user_input TEXT DEFAULT '',
+            ai_response TEXT DEFAULT '',
+            turn_id INTEGER REFERENCES chat_history(id),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_therapy_sessions_status
+        ON therapy_sessions (status, session_type)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_session_steps_session
+        ON therapy_session_steps (session_id, step_index)
+    """)
+
     _init_done = True

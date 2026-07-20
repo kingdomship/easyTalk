@@ -450,6 +450,7 @@ async function sendMessage() {
               clearInterval(thinkingTimer);
               dlgBody.innerHTML = escapeHtml(streamedReply);
               checkChoices(streamedReply);
+              if (typeof refreshSessionProgress === 'function') refreshSessionProgress();
             }
           }
         } catch(e) {

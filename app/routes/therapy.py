@@ -161,3 +161,58 @@ async def intervention_insights(min_samples: int = Query(default=3, ge=1, le=50)
         "best_interventions": best,
         "recent_outcomes": recent,
     }
+
+
+# ── 治疗会话状态机 API ─────────────────────────────────────────
+
+
+@router.get("/session/active")
+async def get_active():
+    """获取当前活跃的治疗会话, 含当前步骤 prompt."""
+    from services.therapy.session_machine import get_active_session, get_step_prompt
+    session = get_active_session()
+    if not session:
+        return {"active": False}
+    prompt = get_step_prompt(session["session_type"], session["current_step"])
+    session["current_prompt"] = prompt
+    session["active"] = True
+    return session
+
+
+@router.post("/session/create")
+async def create(session_type: str = "cbt"):
+    """手动创建治疗会话 (cbt 或 dbt)."""
+    from services.therapy.session_machine import create_session
+    s = create_session(session_type)
+    if s:
+        return {"ok": True, "session": s}
+    return {"ok": False, "error": f"不支持的会话类型: {session_type}"}
+
+
+@router.post("/session/{session_id}/abandon")
+async def abandon(session_id: int):
+    """放弃一个活跃会话."""
+    from app.db import execute
+    from datetime import datetime, timezone
+    execute(
+        "UPDATE therapy_sessions SET status = 'abandoned', updated_at = %s WHERE id = %s",
+        [datetime.now(timezone.utc), session_id],
+    )
+    return {"ok": True}
+
+
+@router.get("/sessions")
+async def list_sessions(session_type: str | None = None, limit: int = 20):
+    """列出最近的会话."""
+    from services.therapy.session_machine import list_sessions
+    return list_sessions(session_type, limit)
+
+
+@router.get("/session/{session_id}")
+async def session_detail(session_id: int):
+    """获取会话详情含步骤."""
+    from services.therapy.session_machine import get_session_detail
+    detail = get_session_detail(session_id)
+    if detail:
+        return detail
+    return {"error": "会话不存在"}

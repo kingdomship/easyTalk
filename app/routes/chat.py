@@ -45,6 +45,7 @@ from services.therapy.modules import assemble_therapy_modules, assemble_deescala
 from services.therapy.deescalation import analyze_deescalation
 from services.therapy.somatic import analyze_polyvagal_state
 from services.therapy.outcome import log_intervention_outcome
+from services.therapy.session_machine import create_session, get_session_context, advance_step, get_active_session
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -708,6 +709,14 @@ def _build_context(msg: str, thinking: str | None = None,
         except Exception:
             pass
 
+    # ── 治疗会话状态机注入 (跨轮次步骤追踪) ──────────────────
+    try:
+        session_ctx = get_session_context()
+        if session_ctx:
+            system_msg += "\n\n" + session_ctx
+    except Exception:
+        pass
+
     affect_ctx = get_affect_context()
     if affect_ctx:
         system_msg += "\n\n[用户情绪状态]\n" + affect_ctx
@@ -1117,6 +1126,14 @@ async def chat(req: ChatRequest):
             except Exception:
                 pass
 
+        # 治疗会话状态机: CBT 会话自动创建
+        if therapy_intent and therapy_intent.get("intent") == "cbt_needed" and therapy_intent.get("confidence", 0) >= 0.5:
+            try:
+                if not get_active_session("cbt"):
+                    create_session("cbt")
+            except Exception:
+                pass
+
         messages = _build_context(msg, thinking, modules_config=modules_config,
                                   crisis_result=crisis_result,
                                   therapy_intent=therapy_intent,
@@ -1162,6 +1179,25 @@ async def chat(req: ChatRequest):
             log_intervention_outcome, turn_id, therapy_intent["intent"],
             affect_before, msg,
         )
+
+    # 治疗会话状态机: 推进步骤 (仅匹配的会话类型)
+    if turn_id:
+        try:
+            active = get_active_session()
+            if active:
+                _advance = False
+                if active["session_type"] == "cbt":
+                    _advance = therapy_intent and therapy_intent.get("intent") == "cbt_needed"
+                elif active["session_type"] == "dbt":
+                    _advance = (
+                        therapy_intent and therapy_intent.get("intent") in ("cbt_needed", "mindfulness")
+                    )
+                if _advance:
+                    get_background_executor().submit(
+                        advance_step, active["id"], msg, result["reply"], turn_id
+                    )
+        except Exception:
+            pass
 
     _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
                          thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
@@ -1317,6 +1353,14 @@ async def chat_stream(req: ChatRequest):
                 except Exception:
                     pass
 
+            # 治疗会话状态机: CBT 会话自动创建
+            if therapy_intent and therapy_intent.get("intent") == "cbt_needed" and therapy_intent.get("confidence", 0) >= 0.5:
+                try:
+                    if not get_active_session("cbt"):
+                        create_session("cbt")
+                except Exception:
+                    pass
+
             messages = _build_context(msg, thinking, modules_config=modules_config,
                                       crisis_result=crisis_result,
                                       therapy_intent=therapy_intent,
@@ -1365,6 +1409,25 @@ async def chat_stream(req: ChatRequest):
                 log_intervention_outcome, turn_id, therapy_intent["intent"],
                 _aff_before, msg,
             )
+
+        # 治疗会话状态机: 推进步骤 (仅匹配的会话类型)
+        if turn_id:
+            try:
+                active = get_active_session()
+                if active:
+                    _advance = False
+                    if active["session_type"] == "cbt":
+                        _advance = therapy_intent and therapy_intent.get("intent") == "cbt_needed"
+                    elif active["session_type"] == "dbt":
+                        _advance = (
+                            therapy_intent and therapy_intent.get("intent") in ("cbt_needed", "mindfulness")
+                        )
+                    if _advance:
+                        get_background_executor().submit(
+                            advance_step, active["id"], msg, reply, turn_id
+                        )
+            except Exception:
+                pass
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None
