@@ -18,6 +18,7 @@ import os
 import random
 import re
 
+from app.config import ARCHIVE_PATH, archive_lock
 from app.db import q
 
 logger = logging.getLogger("emoji-chat")
@@ -45,6 +46,13 @@ def _classify_topic(text: str) -> str:
         scores[topic] = score
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "events"
+
+
+def _all_matching_topics(text: str) -> set[str]:
+    """Return all galaxy topics that have at least one keyword match."""
+    text_lower = text.lower()
+    return {topic for topic, info in GALAXY_TOPICS.items()
+            if any(kw in text_lower for kw in info["keywords"])}
 
 
 def _star_position(galaxy_angle: float, index: int, total: int) -> tuple[float, float]:
@@ -98,6 +106,47 @@ def _load_episode_terms() -> set[str]:
     except Exception:
         pass
     return terms
+
+
+def _chinese_bigrams(text: str) -> set[str]:
+    """Extract Chinese bigrams from a text string."""
+    bigrams = set()
+    for i in range(len(text) - 1):
+        chunk = text[i:i + 2]
+        if all('一' <= c <= '鿿' for c in chunk):
+            bigrams.add(chunk)
+    return bigrams
+
+
+def _chinese_unigrams(text: str) -> set[str]:
+    """Extract Chinese characters from text."""
+    return {c for c in text if '一' <= c <= '鿿'}
+
+
+def _bigram_jaccard(text_a: str, text_b: str) -> float:
+    """Compute Jaccard similarity between two texts.
+
+    Uses a blend of unigram (char) and bigram overlap.
+    Unigrams capture semantic similarity when texts are short (<20 chars);
+    bigrams capture phrase-level overlap for longer texts.
+    """
+    ua, ub = _chinese_unigrams(text_a), _chinese_unigrams(text_b)
+    ba, bb = _chinese_bigrams(text_a), _chinese_bigrams(text_b)
+    if (not ua or not ub) and (not ba or not bb):
+        return 0.0
+    # Unigram Jaccard
+    u_inter = len(ua & ub)
+    u_union = len(ua | ub) or 1
+    u_jac = u_inter / u_union
+    # Bigram Jaccard
+    b_inter = len(ba & bb)
+    b_union = len(ba | bb) or 1
+    b_jac = b_inter / b_union
+    # Blend: weight bigrams higher when available, fall back to unigrams
+    if b_union > 3:
+        return round(b_jac * 0.7 + u_jac * 0.3, 4)
+    else:
+        return round(u_jac, 4)
 
 
 # Keywords that signal a significant event / declaration / decision
@@ -505,6 +554,63 @@ def build_constellation() -> dict:
             _add_memory(r["id"] + 10000, content, imp,
                         r.get("use_count", 1), source="insight")
 
+    # ── Source 5: Knowledge Graph entities (persistent, no decay) ──
+    try:
+        from services.memory.knowledge_graph import get_current_state
+        kg_state = get_current_state()
+        entity_seen = set()
+        for s in kg_state[:30]:
+            name = (s.get("name") or "")[:40]
+            etype = s.get("type", "")
+            relation = s.get("relation", "")
+            if not name or name in entity_seen:
+                continue
+            entity_seen.add(name)
+            relation_cn = {
+                "likes": "喜欢", "loves": "热爱", "prefers": "偏好",
+                "dislikes": "不喜欢", "hates": "讨厌",
+                "works_at": "工作于", "studies": "学习", "uses": "使用",
+            }
+            rel_text = relation_cn.get(relation, "")
+            content = f"{rel_text}{name}"[:100]
+            # KG entities are stable facts — moderate importance, no decay
+            kg_imp = 0.35 + s.get("strength", 0.5) * 0.15
+            _add_memory(next_artificial_id, content,
+                        round(min(0.65, kg_imp), 3),
+                        max(1, int(s.get("strength", 0.5) * 10)),
+                        source="kg")
+            next_artificial_id += 1
+    except Exception:
+        logger.warning("Failed to load KG entities for constellation", exc_info=True)
+
+    # ── Source 6: Recent conversation moments (last ~15 turns, temporal texture) ──
+    try:
+        if os.path.exists(ARCHIVE_PATH):
+            with archive_lock:
+                with open(ARCHIVE_PATH) as f:
+                    all_lines = f.readlines()
+            recent_lines = all_lines[-30:]  # last 15 turns = 30 lines
+            moment_count = 0
+            for line in reversed(recent_lines):
+                if moment_count >= 15:
+                    break
+                try:
+                    rec = json.loads(line.strip())
+                    user_msg = rec.get("user", "")
+                    if user_msg and len(user_msg) > 3:
+                        content = user_msg[:60]
+                        # Recent moments have low-but-nonzero importance, fading by recency
+                        moment_imp = 0.15 + moment_count * 0.01
+                        _add_memory(next_artificial_id, content,
+                                    round(moment_imp, 3),
+                                    1, source="moment")
+                        next_artificial_id += 1
+                        moment_count += 1
+                except Exception:
+                    pass
+    except Exception:
+        logger.warning("Failed to load recent moments for constellation", exc_info=True)
+
     # ── Fallback: if nothing loaded, use plain emotion_cache ──
     if not all_memories:
         fallback = q(
@@ -554,6 +660,7 @@ def build_constellation() -> dict:
                 "y": y,
                 "size": round(size, 1),
                 "importance": round(mem["importance"], 2),
+                "_topic": topic,
             })
 
         galaxies.append({
@@ -565,16 +672,61 @@ def build_constellation() -> dict:
             "stars": stars,
         })
 
-    # ── Connections (lowered threshold from 0.4 → 0.25 for richer graph) ──
+    # ── Connections ──
     connections = []
+    seen_pairs = set()  # track (min_id, max_id) to avoid duplicates
+
+    # 1) Same-galaxy adjacency (importance-sorted)
     for galaxy in galaxies:
         important_stars = [s for s in galaxy["stars"] if s["importance"] > 0.25]
         for i in range(len(important_stars)):
             for j in range(i + 1, min(i + 3, len(important_stars))):
-                connections.append({
-                    "from_id": important_stars[i]["id"],
-                    "to_id": important_stars[j]["id"],
-                })
+                a, b = important_stars[i]["id"], important_stars[j]["id"]
+                key = (min(a, b), max(a, b))
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    connections.append({"from_id": a, "to_id": b, "weight": 0.5})
+
+    # 2) Cross-galaxy semantic connections (bigram Jaccard)
+    id_to_content = {mem["id"]: mem["content"] for mem in merged}
+    all_stars = []
+    for g in galaxies:
+        all_stars.extend(g["stars"])
+    # Only consider stars with importance > 0.2 for cross-galaxy linking
+    candidates = [s for s in all_stars if s["importance"] > 0.2 and s["id"] in id_to_content]
+    # Cap: max 5 cross-galaxy edges per star
+    cross_counts = {s["id"]: 0 for s in candidates}
+    for i in range(len(candidates)):
+        a = candidates[i]
+        content_a = id_to_content.get(a["id"], "")
+        if not content_a:
+            continue
+        for j in range(i + 1, len(candidates)):
+            b = candidates[j]
+            # Skip same-galaxy pairs (already handled by adjacency above)
+            if a.get("_topic") == b.get("_topic"):
+                continue
+            if cross_counts[a["id"]] >= 5:
+                break  # a is at cap, no need to check further b's for this a
+            if cross_counts[b["id"]] >= 5:
+                continue
+            content_b = id_to_content.get(b["id"], "")
+            if not content_b:
+                continue
+            sim = _bigram_jaccard(content_a, content_b)
+            # Bonus: secondary-topic keyword overlap between texts
+            topics_a = _all_matching_topics(content_a)
+            topics_b = _all_matching_topics(content_b)
+            shared = topics_a & topics_b
+            if shared:
+                sim += min(len(shared), 2) * 0.03
+            if sim >= 0.04:
+                key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    connections.append({"from_id": a["id"], "to_id": b["id"], "weight": round(sim, 3)})
+                    cross_counts[a["id"]] += 1
+                    cross_counts[b["id"]] += 1
 
     # ── Core labels from persona/profile ──
     user_label = "我"

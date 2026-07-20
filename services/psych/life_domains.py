@@ -69,8 +69,8 @@ DOMAINS = {
 
 # Affect dimension → status mapping
 # High SEEKING + PLAY → positive; high FEAR/PANIC/RAGE → negative
-_POSITIVE_AFFECT = {"SEEKING", "PLAY", "CARE"}
-_NEGATIVE_AFFECT = {"FEAR", "PANIC", "RAGE"}
+_POSITIVE_AFFECT = {"seeking", "play", "care"}
+_NEGATIVE_AFFECT = {"fear", "rage", "panic"}
 
 _lock = threading.Lock()
 
@@ -92,8 +92,8 @@ def _load() -> dict:
 
 def _save(data: dict):
     try:
-        with open(LIFE_DOMAINS_PATH, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        from app.config import atomic_write
+        atomic_write(LIFE_DOMAINS_PATH, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception:
         logger.warning("Failed to save life domains", exc_info=True)
 
@@ -119,8 +119,8 @@ def infer_status(msg: str, affect: dict | None = None) -> str:
     Falls back to simple negation-word heuristics if affect is unavailable.
     """
     if affect:
-        pos = sum(affect.get(dim.lower(), 0) for dim in _POSITIVE_AFFECT)
-        neg = sum(affect.get(dim.lower(), 0) for dim in _NEGATIVE_AFFECT)
+        pos = sum(affect.get(dim, 0) for dim in _POSITIVE_AFFECT)
+        neg = sum(affect.get(dim, 0) for dim in _NEGATIVE_AFFECT)
         if pos - neg > 0.1:
             return "positive"
         elif neg - pos > 0.1:

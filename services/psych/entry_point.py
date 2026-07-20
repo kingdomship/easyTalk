@@ -42,8 +42,8 @@ def _load() -> list[dict]:
 
 def _save(items: list[dict]):
     try:
-        with open(CURIOSITY_PATH, "w") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        from app.config import atomic_write
+        atomic_write(CURIOSITY_PATH, json.dumps(items, ensure_ascii=False, indent=2))
     except Exception:
         logger.warning("Failed to save curiosity queue", exc_info=True)
 

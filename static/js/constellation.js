@@ -34,19 +34,33 @@ const Constellation = (() => {
   let dragNodeOrigX = 0, dragNodeOrigY = 0;
   let pointerDownX = 0, pointerDownY = 0;
   let pointerMoved = false;
-  const DRAG_THRESHOLD = 5;    // pixels — below this is a click, above is a drag
+  const DRAG_THRESHOLD_MOUSE = 4;   // mouse is precise
+  const DRAG_THRESHOLD_TOUCH = 12;  // finger jitter on capacitive screens
+
+  // Inertia / momentum for panning
+  let panVelX = 0, panVelY = 0;
+  let viewVX = 0, viewVY = 0;
+  let lastPanTime = 0;
+
+  // Long-press on touch devices
+  let longPressTimer = null;
+  let longPressFired = false;  // prevent tap from also firing after long-press
+  const LONG_PRESS_MS = 600;
+
+  // Pinch zoom midpoint tracking
+  let pinchMidX = 0, pinchMidY = 0;
 
   // Canvas dimensions
   let W = 800, H = 600;
   let CX = 400, CY = 300;
 
-  // Physics config
-  const REPULSION = 1800;
-  const SPRING_LEN = 120;
-  const SPRING_K = 0.04;
-  const DAMPING = 0.88;
-  const CENTER_GRAVITY = 0.003;
-  const MIN_VEL = 0.05;
+  // Physics config — tuned for calm, grounded feel (not bouncy)
+  const REPULSION = 1000;       // lower push = nodes stay closer, less chaotic
+  const SPRING_LEN = 130;       // slightly looser rest distance
+  const SPRING_K = 0.015;       // weaker springs = less oscillation
+  const DAMPING = 0.78;         // more friction = faster settling
+  const CENTER_GRAVITY = 0.005; // stronger center pull = tighter cluster
+  const MIN_VEL = 0.08;         // stop sooner = less micro-jitter
 
   let time = 0;
 
@@ -57,7 +71,7 @@ const Constellation = (() => {
    *             x: number, y: number, vx: number, vy: number,
    *             size: number, color: string, galaxy: string,
    *             isCore: boolean, coreType: ('user'|'ai'|null) }} GraphNode
-   * @typedef {{ from: number, to: number }} GraphEdge
+   * @typedef {{ from: number, to: number, weight: number }} GraphEdge
    */
 
   // ── Init ─────────────────────────────────────────────────
@@ -95,7 +109,7 @@ const Constellation = (() => {
       const fromNode = nodes.find(n => n.id === c.from_id);
       const toNode = nodes.find(n => n.id === c.to_id);
       if (fromNode && toNode) {
-        edges.push({ from: c.from_id, to: c.to_id });
+        edges.push({ from: c.from_id, to: c.to_id, weight: c.weight || 0.5 });
       }
     }
 
@@ -167,7 +181,8 @@ const Constellation = (() => {
       let dx = b.x - a.x;
       let dy = b.y - a.y;
       const dist = Math.hypot(dx, dy) || 1;
-      const targetLen = SPRING_LEN * (1 + (2 - a.importance - b.importance) * 0.5);
+      const weightFactor = 1 - (e.weight || 0.5) * 0.5;  // stronger edges → shorter spring
+      const targetLen = SPRING_LEN * weightFactor * (1 + (2 - a.importance - b.importance) * 0.5);
       const displacement = dist - targetLen;
       const force = SPRING_K * displacement;
       const fx = (dx / dist) * force;
@@ -215,10 +230,20 @@ const Constellation = (() => {
     time += 0.016;
     stepPhysics();
 
-    // Smooth zoom/pan
-    zoom += (targetZoom - zoom) * 0.1;
-    viewX += (targetViewX - viewX) * 0.1;
-    viewY += (targetViewY - viewY) * 0.1;
+    // Apply pan inertia (decay per frame, stops when dragging)
+    if (!dragBg && (Math.abs(viewVX) > 0.05 || Math.abs(viewVY) > 0.05)) {
+      targetViewX += viewVX;
+      targetViewY += viewVY;
+      viewVX *= 0.85;  // faster decay for snappier stop
+      viewVY *= 0.85;
+      if (Math.abs(viewVX) < 0.05) viewVX = 0;
+      if (Math.abs(viewVY) < 0.05) viewVY = 0;
+    }
+
+    // Smooth zoom/pan — responsive but not floaty
+    zoom += (targetZoom - zoom) * 0.14;
+    viewX += (targetViewX - viewX) * 0.14;
+    viewY += (targetViewY - viewY) * 0.14;
 
     draw(time);
     animId = requestAnimationFrame(tick);
@@ -259,7 +284,8 @@ const Constellation = (() => {
 
       const isHovered = hoveredId === e.from || hoveredId === e.to;
       const alpha = isHovered ? 0.5 : (selectedId && selectedId !== e.from && selectedId !== e.to ? 0.03 : 0.12);
-      const width = isHovered ? 1.2 : 0.5;
+      const baseWidth = 0.5 + (e.weight || 0.5) * 4;
+      const width = isHovered ? baseWidth * 2 : baseWidth;
 
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
@@ -431,20 +457,33 @@ const Constellation = (() => {
       // Check if pointer has moved beyond click threshold
       const dx = e.clientX - pointerDownX;
       const dy = e.clientY - pointerDownY;
-      if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+      if (Math.abs(dx) > DRAG_THRESHOLD_MOUSE || Math.abs(dy) > DRAG_THRESHOLD_MOUSE) {
         pointerMoved = true;
       }
       if (dragNode) {
         const { x, y } = screenToWorld(e.clientX, e.clientY);
         dragNode.x = x;
         dragNode.y = y;
+        // Track pan velocity for inertia
+        if (lastPanTime > 0) {
+          const dt = (performance.now() - lastPanTime) * 0.06; // scale to ~frame units
+          panVelX = (x - dragNodeOrigX) / Math.max(dt, 1);
+          panVelY = (y - dragNodeOrigY) / Math.max(dt, 1);
+        }
+        dragNodeOrigX = x; dragNodeOrigY = y;
+        lastPanTime = performance.now();
         return;
       }
       if (dragBg) {
+        // Track pan velocity for inertia
+        const prevX = targetViewX, prevY = targetViewY;
         targetViewX = e.clientX - dragStartX;
         targetViewY = e.clientY - dragStartY;
         viewX = targetViewX;
         viewY = targetViewY;
+        panVelX = targetViewX - prevX;
+        panVelY = targetViewY - prevY;
+        lastPanTime = performance.now();
         return;
       }
       const { x, y } = screenToWorld(e.clientX, e.clientY);
@@ -472,6 +511,11 @@ const Constellation = (() => {
         if (window._onConstellationStarClick) {
           window._onConstellationStarClick(null);
         }
+      }
+      // Apply pan inertia on release
+      if (dragBg && (Math.abs(panVelX) > 0.5 || Math.abs(panVelY) > 0.5)) {
+        viewVX = panVelX;
+        viewVY = panVelY;
       }
       dragNode = null;
       dragBg = false;
@@ -502,6 +546,10 @@ const Constellation = (() => {
     // Touch support
     let touchDist0 = 0;
     canvas.addEventListener("touchstart", (e) => {
+      // Clear any stale long-press state
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      longPressFired = false;
+
       if (e.touches.length === 1) {
         pointerDownX = e.touches[0].clientX;
         pointerDownY = e.touches[0].clientY;
@@ -512,6 +560,22 @@ const Constellation = (() => {
           dragNode = node;
           dragNodeOrigX = node.x;
           dragNodeOrigY = node.y;
+          // Start long-press timer for touch devices
+          longPressTimer = setTimeout(() => {
+            if (dragNode && !pointerMoved && !longPressFired) {
+              longPressFired = true;
+              longPressTimer = null;
+              selectedId = dragNode.id;
+              if (window._onConstellationStarClick && !dragNode.isCore) {
+                window._onConstellationStarClick({
+                  id: dragNode.id, tag: dragNode.tag, summary: dragNode.summary,
+                  importance: dragNode.importance, color: dragNode.color,
+                  galaxy: dragNode.galaxy,
+                  galaxyName: (galaxies.find(g => g.topic === dragNode.galaxy) || {}).label || dragNode.galaxy,
+                });
+              }
+            }
+          }, LONG_PRESS_MS);
         } else {
           dragBg = true;
           dragStartX = e.touches[0].clientX - targetViewX;
@@ -520,9 +584,14 @@ const Constellation = (() => {
       } else if (e.touches.length === 2) {
         dragBg = false;
         dragNode = null;
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         touchDist0 = Math.hypot(dx, dy);
+        // Track pinch midpoint for anchor-fixed zoom
+        const rect = canvas.getBoundingClientRect();
+        pinchMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        pinchMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
       }
     }, { passive: false });
 
@@ -531,30 +600,50 @@ const Constellation = (() => {
       if (e.touches.length === 1) {
         const dx = e.touches[0].clientX - pointerDownX;
         const dy = e.touches[0].clientY - pointerDownY;
-        if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+        if (Math.abs(dx) > DRAG_THRESHOLD_TOUCH || Math.abs(dy) > DRAG_THRESHOLD_TOUCH) {
           pointerMoved = true;
         }
+        // Clear long-press timer if user is dragging
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       }
       if (e.touches.length === 1 && dragNode) {
         const { x, y } = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
         dragNode.x = x;
         dragNode.y = y;
+        dragNodeOrigX = x; dragNodeOrigY = y;
       } else if (e.touches.length === 1 && dragBg) {
+        const prevX = targetViewX, prevY = targetViewY;
         targetViewX = e.touches[0].clientX - dragStartX;
         targetViewY = e.touches[0].clientY - dragStartY;
         viewX = targetViewX; viewY = targetViewY;
+        panVelX = targetViewX - prevX;
+        panVelY = targetViewY - prevY;
       } else if (e.touches.length === 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const newDist = Math.hypot(dx, dy);
-        if (touchDist0 > 0) targetZoom *= newDist / touchDist0;
-        targetZoom = Math.max(0.2, Math.min(3.0, targetZoom));
-        touchDist0 = newDist;
+        if (touchDist0 > 0 && newDist > 0) {
+          const rect = canvas.getBoundingClientRect();
+          const newMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+          const newMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+          const scale = newDist / touchDist0;
+          const newZoom = Math.max(0.2, Math.min(3.0, targetZoom * scale));
+          // Keep the world point under the pinch midpoint fixed
+          targetViewX = newMidX - CX - (pinchMidX - CX - viewX) * (newZoom / zoom);
+          targetViewY = newMidY - CY - (pinchMidY - CY - viewY) * (newZoom / zoom);
+          targetZoom = newZoom;
+          pinchMidX = newMidX;
+          pinchMidY = newMidY;
+          touchDist0 = newDist;
+        }
       }
     }, { passive: false });
 
     function onTouchEnd() {
-      if (dragNode && !pointerMoved) {
+      // Clear long-press timer if it hasn't fired yet
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+
+      if (dragNode && !pointerMoved && !longPressFired) {
         // Tap on node — select and show bubble
         selectedId = dragNode.id;
         if (window._onConstellationStarClick && !dragNode.isCore) {
@@ -566,12 +655,17 @@ const Constellation = (() => {
           });
         }
       }
-      if (!dragNode && !dragBg && !pointerMoved) {
+      if (!dragNode && !dragBg && !pointerMoved && !longPressFired) {
         // Tap on blank — deselect and close bubble
         selectedId = null;
         if (window._onConstellationStarClick) {
           window._onConstellationStarClick(null);
         }
+      }
+      // Apply pan inertia on release
+      if (dragBg && (Math.abs(panVelX) > 0.5 || Math.abs(panVelY) > 0.5)) {
+        viewVX = panVelX;
+        viewVY = panVelY;
       }
       dragNode = null;
       dragBg = false;

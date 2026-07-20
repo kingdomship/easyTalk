@@ -14,18 +14,15 @@ import math
 import os
 import shutil
 import threading
+from datetime import datetime, timezone
 
 logger = logging.getLogger("emoji-chat")
 
 from app.config import ARCHIVE_PATH, CRYSTAL_PATH, MEMORY_DIR, archive_lock
 
-_CHECK_EVERY = 10  # base check interval (fallback when prediction error is low)
-_MIN_CONSOLIDATION_GAP = 5  # minimum turns between consolidations
-_MAX_CONSOLIDATION_GAP = 20  # force consolidation after this many turns
-_ERROR_THRESHOLD = 0.35  # prediction error above which consolidation triggers
+_CHECK_EVERY = 10
 _crystal_lock = threading.RLock()
 _last_check_count = 0
-_last_consolidation_count = 0  # for minimum gap enforcement
 
 _CRYSTALLIZE_PROMPT = """你是一个记忆分析助手。你需要从用户的多条消息中找出反复出现的话题或主题。
 
@@ -183,95 +180,13 @@ def _save_crystals(crystals: list[dict]):
         logger.warning("Operation failed", exc_info=True)
 
 
-def should_consolidate(line_count: int) -> bool:
-    """Prediction-error-gated consolidation trigger.
-
-    Returns True when:
-    - Prediction error > _ERROR_THRESHOLD (user model significantly off), OR
-    - More than _MAX_CONSOLIDATION_GAP turns since last consolidation (fallback)
-
-    Also enforces minimum gap of _MIN_CONSOLIDATION_GAP turns.
-    """
-    global _last_consolidation_count
-    turns_since = line_count - _last_check_count
-    since_last_consolidation = line_count - _last_consolidation_count
-
-    # Minimum gap: don't consolidate too frequently
-    if since_last_consolidation < _MIN_CONSOLIDATION_GAP:
-        return False
-
-    # Fallback: force consolidation after long gap
-    if since_last_consolidation >= _MAX_CONSOLIDATION_GAP:
-        return True
-
-    # Prediction error gating
-    try:
-        from services.cognition.prediction import get_last_prediction_error
-        error = get_last_prediction_error()
-        if error > _ERROR_THRESHOLD:
-            return True
-    except Exception:
-        logger.warning("预测误差读取失败", exc_info=True)
-
-    # Base trigger: still check every _CHECK_EVERY as fallback for low-error periods
-    if turns_since >= _CHECK_EVERY:
-        return True
-
-    return False
-
-
-def reinforce_co_retrieval(crystal_tags: list[str]):
-    """Hebbian association: crystals crystallized together get stronger links.
-
-    Called after _save_crystals() with the tags of newly crystallized items.
-    Two crystals co-occurring in the same crystallization batch are "co-retrieved".
-    """
-    if len(crystal_tags) < 2:
-        return
-    try:
-        from app.db import q, execute
-        # Build pairwise associations
-        for i in range(len(crystal_tags)):
-            for j in range(i + 1, len(crystal_tags)):
-                a, b = sorted([crystal_tags[i], crystal_tags[j]])
-                execute(
-                    """INSERT INTO crystal_associations (crystal_id_a, crystal_id_b, weight, last_co_accessed)
-                       VALUES (%s, %s, 0.1, NOW())
-                       ON CONFLICT (crystal_id_a, crystal_id_b)
-                       DO UPDATE SET weight = LEAST(1.0, crystal_associations.weight + 0.05),
-                                     last_co_accessed = NOW()""",
-                    (a, b),
-                )
-    except Exception:
-        logger.warning("Hebbian关联写入失败", exc_info=True)
-
-
-def _get_association_boost(crystal_tag: str) -> float:
-    """Return the association boost for a crystal based on co-retrieved links."""
-    try:
-        from app.db import q
-        rows = q(
-            """SELECT weight FROM crystal_associations
-               WHERE crystal_id_a = %s OR crystal_id_b = %s
-               ORDER BY weight DESC LIMIT 5""",
-            (crystal_tag, crystal_tag),
-        )
-        if rows:
-            total = sum(r[0] for r in rows if r[0])
-            return min(0.15, total * 0.3)  # cap at 0.15 boost
-    except Exception:
-        pass
-    return 0.0
-
-
 def maybe_crystallize():
     """Check for recurring topics and distill crystal memories.
 
-    Runs in a background thread after each chat turn. Uses prediction-error
-    gating to trigger consolidation only when the user's behavior surprises
-    the model, plus a fallback every _MAX_CONSOLIDATION_GAP turns.
+    Runs in a background thread after each chat turn. Only triggers
+    every _CHECK_EVERY turns to avoid excessive LLM calls.
     """
-    global _last_check_count, _last_consolidation_count
+    global _last_check_count
     if not _crystal_lock.acquire(blocking=False):
         return
     try:
@@ -281,8 +196,7 @@ def maybe_crystallize():
         with archive_lock:
             with open(archive) as f:
                 line_count = sum(1 for _ in f)
-
-        if not should_consolidate(line_count):
+        if line_count - _last_check_count < _CHECK_EVERY:
             return
 
         existing_tags = _load_existing_tags()
@@ -293,10 +207,6 @@ def maybe_crystallize():
         new_crystals = _crystallize_from_messages(messages, existing_tags)
         _save_crystals(new_crystals)
         _last_check_count = line_count
-        _last_consolidation_count = line_count
-        # Hebbian: strengthen links between co-crystallized topics
-        if new_crystals:
-            reinforce_co_retrieval([c["tag"] for c in new_crystals])
     except Exception:
         logger.warning("Operation failed", exc_info=True)
     finally:
@@ -304,49 +214,65 @@ def maybe_crystallize():
 
 
 def get_crystals(min_importance: float = 0.2) -> list[dict]:
-    """Load active crystals with Ebbinghaus decay applied.
+    """Load active crystals with gentle time-based decay applied.
 
-    Crystals decay over time unless reinforced. Those below min_importance
-    are marked dormant and excluded from prompt injection.
+    Decay: 0.004/hour (~10% per day), floor at 0.1 so memories never vanish.
+    Supports both legacy timestamp strings and integer turn counts in last_reinforced.
     """
+    import math as _math
+    from datetime import datetime, timezone as _timezone
+
     crystals = []
-    archive_path = ARCHIVE_PATH
-    total_turns = 0
-    try:
-        if os.path.exists(archive_path):
-            with archive_lock:
-                with open(archive_path) as f:
-                    total_turns = sum(1 for _ in f)
-    except Exception:
-        logger.warning("Operation failed", exc_info=True)
+    now = datetime.now(_timezone.utc)
 
     try:
         if os.path.exists(CRYSTAL_PATH):
-            with _crystal_lock, open(CRYSTAL_PATH) as f:
-                for line in f:
-                    try:
-                        c = json.loads(line)
-                        imp = c.get("importance", 0.5)
-                        last = c.get("last_reinforced", 0)
-                        count = c.get("reinforcement_count", 1)
+            with _crystal_lock:
+                with open(CRYSTAL_PATH) as f:
+                    for line in f:
+                        try:
+                            c = json.loads(line)
+                            imp = c.get("importance", 0.5)
+                            last = c.get("last_reinforced", 0)
+                            count = c.get("reinforcement_count", 1)
 
-                        # Ebbinghaus decay: importance decays with turns since last reinforcement
-                        # More reinforcements → slower decay (consolidation)
-                        turns_since = max(0, total_turns - last)
-                        decay_rate = 0.02 / math.sqrt(count)  # slower with more reinforcements
-                        imp *= math.exp(-decay_rate * turns_since)
+                            # Compute hours since last reinforced
+                            if isinstance(last, str):
+                                # Legacy: ISO timestamp string
+                                try:
+                                    last_dt = datetime.fromisoformat(last)
+                                    hours_since = (now - last_dt).total_seconds() / 3600.0
+                                except Exception:
+                                    hours_since = 0
+                            elif isinstance(last, (int, float)) and last > 100000:
+                                # Unix timestamp (seconds)
+                                try:
+                                    last_dt = datetime.fromtimestamp(last, tz=_timezone.utc)
+                                    hours_since = (now - last_dt).total_seconds() / 3600.0
+                                except Exception:
+                                    hours_since = 0
+                            else:
+                                # Legacy integer turn count — no timestamp to compare, apply no decay
+                                hours_since = 0
 
-                        # Hebbian association boost
-                        assoc_boost = _get_association_boost(c.get("tag", ""))
-                        imp += assoc_boost
+                            # Cap decay at 14 days (336 hours) to prevent over-decay after long gaps
+                            hours_since = min(hours_since, 336)
 
-                        c["current_importance"] = round(imp, 3)
-                        c["dormant"] = imp < 0.3
-                        crystals.append(c)
-                    except Exception:
-                        logger.warning("Operation failed", exc_info=True)
+                            # Time-based Ebbinghaus decay
+                            # rate = 0.004/hour → ~10% per day; slower with more reinforcements
+                            decay_rate = 0.004 / _math.sqrt(count)
+                            imp *= _math.exp(-decay_rate * hours_since)
+                            # Floor at 0.1 so crystals never truly vanish from star map
+                            imp = max(0.1, imp)
+
+                            c["current_importance"] = round(imp, 3)
+                            c["dormant"] = imp < 0.3
+                            crystals.append(c)
+                        except Exception:
+                            logger.warning("Failed to load crystal", exc_info=True)
     except Exception:
-        logger.warning("Operation failed", exc_info=True)
+        logger.warning("Failed to load crystals", exc_info=True)
+
     return sorted(crystals, key=lambda c: c.get("current_importance", 0), reverse=True)
 
 
@@ -378,14 +304,7 @@ def reinforce_crystal(tag: str):
                                     logger.warning("Operation failed", exc_info=True)
                                 c["importance"] = min(1.0, c.get("importance", 0.5) + boost)
                                 c["reinforcement_count"] = c.get("reinforcement_count", 1) + 1
-                                archive_path = ARCHIVE_PATH
-                                try:
-                                    if os.path.exists(archive_path):
-                                        with archive_lock:
-                                            with open(archive_path) as af:
-                                                c["last_reinforced"] = sum(1 for _ in af)
-                                except Exception:
-                                    logger.warning("Operation failed", exc_info=True)
+                                c["last_reinforced"] = datetime.now(timezone.utc).isoformat()
                                 found = True
                             crystals.append(c)
                         except Exception:
