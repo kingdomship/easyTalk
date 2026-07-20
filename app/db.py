@@ -458,4 +458,30 @@ def init_db():
         ON trend_warnings (created_at)
     """)
 
+    # Intervention outcomes (effectiveness tracking)
+    execute("""
+        CREATE TABLE IF NOT EXISTS intervention_outcomes (
+            id SERIAL PRIMARY KEY,
+            turn_id INTEGER,
+            intervention_type VARCHAR(50) NOT NULL,
+            trigger_intent VARCHAR(50) DEFAULT '',
+            affect_before JSONB NOT NULL DEFAULT '{}',
+            affect_after JSONB NOT NULL DEFAULT '{}',
+            affect_delta JSONB NOT NULL DEFAULT '{}',
+            distress_reduction REAL DEFAULT 0,
+            valence_improvement REAL DEFAULT 0,
+            user_msg TEXT DEFAULT '',
+            session_id VARCHAR(50) DEFAULT 'default',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_intervention_type
+        ON intervention_outcomes (intervention_type)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_intervention_created
+        ON intervention_outcomes (created_at)
+    """)
+
     _init_done = True

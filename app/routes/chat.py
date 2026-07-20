@@ -44,6 +44,7 @@ from services.therapy.intent import analyze_therapy_intent, get_therapy_modules
 from services.therapy.modules import assemble_therapy_modules, assemble_deescalation_module
 from services.therapy.deescalation import analyze_deescalation
 from services.therapy.somatic import analyze_polyvagal_state
+from services.therapy.outcome import log_intervention_outcome
 from app.config import ARCHIVE_PATH, PERSONA_PATH, PROFILE_PATH, SUMMARY_PATH, archive_lock
 
 router = APIRouter()
@@ -1107,6 +1108,15 @@ async def chat(req: ChatRequest):
             logger.warning('多迷走神经检测失败', exc_info=True)
             pv_result = None
 
+        # 干预效果追踪: 捕获干预前 affect
+        affect_before = None
+        if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
+            try:
+                from services.therapy.outcome import capture_affect_snapshot
+                affect_before = capture_affect_snapshot()
+            except Exception:
+                pass
+
         messages = _build_context(msg, thinking, modules_config=modules_config,
                                   crisis_result=crisis_result,
                                   therapy_intent=therapy_intent,
@@ -1145,6 +1155,14 @@ async def chat(req: ChatRequest):
         [msg, full_reply, parsed[0]["label"]], fetch="one",
     )
     turn_id = new_row["id"] if new_row else None
+
+    # 干预效果追踪: 异步记录
+    if affect_before and turn_id:
+        get_background_executor().submit(
+            log_intervention_outcome, turn_id, therapy_intent["intent"],
+            affect_before, msg,
+        )
+
     _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
                          thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
                          is_deep=is_deep, crisis_result=crisis_result)
@@ -1290,6 +1308,15 @@ async def chat_stream(req: ChatRequest):
                 if not (deescalation_result.get("hostile") and deescalation_result.get("severity", 1) >= 4):
                     yield f"data: {json.dumps({'type': 'cbt_trigger', 'thought': msg[:100]}, ensure_ascii=False)}\n\n"
 
+            # 干预效果追踪: 捕获干预前 affect
+            _aff_before = None
+            if therapy_intent and therapy_intent.get("intent") not in (None, "none"):
+                try:
+                    from services.therapy.outcome import capture_affect_snapshot
+                    _aff_before = capture_affect_snapshot()
+                except Exception:
+                    pass
+
             messages = _build_context(msg, thinking, modules_config=modules_config,
                                       crisis_result=crisis_result,
                                       therapy_intent=therapy_intent,
@@ -1331,6 +1358,13 @@ async def chat_stream(req: ChatRequest):
         _post_reply_pipeline(msg, reply, parsed[0]["label"],
                              thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
                              is_deep=is_deep, crisis_result=crisis_result)
+
+        # 干预效果追踪 (stream 路径)
+        if _aff_before and turn_id:
+            get_background_executor().submit(
+                log_intervention_outcome, turn_id, therapy_intent["intent"],
+                _aff_before, msg,
+            )
 
         first = parsed[0]
         seq = json.dumps(parsed) if len(parsed) > 1 else None

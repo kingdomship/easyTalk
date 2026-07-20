@@ -149,3 +149,15 @@ async def list_cbt_records(days: int = Query(default=30, ge=1, le=365)):
         [days],
     )
     return rows if rows else []
+
+
+@router.get("/intervention-insights")
+async def intervention_insights(min_samples: int = Query(default=3, ge=1, le=50)):
+    """返回按 distress_reduction 排序的最优干预, 用于个性化治疗匹配."""
+    from services.therapy.outcome import get_best_interventions, get_recent_outcomes
+    best = get_best_interventions(min_samples=min_samples)
+    recent = get_recent_outcomes(limit=20)
+    return {
+        "best_interventions": best,
+        "recent_outcomes": recent,
+    }
