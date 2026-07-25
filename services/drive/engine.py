@@ -168,16 +168,21 @@ def update_drives_on_chat(
         # connection: baseline drive gently rises with each interaction
         deltas["connection"] += 0.02 * (1.0 - current["connection"])
 
-        # Apply deltas with clipping to [0, 1]
+        # Apply deltas with clipping to [0, 1] — batch CASE WHEN (like affect.py)
+        changed = []
         for dim in DRIVE_DIMENSIONS:
-            new_val = current[dim] + deltas[dim]
-            new_val = max(0.0, min(1.0, new_val))
+            new_val = max(0.0, min(1.0, current[dim] + deltas[dim]))
             if abs(new_val - current[dim]) > 0.0001:
-                execute(
-                    "UPDATE drive_state SET value = %s, updated_at = NOW() "
-                    "WHERE dimension = %s",
-                    [round(new_val, 4), dim],
-                )
+                changed.append((dim, round(new_val, 4)))
+        if changed:
+            cases = " ".join(
+                f"WHEN '{dim}' THEN {val}" for dim, val in changed
+            )
+            dims = ", ".join(f"'{dim}'" for dim, _ in changed)
+            execute(
+                f"UPDATE drive_state SET value = CASE dimension {cases} END, "
+                f"updated_at = NOW() WHERE dimension IN ({dims})"
+            )
     except Exception:
         logger.warning("Drive update failed", exc_info=True)
 

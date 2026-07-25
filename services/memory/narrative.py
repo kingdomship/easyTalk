@@ -157,21 +157,22 @@ def detect_situations():
         if len(numbered) < 6:
             return
 
-        from app.utils import get_llm, get_llm_model
+        from app.utils import get_llm, get_llm_model, llm_module_context
         client = get_llm()
         if client is None:
             return
 
         try:
-            resp = client.chat.completions.create(
-                model=get_llm_model(),
-                messages=[
-                    {"role": "system", "content": _SITUATION_PROMPT},
-                    {"role": "user", "content": "\n".join(numbered)},
-                ],
-                temperature=0.4,
-                max_tokens=500,
-            )
+            with llm_module_context("narrative"):
+                resp = client.chat.completions.create(
+                    model=get_llm_model(),
+                    messages=[
+                        {"role": "system", "content": _SITUATION_PROMPT},
+                        {"role": "user", "content": "\n".join(numbered)},
+                    ],
+                    temperature=0.4,
+                    max_tokens=500,
+                )
             raw = resp.choices[0].message.content.strip()
             start = raw.find("[")
             end = raw.rfind("]") + 1
@@ -268,23 +269,24 @@ def distill_episode():
             for _, s in recent
         )
 
-        from app.utils import get_llm, get_llm_model
+        from app.utils import get_llm, get_llm_model, llm_module_context
         client = get_llm()
         if client is None:
             return
 
         try:
-            resp = client.chat.completions.create(
-                model=get_llm_model(),
-                messages=[
-                    {"role": "system", "content": _EPISODE_PROMPT.format(
-                        situations_text=sit_text,
-                    )},
-                    {"role": "user", "content": "请编织这些场景。"},
-                ],
-                temperature=0.6,
-                max_tokens=300,
-            )
+            with llm_module_context("narrative"):
+                resp = client.chat.completions.create(
+                    model=get_llm_model(),
+                    messages=[
+                        {"role": "system", "content": _EPISODE_PROMPT.format(
+                            situations_text=sit_text,
+                        )},
+                        {"role": "user", "content": "请编织这些场景。"},
+                    ],
+                    temperature=0.6,
+                    max_tokens=300,
+                )
             narrative = resp.choices[0].message.content.strip()
         except Exception:
             logger.warning("Operation failed", exc_info=True)

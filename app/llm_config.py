@@ -101,11 +101,20 @@ PROVIDER_PRESETS: dict[str, dict] = {
 
 # ── Config model ──────────────────────────────────────────────────
 
+class VisualConfig(BaseModel):
+    """Visual LLM sub-config (Qwen VL or compatible)."""
+    api_key: str = ""
+    base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    model: str = "qwen-vl-plus"
+    provider: str = "qwen"
+
+
 class LLMConfig(BaseModel):
     api_key: str = ""
     base_url: str = PROVIDER_PRESETS["deepseek"]["base_url"]
     model: str = PROVIDER_PRESETS["deepseek"]["default_model"]
     provider: str = "deepseek"
+    visual: VisualConfig = VisualConfig()
 
 
 # ── Persistence ───────────────────────────────────────────────────
@@ -172,6 +181,19 @@ def load_llm_config() -> LLMConfig:
             config.base_url = preset["base_url"]
         if not config.model:
             config.model = preset["default_model"]
+
+    # 6. Visual sub-config: env var overrides
+    vis_key = os.getenv("VISUAL_API_KEY")
+    if vis_key:
+        config.visual.api_key = vis_key
+
+    vis_url = os.getenv("VISUAL_BASE_URL")
+    if vis_url:
+        config.visual.base_url = vis_url
+
+    vis_model = os.getenv("VISUAL_MODEL")
+    if vis_model:
+        config.visual.model = vis_model
 
     return config
 

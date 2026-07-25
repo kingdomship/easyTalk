@@ -27,7 +27,7 @@ class DBError(Exception):
 def _get_pool():
     global _pool
     if _pool is None:
-        _pool = pool.SimpleConnectionPool(1, 5, **DB_CONFIG)
+        _pool = pool.SimpleConnectionPool(1, 10, **DB_CONFIG)
     return _pool
 
 
@@ -195,7 +195,7 @@ def init_db():
         try:
             execute(f"ALTER TABLE diary_entries ADD COLUMN IF NOT EXISTS {col} {typ}")
         except Exception:
-            pass
+            logger.debug("Migration column may already exist: %s", col)
 
     # News items
     execute("""
@@ -368,6 +368,69 @@ def init_db():
     execute("""
         CREATE INDEX IF NOT EXISTS idx_system_trace_created_at
         ON system_trace (created_at)
+    """)
+
+    # ── audit_log — user operation audit trail (180-day retention) ────
+    execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id SERIAL PRIMARY KEY,
+            request_id VARCHAR(24) NOT NULL DEFAULT '',
+            category VARCHAR(32) NOT NULL DEFAULT '',
+            operation VARCHAR(64) NOT NULL,
+            detail VARCHAR(500) DEFAULT '',
+            metadata JSONB DEFAULT '{}',
+            status_code INTEGER DEFAULT 200,
+            duration_ms DOUBLE PRECISION DEFAULT 0,
+            user_agent VARCHAR(500) DEFAULT '',
+            ip_address VARCHAR(45) DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_log_created_at
+        ON audit_log (created_at)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_log_category
+        ON audit_log (category)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_log_operation
+        ON audit_log (operation)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_audit_log_request_id
+        ON audit_log (request_id)
+    """)
+
+    # ── token_usage — persistent token tracking (90-day retention) ────
+    execute("""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id SERIAL PRIMARY KEY,
+            request_id VARCHAR(24) NOT NULL,
+            step_name VARCHAR(64) NOT NULL,
+            model VARCHAR(64) NOT NULL DEFAULT '',
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_token_usage_request_id
+        ON token_usage (request_id)
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_token_usage_created_at
+        ON token_usage (created_at)
+    """)
+
+    # ── system_trace migration — add columns for richer context ───────
+    execute("""
+        ALTER TABLE system_trace ADD COLUMN IF NOT EXISTS user_agent VARCHAR(500) DEFAULT ''
+    """)
+    execute("""
+        ALTER TABLE system_trace ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) DEFAULT ''
     """)
 
     _init_done = True

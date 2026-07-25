@@ -107,26 +107,27 @@ def enrich_with_llm(recent_transcript: str):
 
     Called every ~30 turns alongside attachment style analysis.
     """
-    from app.utils import get_llm, get_llm_model
+    from app.utils import get_llm, get_llm_model, llm_module_context
 
     client = get_llm()
     if client is None:
         return
 
     try:
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": (
-                    "你正在阅读一段用户和AI的对话。请找出用户提到过但没有深入聊的话题——"
-                    "也就是AI自然想知道但还没问的事情。\n\n"
-                    "要求：\n"
-                    "- 最多列出3个\n"
-                    "- 必须是对话中用户确实提过的\n"
-                    "- 不能是已经详细聊过的话题\n"
-                    "- 问题要自然，像朋友间的好奇，不审问\n"
-                    "- 用JSON格式输出：{\"items\": [{\"hook\": \"用户原始原话片段\", \"question\": \"AI可以怎么自然地追问\"}]}"
-                )},
+        with llm_module_context("curiosity"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": (
+                        "你正在阅读一段用户和AI的对话。请找出用户提到过但没有深入聊的话题——"
+                        "也就是AI自然想知道但还没问的事情。\n\n"
+                        "要求：\n"
+                        "- 最多列出3个\n"
+                        "- 必须是对话中用户确实提过的\n"
+                        "- 不能是已经详细聊过的话题\n"
+                        "- 问题要自然，像朋友间的好奇，不审问\n"
+                        "- 用JSON格式输出：{\"items\": [{\"hook\": \"用户原始原话片段\", \"question\": \"AI可以怎么自然地追问\"}]}"
+                    )},
                 {"role": "user", "content": recent_transcript},
             ],
             temperature=0.3,

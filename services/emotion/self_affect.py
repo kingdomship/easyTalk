@@ -9,6 +9,7 @@ Persisted to memory/self_affect.json for cross-session continuity.
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -19,7 +20,7 @@ from app.config import MEMORY_DIR, atomic_write
 logger = logging.getLogger("emoji-chat")
 
 SELF_AFFECT_PATH = os.path.join(MEMORY_DIR, "self_affect.json")
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 DIMENSIONS = ["seeking", "play", "care", "fear", "rage", "panic"]
 
@@ -91,13 +92,12 @@ def _apply_decay(state: dict):
             current = state["values"].get(dim, BASELINES[dim])
             baseline = BASELINES[dim]
             # Exponential decay toward baseline
-            decay_factor = 1 - DECAY_RATE * minutes
-            decay_factor = max(0.0, decay_factor)
+            decay_factor = math.exp(-DECAY_RATE * minutes)
             state["values"][dim] = round(
                 baseline + (current - baseline) * decay_factor, 4,
             )
     except Exception:
-        pass
+        logger.warning("Self-affect decay calculation failed", exc_info=True)
 
 
 def _compute_mood_label(values: dict) -> str:
@@ -119,70 +119,72 @@ def _compute_mood_emoji(values: dict) -> str:
     dominant = max(values, key=values.get)  # type: ignore[arg-type]
     dominant_val = values[dominant]
     if dominant_val < 0.2:
-        return "😴"
+        return "😶"
     emojis = {
-        "seeking": "🤔", "play": "😊", "care": "🥰",
+        "seeking": "🧐", "play": "😊", "care": "🤗",
         "fear": "😟", "rage": "😤", "panic": "😢",
     }
-    return emojis.get(dominant, "😶")
+    return emojis.get(dominant, "😌")
 
 
 def update_on_chat(user_msg: str, reply: str, emotion_label: str = ""):
     """Update AI emotional state after a chat turn."""
-    state = _load()
-    _apply_decay(state)
-    state["total_chats"] = state.get("total_chats", 0) + 1
-    state["last_chat_ts"] = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        state = _load()
+        _apply_decay(state)
+        state["total_chats"] = state.get("total_chats", 0) + 1
+        state["last_chat_ts"] = datetime.now(timezone.utc).isoformat()
 
-    # ── 1. User emotion contagion ──
-    try:
-        from services.emotion.affect import get_affect
-        user_affect = get_affect()
+        # ── 1. User emotion contagion ──
+        try:
+            from services.emotion.affect import get_affect
+            user_affect = get_affect()
+            for dim in DIMENSIONS:
+                user_val = user_affect.get(dim, 0)
+                if user_val > 0.25:
+                    contagion = CONTAGION_STRENGTH.get(dim, 0.05)
+                    current = state["values"].get(dim, BASELINES[dim])
+                    state["values"][dim] = round(
+                        current + (user_val - current) * contagion, 4,
+                    )
+        except Exception:
+            logger.warning("Self-affect contagion update failed", exc_info=True)
+
+        # ── 2. Circadian modulation ──
+        hour = datetime.now().hour
+        if 6 <= hour < 10:
+            state["values"]["seeking"] = round(state["values"].get("seeking", 0.5) + 0.03, 4)
+        elif 21 <= hour or hour < 3:
+            state["values"]["care"] = round(state["values"].get("care", 0.45) + 0.03, 4)
+
+        # ── 3. Conversation quality boost ──
+        if len(user_msg) > 30 and len(reply) > 100:
+            for dim, boost in GOOD_CHAT_BOOST.items():
+                state["values"][dim] = round(state["values"].get(dim, BASELINES[dim]) + boost, 4)
+
+        # ── 4. Clamp to [0, 1] ──
         for dim in DIMENSIONS:
-            user_val = user_affect.get(dim, 0)
-            if user_val > 0.25:
-                contagion = CONTAGION_STRENGTH.get(dim, 0.05)
-                current = state["values"].get(dim, BASELINES[dim])
-                # Move toward user's emotion, but with dampening
-                state["values"][dim] = round(
-                    current + (user_val - current) * contagion, 4,
-                )
-    except Exception:
-        pass
+            state["values"][dim] = round(max(0.0, min(1.0, state["values"].get(dim, BASELINES[dim]))), 4)
 
-    # ── 2. Circadian modulation ──
-    hour = datetime.now().hour
-    if 6 <= hour < 10:
-        state["values"]["seeking"] = round(state["values"].get("seeking", 0.5) + 0.03, 4)
-    elif 21 <= hour or hour < 3:
-        state["values"]["care"] = round(state["values"].get("care", 0.45) + 0.03, 4)
-
-    # ── 3. Conversation quality boost ──
-    if len(user_msg) > 30 and len(reply) > 100:
-        for dim, boost in GOOD_CHAT_BOOST.items():
-            state["values"][dim] = round(state["values"].get(dim, BASELINES[dim]) + boost, 4)
-
-    # ── 4. Clamp to [0, 1] ──
-    for dim in DIMENSIONS:
-        state["values"][dim] = round(max(0.0, min(1.0, state["values"].get(dim, BASELINES[dim]))), 4)
-
-    state["mood_label"] = _compute_mood_label(state["values"])
-    _save(state)
+        state["mood_label"] = _compute_mood_label(state["values"])
+        _save(state)
 
 
 def update_on_idle(minutes_idle: float):
     """Apply idle decay — called periodically by background task."""
-    state = _load()
-    _apply_decay(state)
-    state["mood_label"] = _compute_mood_label(state["values"])
-    _save(state)
+    with _lock:
+        state = _load()
+        _apply_decay(state)
+        state["mood_label"] = _compute_mood_label(state["values"])
+        _save(state)
 
 
 def get_self_affect() -> dict:
     """Return current AI emotional state values."""
-    state = _load()
-    _apply_decay(state)
-    return state
+    with _lock:
+        state = _load()
+        _apply_decay(state)
+        return state
 
 
 def get_self_affect_context() -> str:
@@ -212,8 +214,9 @@ def get_self_mood_display() -> dict:
     """Return mood data for frontend display (emoji + label)."""
     state = get_self_affect()
     values = state.get("values", {})
+    label = _compute_mood_label(values)
     return {
         "emoji": _compute_mood_emoji(values),
-        "label": state.get("mood_label", "平静"),
+        "label": label,
         "values": {d: values.get(d, BASELINES[d]) for d in DIMENSIONS},
     }

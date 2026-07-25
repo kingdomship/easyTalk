@@ -5,23 +5,29 @@
 ```
 easytalk/
 ├── app/                    # 应用核心（FastAPI 入口、DB、路由、模型）
-│   ├── main.py             # 入口 + lifespan + seed memory + 9个定时任务
-│   ├── db.py               # PostgreSQL 连接池 + init_db + migration
+│   ├── main.py             # 入口 + lifespan + seed memory + 9个定时任务 + ASGI middleware
+│   ├── db.py               # PostgreSQL 连接池 + init_db + migration (含 audit_log / token_usage 表)
 │   ├── models.py           # Pydantic 模型 (ChatRequest)
-│   ├── config.py           # 路径常量 + atomic_write 原子写入工具
+│   ├── config.py           # 路径常量 (MEMORY_DIR / LOG_DIR) + atomic_write 原子写入工具
 │   ├── utils.py            # LLM 客户端 (get_llm/get_llm_model/reset_llm) + 后台线程池
 │   ├── llm_config.py       # LLM 配置中心 (12家供应商预设 + load/save)
+│   ├── log_setup.py        # JSON 结构化日志 + TimedRotatingFileHandler + 日切 + 30天留存
+│   ├── audit.py            # 审计追踪 (fire-and-forget写入 audit_log 表 + 查询 + 性能统计)
+│   ├── tracer.py           # 请求追踪 (request_id 生成/传播 + step 计时 + trace_event)
+│   ├── token_tracker.py    # Token 用量追踪 (内存 deque + _flush_lock 批量刷入 token_usage 表)
 │   ├── catchup.py          # 启动补漏 (停机期间遗漏的日记/情绪随机游走)
-│   ├── cleanup.py          # 数据生命周期清理 (每天03:07, 语义保留式修剪)
+│   ├── cleanup.py          # 数据生命周期清理 (每天03:07, 7表语义保留式修剪)
 │   ├── emotion_params.py   # 27维情感参数权威定义 (default/min/max/jitter)
 │   └── routes/             # API 路由（thin layer）
 │       ├── __init__.py     # 聚合所有子路由
 │       ├── chat.py         # /api/chat + SSE流式 + 核心管线 + 两段式精灵生成 + context注入
-│       ├── config.py       # /api/config/apikey (自定义 API Key 管理)
+│       ├── config.py       # /api/config/* (LLM配置 + API Key 管理)
+│       ├── debug.py        # /api/debug/* (审计查询 + 性能统计 + 日志级别 + token历史 + 前端日志接收)
 │       ├── diary.py        # /api/diary/*
 │       ├── emotions.py     # /api/emotions/* + /api/emotions/self (AI自身情绪)
 │       ├── memory.py       # /api/memory/* + affinity + mood + idle + missing-you
-│       └── news.py         # /api/news/*
+│       ├── news.py         # /api/news/*
+│       └── visual.py       # /api/visual/* (摄像头帧上传 + 视觉LLM分析)
 ├── services/               # 业务逻辑 (按领域分6个子目录)
 │   ├── cognition/          # 认知系统
 │   │   ├── dual_system.py  # 双系统思维 (快速直觉 + 慢速推理)
@@ -70,7 +76,7 @@ easytalk/
 │   ├── index.html          # HTML 骨架
 │   ├── style.css           # 所有样式
 │   └── js/
-│       ├── engine.js       # 全局变量、工具函数、表情系统、音频引擎、调试面板、localStorage状态持久化
+│       ├── engine.js       # 全局变量、工具函数、表情系统、音频引擎、调试面板(4标签)、日志转发(熔断器)、localStorage状态持久化
 │       ├── visuals.js      # 星空渲染、流星、记忆星点、像素头像(64x64)、精灵系统(offscreen canvas预渲染)
 │       ├── constellation.js # 交互式星图 (力导向图 + 缩放/拖拽 + 触摸手势 + 惯性平移 + 长按选择 + 双指锚点缩放)
 │       ├── ui.js           # 对话框、SSE流、面板、话题气泡、日记模态框、设置面板、主循环
@@ -117,7 +123,7 @@ easytalk/
 
 ## 数据持久化
 
-- **记忆文件宿主路径**: `/home/xuwl/app/easyChat/memory`
+- **记忆文件宿主路径**: `/home/xuwl/app/easytalk/memory`
 - 容器内挂载点: `/app/memory`
 - 该目录存放: `user_persona.md`、`user_profile.md`、`conversation_archive.jsonl`、`conversation_summary.md` 等
 - 更新容器时使用此宿主路径，避免记忆数据丢失
@@ -331,19 +337,111 @@ _build_context(msg, thinking, intent_tags)
 
 每个 context 函数返回空字符串时不增加 token 开销。除必须的模块外，大部分 context 条件性注入。
 
+## 日志追踪系统 (企业级)
+
+### 架构概览
+
+```
+@router.middleware("http") → set_request_id()（所有端点自动分配）
+    ├── JsonFormatter → 自动注入 request_id → JSON 日志文件 + stdout
+    ├── audit_log() → _audit_executor fire-and-forget → audit_log 表
+    ├── step() → system_trace 表 (span 计时)
+    ├── trace_event() → system_trace 表 (一次性事件)
+    └── record_tokens() → 内存 deque → _flush_lock 批量刷入 token_usage 表
+```
+
+**关键决策**: 使用 `@app.middleware("http")`（纯 ASGI 中间件）而非 `BaseHTTPMiddleware`，后者会缓冲 `StreamingResponse` 导致 SSE 流失效。
+
+### Request ID 传播
+
+- `app/tracer.py` — `set_request_id()` / `get_request_id()`
+- `@app.middleware("http")` 在 `main.py` 中为每个请求自动分配 12 位 hex ID
+- 响应头自动附加 `X-Request-ID`
+- JsonFormatter 自动从 ContextVar 读取 request_id 注入每条日志
+
+### JSON 结构化日志 (`app/log_setup.py`)
+
+- `JsonFormatter` — 显式字段选取（非 `record.__dict__`），`default=str` 兜底，`formatException()` 处理 exc_info
+- `setup_logging(log_dir, level)` — 只清除 `"emoji-chat"` logger handlers（保护 uvicorn/httpx/APScheduler），添加 `TimedRotatingFileHandler`（日切 + 30天留存）+ `StreamHandler`（stdout JSON）
+- `set_log_level(level)` — 运行时动态切换
+- 日志目录: `memory/logs/`
+
+### 审计追踪 (`app/audit.py`)
+
+- `audit_log(operation, category, detail, metadata)` — **fire-and-forget** 非阻塞写入
+  - 专用 `_audit_executor`（ThreadPoolExecutor, max_workers=2）隔离审计写入
+  - 调用线程捕获 request_id，确保 ContextVar 正确传播
+  - 失败时写入容器日志（`logging.exception`），不中断业务流程
+- `query_audit(...)` — 多条件分页查询
+- `get_audit_categories()` — DISTINCT (category, operation) 供下拉菜单
+- `get_performance_stats(since_hours, step_name)` — p50/p95/p99 延迟统计
+
+### Token 用量追踪 (`app/token_tracker.py`)
+
+- `record_tokens()` — O(1) 内存 deque 写入，无阻塞
+- 批量刷入: ≥20 条或 ≥30s → `_flush_lock` 原子提取+清空 → `_audit_executor.submit()`
+- `get_token_records()` — 先查内存再查 DB
+- `get_token_records_from_db(limit, since_hours)` — 持久化历史查询（重启后仍可查）
+
+### 前端日志转发 (`static/js/engine.js`)
+
+- `forwardLogToBackend(level, title, msg)` → `POST /api/log/client`
+- **熔断器**: 连续 3 次失败（含 HTTP 4xx/5xx）→ 永久禁用转发
+- **2秒节流**, 只转发 error 级别
+- `.catch()` 静默处理，不调用 `console.error`（防止反馈循环）
+
+### 数据库表
+
+| 表 | 用途 | 留存 |
+|----|------|------|
+| `audit_log` | 用户操作审计 (request_id, category, operation, detail, metadata, status_code, duration_ms) | 180天 |
+| `token_usage` | Token 用量 (request_id, step_name, model, prompt/completion/total_tokens) | 90天 |
+| `system_trace` | 请求追踪 span (已有，增强 user_agent/ip_address 列) | 7天 |
+
+### 审计接入范围
+
+| 路由 | 接入端点 | 跳过端点（高频轮询） |
+|------|----------|---------------------|
+| chat | chat, chat_stream | — |
+| emotions | delete_emotion | list, self |
+| diary | list, view, generate, generate_user, on_this_day | — |
+| config | save_config, save_api_key | get |
+| memory | view_persona, view_profile | affinity, constellation, kg, situations, episodes, mood |
+| news | fetch_news | list, topics, suggest |
+| visual | analyze_visual | upload, latest |
+
+## 调试面板
+
+三击页面左下角 16×16px 区域打开，包含 4 个标签页：
+
+| 标签 | 功能 | 数据来源 |
+|------|------|----------|
+| **日志** | LLM 调用错误 + 前端 JS 异常（实时追加） | `addDebugLog()` 内存数组 |
+| **情绪** | AI 自身 6D 情绪 + 8D 驱动状态（含进度条） | `GET /api/emotions/self` 轮询 |
+| **Token** | 当前会话 token 消耗明细 + 历史查询 | 内存 deque + `GET /api/debug/token-history` |
+| **审计** | 用户操作记录（支持按类别/操作筛选 + 关键词搜索 + 分页） | `GET /api/debug/audit` |
+
+### 审计标签页
+
+- 筛选: 类别下拉 + 操作下拉 + 搜索框 + 刷新按钮
+- 表格: 时间 | 类别 | 操作 | 详情 | 耗时
+- 分页: 上一页 / 第 N 页 / 下一页（每页 50 条）
+- 切换标签时自动加载分类列表和首页数据
+
 ## 部署
 
 - 使用 `docker-compose.yml` 构建和启动
 - PostgreSQL 镜像: `pgvector/pgvector:pg15`（支持向量搜索）
-- 服务端口: `8000:8000`
+- 服务端口: `8000:8000` (HTTP) + `8443:8443` (HTTPS)
 - 需要环境变量 `DEEPSEEK_API_KEY`、`DB_PASSWORD`（可选，默认 123456）
 
 ## 关键路径常量
 
 | 常量 | 值 | 位置 |
 |------|-----|------|
-| 记忆宿主路径 | `/home/xuwl/app/easyChat/memory` | docker-compose.yml |
+| 记忆宿主路径 | `/home/xuwl/app/easytalk/memory` | docker-compose.yml |
 | 容器挂载点 | `/app/memory` | Dockerfile |
+| 日志目录 | `memory/logs/` | config.py:LOG_DIR |
 | 种子数据 | `/app/memory_seed/` | Dockerfile COPY |
 | 归档文件 | `conversation_archive.jsonl` | routes/chat.py |
 | 摘要触发阈值 | 每 50 轮 | routes/chat.py |
@@ -365,7 +463,7 @@ _build_context(msg, thinking, intent_tags)
 - **人格参数**: 编辑 `personality.py` 中的 OCEAN/MBTI/原型配置
 
 ### 调整 AI 人设
-编辑 `/home/xuwl/app/easyChat/memory/user_persona.md`，重启容器生效
+编辑 `/home/xuwl/app/easytalk/memory/user_persona.md`，重启容器生效
 
 ### 添加新 API 端点
 1. 在 `app/routes/` 下新建文件（参考已有文件的模式）
@@ -373,15 +471,21 @@ _build_context(msg, thinking, intent_tags)
 3. 业务逻辑放 `services/`
 
 ### 添加新前端功能
-1. 按功能归属选择 engine.js（逻辑/状态）、visuals.js（渲染）、constellation.js（星图）、ui.js（交互）
+1. 按功能归属选择 engine.js（逻辑/状态/调试面板）、visuals.js（渲染）、constellation.js（星图）、ui.js（交互）
 2. 在 `globals.d.ts` 中声明新类型/函数
+3. 调试面板新增标签页: index.html 添加 `<button class="debug-tab">` + `<div class="debug-content">` → engine.js 的 `tabIdMap` 中添加映射 + 生命周期钩子
 
 ### 修改数据库表
 编辑 `app/db.py:init_db()`，在函数末尾追加 migration 逻辑
 
 ### 调试
-- 后端日志: `docker compose logs -f app`
-- 前端调试面板: 三击页面左下角 16×16px 区域
+- 后端日志: `docker compose logs -f app`（JSON 格式，含 request_id 追踪）
+- 日志文件: `memory/logs/app.YYYY-MM-DD.log`（日切 + 30天留存）
+- 前端调试面板: 三击页面左下角 16×16px 区域（4 标签：日志/情绪/Token/审计）
+- 审计查询: `GET /api/debug/audit?category=chat&limit=50`
+- 性能统计: `GET /api/debug/performance?since_hours=24`（p50/p95/p99）
+- 运行时日志级别: `POST /api/debug/loglevel {"level": "DEBUG"}`
+- Token 历史: `GET /api/debug/token-history?since_hours=24`
 - LLM 错误: 自动分类并输出到日志+调试面板
 
 ## 并发安全模型
@@ -396,6 +500,9 @@ _build_context(msg, thinking, intent_tags)
 - `_guard_lock` (`threading.Lock`, `guard.py`) — 非阻塞守卫，防止身份守护并发运行
 - `_lock` (各 psych/emotion 模块) — 保护各自 JSON 文件的读写一致性
 - `_turn_counter_lock` (`threading.Lock`, `chat.py`) — 保护轮次计数器的原子递增
+- `_buf_lock` (`threading.Lock`, `routes/visual.py`) — 保护摄像头帧 ring buffer 的并发读写
+- `_flush_lock` (`threading.Lock`, `token_tracker.py`) — 保护 `_pending_flush` 批量刷入的原子性（判断+提取+清空+更新时间戳在同一锁内完成）
+- `_audit_executor` (`ThreadPoolExecutor`, `audit.py`) — 审计写入专用线程池 (max_workers=2)，与流水线任务隔离
 
 ### 非阻塞守卫模式
 后台任务使用 `lock.acquire(blocking=False)` 模式，若已有实例在运行则静默跳过：
@@ -449,6 +556,7 @@ finally:
 - 错误消息 `e.message` 拼接 HTML 时也必须转义
 - `console.error` 重写中 `JSON.stringify` 必须包裹 `try/catch`（循环引用会抛异常）
 - SSE 流解析：`decoder.decode(value, {stream: true})` 后按 `\n` 分割，不完整的 JSON 行存回 buffer 等待下个 chunk
+- **日志转发熔断器**: `forwardLogToBackend()` — 连续 3 次失败（含 HTTP 4xx/5xx）→ `_logForwardDisabled = true` 永久禁用；2 秒节流；只转发 error 级别；catch 中不调用 `console.error`（防反馈循环）
 
 ## 部署 (阿里云 ACR)
 

@@ -103,22 +103,23 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
     if len(messages) < 5:
         return []
 
-    from app.utils import get_llm, get_llm_model
+    from app.utils import get_llm, get_llm_model, llm_module_context
     client = get_llm()
     if client is None:
         return []
 
     numbered = "\n".join(f"- {m}" for m in messages[-20:])
     try:
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _CRYSTALLIZE_PROMPT},
-                {"role": "user", "content": f"以下是最新的用户消息：\n\n{numbered}"},
-            ],
-            temperature=0.4,
-            max_tokens=400,
-        )
+        with llm_module_context("crystallize"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _CRYSTALLIZE_PROMPT},
+                    {"role": "user", "content": f"以下是最新的用户消息：\n\n{numbered}"},
+                ],
+                temperature=0.4,
+                max_tokens=400,
+            )
         raw = resp.choices[0].message.content.strip()
     except Exception:
         logger.warning("Operation failed", exc_info=True)

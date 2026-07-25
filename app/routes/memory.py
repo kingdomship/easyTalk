@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from app.db import q, init_db
+from app.audit import audit_log
 from services.emotion.affinity import init_affinity_db, get_affinity
 
 router = APIRouter()
@@ -9,12 +10,14 @@ router = APIRouter()
 
 @router.get("/api/memory/persona")
 def get_persona():
+    audit_log("view_persona", "memory")
     from services.memory.loader import get_persona as _get_persona
     return {"content": _get_persona()}
 
 
 @router.get("/api/memory/profile")
 def get_user_profile():
+    audit_log("view_profile", "memory")
     from services.memory.loader import get_user_profile as _get_profile
     return {"content": _get_profile()}
 

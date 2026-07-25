@@ -58,7 +58,6 @@ const kaomojiBtn = document.getElementById('kaomojiBtn'), kaomojiPanel = documen
 const charCount = document.getElementById('charCount');
 const dialog = document.getElementById('dialog'), dlgBody = document.getElementById('dlgBody');
 const dlgClose = document.getElementById('dlgClose');
-const topicBubbles = document.getElementById('topic-bubbles');
 const auxPanel = document.getElementById('aux-panel'), auxContent = document.getElementById('auxContent');
 
 // Settings
@@ -73,6 +72,9 @@ const modelInput = /** @type {HTMLInputElement} */ (document.getElementById('mod
 const modelHint = /** @type {HTMLElement} */ (document.getElementById('modelHint'));
 const apiKeyInput = /** @type {HTMLInputElement} */ (document.getElementById('apiKeyInput'));
 const settingsStatus = /** @type {HTMLElement} */ (document.getElementById('settingsStatus'));
+const visualBaseUrlInput = /** @type {HTMLInputElement} */ (document.getElementById('visualBaseUrlInput'));
+const visualModelInput = /** @type {HTMLInputElement} */ (document.getElementById('visualModelInput'));
+const visualApiKeyInput = /** @type {HTMLInputElement} */ (document.getElementById('visualApiKeyInput'));
 
 // ═══════════════════════════════════════════
 // Typing sound engine (Web Audio API)
@@ -148,6 +150,7 @@ let state = STATE.STARFIELD;
 // ═══════════════════════════════════════════
 const debugTrigger = document.getElementById('debug-trigger');
 const debugPanel = document.getElementById('debug-panel');
+const _debugLogTab = document.getElementById('debugLogTab');
 let debugClicks = 0, debugTimer = null;
 const ERROR_PATTERNS = {
   'fetch': { cause: '网络请求被阻断或服务器未响应', fix: '检查容器运行状态: docker ps, 检查端口映射' },
@@ -162,9 +165,12 @@ const ERROR_PATTERNS = {
 var _MAX_DEBUG_ENTRIES = 200;
 
 function addDebugLog(level, title, msg, analysis) {
+  var target = _debugLogTab || debugPanel;
+  if (!target) return;
+
   // Trim old entries when exceeding max to prevent memory leak
-  while (debugPanel.children.length > _MAX_DEBUG_ENTRIES) {
-    var last = debugPanel.lastElementChild;
+  while (target.children.length > _MAX_DEBUG_ENTRIES) {
+    var last = target.lastElementChild;
     if (last && last.classList.contains('log-entry')) {
       last.remove();
     } else {
@@ -179,7 +185,7 @@ function addDebugLog(level, title, msg, analysis) {
   if (analysis) {
     entry.innerHTML += `<div class="log-analysis">→ ${escapeHtml(analysis)}</div>`;
   }
-  debugPanel.insertBefore(entry, debugPanel.firstChild);
+  target.insertBefore(entry, target.firstChild);
   // Auto-analyze known error patterns
   if (!analysis && level === 'error') {
     for (const [pattern, info] of Object.entries(ERROR_PATTERNS)) {
@@ -192,6 +198,111 @@ function addDebugLog(level, title, msg, analysis) {
       }
     }
   }
+  // Forward errors to backend for persistent audit trail
+  if (level === 'error') { forwardLogToBackend(level, title, msg); }
+}
+
+// ── Log forwarding to backend (with circuit breaker) ──────────────
+var _logForwardFailures = 0;
+var _logForwardDisabled = false;
+var _logForwardLastTime = 0;
+
+function forwardLogToBackend(level, title, msg) {
+  if (_logForwardDisabled) return;
+  var now = Date.now();
+  if (now - _logForwardLastTime < 2000) return;  // throttle: max 1 per 2s
+  _logForwardLastTime = now;
+  fetch('/api/log/client', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({level: level, title: title, message: String(msg).slice(0, 500)}),
+  }).then(function(r) {
+    if (!r.ok) { _logForwardFailures++; if (_logForwardFailures >= 3) _logForwardDisabled = true; }
+  }).catch(function() {
+    _logForwardFailures++;
+    if (_logForwardFailures >= 3) _logForwardDisabled = true;
+  });
+}
+
+// ── Audit tab ─────────────────────────────────────────────────────
+var _auditPage = 0;
+var _auditPageSize = 50;
+
+function loadAuditCategories() {
+  fetch('/api/debug/audit/categories')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var catSelect = document.getElementById('auditCategoryFilter');
+      var opSelect = document.getElementById('auditOperationFilter');
+      if (!catSelect || !opSelect) return;
+      var categories = data.categories || [];
+      // Preserve first option
+      catSelect.innerHTML = '<option value="">全部类别</option>';
+      opSelect.innerHTML = '<option value="">全部操作</option>';
+      var seenCats = {};
+      var seenOps = {};
+      categories.forEach(function(c) {
+        if (!seenCats[c.category]) {
+          seenCats[c.category] = true;
+          catSelect.innerHTML += '<option value="' + escapeHtml(c.category) + '">' + escapeHtml(c.category) + '</option>';
+        }
+        if (!seenOps[c.operation]) {
+          seenOps[c.operation] = true;
+          opSelect.innerHTML += '<option value="' + escapeHtml(c.operation) + '">' + escapeHtml(c.operation) + '</option>';
+        }
+      });
+    })
+    .catch(function() {});
+}
+
+function refreshAuditLog(page) {
+  if (typeof page === 'number') _auditPage = page;
+  else _auditPage = 0;
+
+  var category = document.getElementById('auditCategoryFilter');
+  var operation = document.getElementById('auditOperationFilter');
+  var search = document.getElementById('auditSearch');
+  var catVal = category ? category.value : '';
+  var opVal = operation ? operation.value : '';
+  var searchVal = search ? search.value : '';
+
+  var params = 'category=' + encodeURIComponent(catVal)
+    + '&operation=' + encodeURIComponent(opVal)
+    + '&search=' + encodeURIComponent(searchVal)
+    + '&limit=' + _auditPageSize
+    + '&offset=' + (_auditPage * _auditPageSize);
+
+  fetch('/api/debug/audit?' + params)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderAuditTable(data);
+      // Update pagination
+      var totalPages = Math.max(1, Math.ceil((data.total || 0) / _auditPageSize));
+      var pageInfo = document.getElementById('auditPageInfo');
+      if (pageInfo) pageInfo.textContent = '第 ' + (_auditPage + 1) + ' / ' + totalPages + ' 页（共 ' + (data.total || 0) + ' 条）';
+      var prevBtn = document.getElementById('auditPrevBtn');
+      var nextBtn = document.getElementById('auditNextBtn');
+      if (prevBtn) prevBtn.disabled = _auditPage === 0;
+      if (nextBtn) nextBtn.disabled = _auditPage >= totalPages - 1;
+    })
+    .catch(function() {});
+}
+
+function renderAuditTable(data) {
+  var tbody = document.querySelector('#auditTable tbody');
+  if (!tbody) return;
+  var html = '';
+  (data.records || []).forEach(function(r) {
+    var time = r.created_at ? r.created_at.replace('T', ' ').slice(0, 19) : '';
+    html += '<tr>'
+      + '<td class="audit-time">' + escapeHtml(time) + '</td>'
+      + '<td class="audit-op">' + escapeHtml(r.operation_label || r.operation) + '</td>'
+      + '<td class="audit-detail" title="' + escapeHtml(r.detail || '') + '">' + escapeHtml(r.detail || '') + '</td>'
+      + '<td class="audit-duration">' + (r.duration_ms > 0 ? r.duration_ms.toFixed(0) + 'ms' : '') + '</td>'
+      + '</tr>';
+  });
+  if (!html) html = '<tr><td colspan="4" style="color:#555;text-align:center;padding:12px;">暂无记录</td></tr>';
+  tbody.innerHTML = html;
 }
 
 debugTrigger.addEventListener('click', () => {
@@ -200,7 +311,331 @@ debugTrigger.addEventListener('click', () => {
   debugTimer = setTimeout(() => { debugClicks = 0; }, 500);
   if (debugClicks >= 3) {
     debugClicks = 0;
+    var opening = !debugPanel.classList.contains('visible');
     debugPanel.classList.toggle('visible');
+    if (opening) {
+      // Start polling if emotion tab is active
+      var activeTab = document.querySelector('.debug-tab.active');
+      if (activeTab && activeTab.getAttribute('data-debug-tab') === 'emotion') {
+        startEmotionPolling();
+      }
+      if (activeTab && activeTab.getAttribute('data-debug-tab') === 'token') {
+        autoLoadLatestTokens();
+      }
+    } else {
+      stopEmotionPolling();
+    }
+  }
+});
+
+// ── Debug tab switching ──────────────────────────────────────────
+document.addEventListener('click', function(e) {
+  var tab = /** @type {HTMLElement} */ (e.target);
+  if (!tab.classList.contains('debug-tab')) return;
+  var tabName = tab.getAttribute('data-debug-tab');
+
+  // Update tab active states
+  document.querySelectorAll('.debug-tab').forEach(function(t) { t.classList.remove('active'); });
+  tab.classList.add('active');
+
+  // Show matching content
+  document.querySelectorAll('.debug-content').forEach(function(c) { c.classList.remove('active'); });
+  var tabIdMap = { log: 'debugLogTab', emotion: 'debugEmotionTab', token: 'debugTokenTab', audit: 'debugAuditTab' };
+  var content = document.getElementById(tabIdMap[tabName] || 'debugLogTab');
+  if (content) content.classList.add('active');
+
+  // Lifecycle: start/stop polling based on tab
+  if (tabName === 'emotion') {
+    if (debugPanel.classList.contains('visible')) startEmotionPolling();
+  } else {
+    stopEmotionPolling();
+  }
+  if (tabName === 'token' && debugPanel.classList.contains('visible')) {
+    autoLoadLatestTokens();
+  }
+  if (tabName === 'audit' && debugPanel.classList.contains('visible')) {
+    loadAuditCategories();
+    refreshAuditLog(0);
+  }
+});
+
+// ── Emotion polling ──────────────────────────────────────────────
+var _emotionPollTimer = null;
+
+var EMOTION_LABELS_CN = {
+  seeking: '探索', play: '玩乐', care: '关怀',
+  fear: '恐惧', rage: '愤怒', panic: '悲伤',
+};
+
+var DRIVE_LABELS_CN = {
+  miss: '思念', curiosity: '好奇', care: '关爱', playfulness: '玩心',
+  express: '表达', protect: '守护', fatigue: '疲惫', connection: '连接',
+};
+
+var MOOD_CLASS_MAP = {
+  '开心': 'mood-warm', '好奇': 'mood-warm',
+  '温柔': 'mood-gentle',
+  '平静': 'mood-calm', '放空中': 'mood-calm',
+  '不安': 'mood-uneasy',
+  '烦躁': 'mood-irritated',
+  '低落': 'mood-low',
+};
+
+function startEmotionPolling() {
+  if (_emotionPollTimer) return;
+  _emotionPollTimer = setInterval(fetchEmotionData, 3000);
+  fetchEmotionData(); // immediate first fetch
+}
+
+function stopEmotionPolling() {
+  if (_emotionPollTimer) { clearInterval(_emotionPollTimer); _emotionPollTimer = null; }
+}
+
+function fetchEmotionData() {
+  if (document.hidden) return; // skip when tab is backgrounded
+  fetch('/api/debug/emotions')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var ai = data.ai || {};
+      var emojiEl = document.getElementById('aiMoodEmoji');
+      var labelEl = document.getElementById('aiMoodLabel');
+      if (emojiEl) emojiEl.textContent = ai.emoji || '😶';
+      if (labelEl) labelEl.textContent = '当前心情：' + (ai.label || '未知');
+      var summaryCard = document.querySelector('.emotion-summary');
+      if (summaryCard) {
+        summaryCard.className = 'emotion-summary';
+        var moodClass = MOOD_CLASS_MAP[ai.label] || 'mood-calm';
+        summaryCard.classList.add(moodClass);
+      }
+      renderEmotionBars('aiEmotionBars', ai.values || {}, EMOTION_LABELS_CN);
+      renderEmotionBars('driveBars', data.drives || {}, DRIVE_LABELS_CN);
+    })
+    .catch(function() {});
+  // Drift status — fetched in parallel
+  fetch('/api/debug/drift')
+    .then(function(r) { return r.json(); })
+    .then(renderDriftStatus)
+    .catch(function() {});
+}
+
+function renderEmotionBars(containerId, values, labels) {
+  var container = document.getElementById(containerId);
+  if (!container) return;
+  var html = '';
+  for (var key in labels) {
+    var val = values[key] != null ? values[key] : 0;
+    var pct = Math.round(Math.max(0, Math.min(1, val)) * 100);
+    var barClass = 'bar-' + key;
+    var intensity = val < 0.2 ? 'low' : val < 0.5 ? 'mid' : val < 0.7 ? 'high' : 'peak';
+    html += '<div class="emotion-row">'
+      + '<span class="emotion-label label-' + intensity + '">' + escapeHtml(labels[key]) + '</span>'
+      + '<span class="emotion-bar-wrap"><span class="emotion-bar-fill ' + barClass + '" style="width:' + pct + '%"></span></span>'
+      + '<span class="emotion-value value-' + intensity + '">' + (val).toFixed(2) + '</span>'
+      + '</div>';
+  }
+  container.innerHTML = html;
+}
+
+// ── Drift status rendering ────────────────────────────────────────
+var TREND_ICONS = { rising: '↑', falling: '↓', stable: '→' };
+
+function renderDriftStatus(data) {
+  var indicator = document.getElementById('driftIndicator');
+  var label = document.getElementById('driftLabel');
+  var distance = document.getElementById('driftDistance');
+  var trend = document.getElementById('driftTrend');
+  var section = document.getElementById('driftSection');
+  var canvas = document.getElementById('driftSparkline');
+
+  if (!section) return;
+
+  if (!data.available) {
+    indicator && (indicator.className = 'drift-indicator');
+    label && (label.textContent = data.reason || '暂无数据');
+    distance && (distance.textContent = '');
+    trend && (trend.textContent = '');
+    trend && (trend.className = 'drift-trend');
+    canvas && (canvas.style.display = 'none');
+    return;
+  }
+
+  // Indicator dot
+  if (indicator) {
+    indicator.className = 'drift-indicator ' + data.level;
+  }
+  // Level label
+  if (label) {
+    label.textContent = data.level_label || '未知';
+  }
+  // Distance value
+  if (distance) {
+    distance.textContent = (data.distance).toFixed(3);
+  }
+  // Trend arrow
+  if (trend) {
+    trend.textContent = TREND_ICONS[data.trend] || '→';
+    trend.className = 'drift-trend ' + (data.trend || 'stable');
+  }
+  // Sparkline
+  if (canvas && data.recent_distances && data.recent_distances.length > 1) {
+    canvas.style.display = 'flex';
+    renderSparklineBars(canvas, data.recent_distances);
+  } else if (canvas) {
+    canvas.style.display = 'none';
+  }
+}
+
+function renderSparklineBars(container, distances) {
+  var max = Math.max.apply(null, distances);
+  var min = Math.min.apply(null, distances);
+  var range = (max - min) || 0.01;
+  var html = '';
+  for (var i = 0; i < distances.length; i++) {
+    var d = distances[i];
+    var h = 2 + (d - min) / range * 14; // 2-16px bar height
+    var cls = d < 0.35 ? 'green' : d < 0.55 ? 'yellow' : d < 0.75 ? 'orange' : d < 0.90 ? 'red' : 'black';
+    var isLast = i === distances.length - 1;
+    html += '<span class="spark-bar ' + cls + (isLast ? ' current' : '') + '" style="height:' + h.toFixed(1) + 'px" title="' + d.toFixed(3) + '"></span>';
+  }
+  container.innerHTML = html;
+}
+
+// ── Token data ───────────────────────────────────────────────────
+var STEP_LABELS = {
+  'analyze_intent': '意图分析',
+  'think_deep': '深度思考',
+  'llm_main': '主回复',
+  'visual_analyze': '视觉分析',
+  'search_tags': '记忆搜索',
+  'generate_sprites': '精灵生成',
+  'condense': '摘要压缩',
+  'profile': '画像更新',
+  'persona': '人设更新'
+};
+
+function autoLoadLatestTokens() {
+  fetch('/api/debug/token-requests')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var requests = data.requests || [];
+      var labelEl = document.getElementById('tokenRequestLabel');
+      if (requests.length > 0) {
+        var latest = requests[0];
+        var d = new Date(latest.timestamp * 1000);
+        if (labelEl) labelEl.textContent = latest.id + ' — ' + d.toLocaleTimeString() + ' — ' + latest.count + '次调用';
+        refreshTokenData(latest.id);
+        // Build quick-select for recent requests
+        buildTokenSelect(requests);
+      } else {
+        if (labelEl) labelEl.textContent = '暂无记录';
+      }
+    })
+    .catch(function() {});
+}
+
+function buildTokenSelect(requests) {
+  var container = document.getElementById('tokenSelectWrap');
+  if (!container) return;
+  var html = '<select id="tokenRequestSelect" style="width:100%;font-size:0.52rem;margin-top:4px;background:rgba(16,16,36,0.95);color:#aaa;border:1px solid rgba(124,131,255,0.15);border-radius:4px;padding:3px 4px;">';
+  requests.forEach(function(r) {
+    var d = new Date(r.timestamp * 1000);
+    html += '<option value="' + escapeHtml(r.id) + '">' + escapeHtml(r.id.slice(0,8)) + ' — ' + d.toLocaleTimeString() + ' (' + escapeHtml(String(r.count)) + '次)</option>';
+  });
+  html += '</select>';
+  container.innerHTML = html;
+  document.getElementById('tokenRequestSelect').addEventListener('change', function() {
+    refreshTokenData(this.value);
+  });
+}
+
+function refreshTokenData(requestId) {
+  if (!requestId) return;
+  fetch('/api/debug/tokens?request_id=' + encodeURIComponent(requestId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var tbody = document.querySelector('#tokenTable tbody');
+      if (!tbody) return;
+      var totalPrompt = 0, totalCompletion = 0, totalAll = 0;
+      var html = '';
+      (data.records || []).forEach(function(r) {
+        totalPrompt += r.prompt_tokens || 0;
+        totalCompletion += r.completion_tokens || 0;
+        totalAll += r.total_tokens || 0;
+      });
+      (data.records || []).forEach(function(r) {
+        var label = STEP_LABELS[r.step_name] || r.step_name;
+        var pct = totalAll > 0 ? Math.round(r.total_tokens / totalAll * 100) : 0;
+        html += '<tr>'
+          + '<td><span class="tok-step">' + escapeHtml(label) + '</span></td>'
+          + '<td style="font-size:0.5rem;color:#6a6a8a">' + escapeHtml(r.model || '') + '</td>'
+          + '<td>' + (r.prompt_tokens || 0).toLocaleString() + '</td>'
+          + '<td>' + (r.completion_tokens || 0).toLocaleString() + '</td>'
+          + '<td class="tok-total">'
+          + '<span class="tok-bar" style="width:' + pct + '%"></span>'
+          + '<span class="tok-val">' + (r.total_tokens || 0).toLocaleString() + ' (' + pct + '%)</span>'
+          + '</td>'
+          + '</tr>';
+      });
+      if (!html) html = '<tr><td colspan="5" style="color:#666;text-align:center">无记录</td></tr>';
+      // Summary row
+      html += '<tr class="tok-summary"><td colspan="2">本轮合计</td>'
+        + '<td>' + totalPrompt.toLocaleString() + '</td>'
+        + '<td>' + totalCompletion.toLocaleString() + '</td>'
+        + '<td class="tok-total">' + totalAll.toLocaleString() + '</td></tr>';
+      // Cost estimate (DeepSeek pricing: ~$0.28/M input, ~$1.10/M output)
+      var cost = (totalPrompt / 1e6 * 0.28 + totalCompletion / 1e6 * 1.10).toFixed(4);
+      html += '<tr style="font-size:0.5rem;color:#5a5a7a"><td colspan="5" style="text-align:right">'
+        + '估算费用: $' + cost + ' (DeepSeek定价)</td></tr>';
+      tbody.innerHTML = html;
+    })
+    .catch(function() {});
+}
+
+// Wire up token + audit controls
+document.addEventListener('DOMContentLoaded', function() {
+  var btn = document.getElementById('tokenRefreshBtn');
+  if (btn) {
+    btn.addEventListener('click', function() { autoLoadLatestTokens(); });
+  }
+  // Visual button (calls startVisual/stopVisual from visuals.js)
+  var visualBtn = document.getElementById('visualBtn');
+  if (visualBtn) {
+    visualBtn.addEventListener('click', function() {
+      if (typeof _visualEnabled !== 'undefined' && _visualEnabled) {
+        if (typeof stopVisual === 'function') stopVisual();
+      } else {
+        if (typeof startVisual === 'function') startVisual();
+      }
+    });
+  }
+  // Audit tab controls
+  var auditRefresh = document.getElementById('auditRefreshBtn');
+  if (auditRefresh) {
+    auditRefresh.addEventListener('click', function() { refreshAuditLog(0); });
+  }
+  var auditCategory = document.getElementById('auditCategoryFilter');
+  if (auditCategory) {
+    auditCategory.addEventListener('change', function() { refreshAuditLog(0); });
+  }
+  var auditOperation = document.getElementById('auditOperationFilter');
+  if (auditOperation) {
+    auditOperation.addEventListener('change', function() { refreshAuditLog(0); });
+  }
+  var auditSearch = document.getElementById('auditSearch');
+  if (auditSearch) {
+    var _auditSearchTimer;
+    auditSearch.addEventListener('input', function() {
+      clearTimeout(_auditSearchTimer);
+      _auditSearchTimer = setTimeout(function() { refreshAuditLog(0); }, 400);
+    });
+  }
+  var auditPrev = document.getElementById('auditPrevBtn');
+  if (auditPrev) {
+    auditPrev.addEventListener('click', function() { if (_auditPage > 0) refreshAuditLog(_auditPage - 1); });
+  }
+  var auditNext = document.getElementById('auditNextBtn');
+  if (auditNext) {
+    auditNext.addEventListener('click', function() { refreshAuditLog(_auditPage + 1); });
   }
 });
 

@@ -1,6 +1,6 @@
 // @ts-check
 // ═══════════════════════════════════════════
-const NUM_STARS = 180;
+const NUM_STARS = 100;
 let stars = [];
 let functionalPoints = []; // {starIndex, type:'diary'|'news', data:{...}}
 let faceCS = 10; // cell size for face rendering
@@ -142,6 +142,9 @@ function moodStarTint() {
 
 // Subtle dot-grid pattern overlay — adds warmth without competing with content
 let _patternCanvas = null;
+let _cachedPattern = null;
+let _patternLastW = 0, _patternLastH = 0;
+let _patternFrameSkip = 0;
 
 function getDotPattern() {
   if (_patternCanvas) return _patternCanvas;
@@ -158,10 +161,17 @@ function getDotPattern() {
 
 function drawSubtlePattern() {
   if (!canvas || canvas.width === 0) return;
-  const pattern = ctx.createPattern(getDotPattern(), 'repeat');
-  if (!pattern) return;
+  _patternFrameSkip = (_patternFrameSkip + 1) % 2;
+  if (_patternFrameSkip !== 0) return;
+  // Rebuild cached pattern only on canvas resize
+  if (!_cachedPattern || canvas.width !== _patternLastW || canvas.height !== _patternLastH) {
+    _cachedPattern = ctx.createPattern(getDotPattern(), 'repeat');
+    _patternLastW = canvas.width;
+    _patternLastH = canvas.height;
+  }
+  if (!_cachedPattern) return;
   ctx.save();
-  ctx.fillStyle = pattern;
+  ctx.fillStyle = _cachedPattern;
   const brightness = (moodColor.r + moodColor.g + moodColor.b) / (3 * 255);
   const alpha = 0.015 + brightness * 0.025;
   ctx.globalAlpha = alpha;
@@ -227,17 +237,17 @@ function spawnPixelSprites(data) {
   for (const s of data) {
     if (!s.grid || !s.palette) { continue; }
     // Accept grid as array-of-strings, array-of-numbers, OR flat string (LLMs occasionally output any)
-    var gridRows = Array.isArray(s.grid) ? s.grid : [];
+    let gridRows = Array.isArray(s.grid) ? s.grid : [];
     if (gridRows.length === 0 && typeof s.grid === 'string') {
       // Flat string: chunk into rows of 'size' characters
-      var gs = s.size || 16;
-      for (var r = 0; r < gs; r++) {
+      let gs = s.size || 16;
+      for (let r = 0; r < gs; r++) {
         gridRows.push(s.grid.substring(r * gs, (r + 1) * gs));
       }
     }
     // Normalize each row to a 16-char string (handles LLM outputting numbers)
-    for (var ri = 0; ri < gridRows.length; ri++) {
-      var row = gridRows[ri];
+    for (let ri = 0; ri < gridRows.length; ri++) {
+      let row = gridRows[ri];
       if (typeof row === 'number') {
         row = String(row).padStart(16, '0');
       } else if (typeof row === 'string' && row.length < 16) {
@@ -250,7 +260,7 @@ function spawnPixelSprites(data) {
     const spread = s.spread != null ? s.spread : 0.8;
     const weight = s.weight != null ? Math.max(0, Math.min(1, s.weight)) : 0.3;
     const baseDuration = Math.min(s.duration || 3, 12);
-    var count = Math.max(1, Math.min(s.count || 1, 50)); // clamp 1-50
+    let count = Math.max(1, Math.min(s.count || 1, 50)); // clamp 1-50
 
     // Safety net: if LLM under-counted a sky effect (light sprite with low count),
     // auto-boost to ensure visible density. Catches rain/snow/petal failures.
@@ -266,7 +276,7 @@ function spawnPixelSprites(data) {
     oc.height = texSize;
     const octx = oc.getContext('2d');
     const texCell = texSize / gridSize;
-    var texPixels = 0;
+    let texPixels = 0;
     for (let row = 0; row < gridSize; row++) {
       const line = gridRows[row] || '';
       for (let col = 0; col < line.length; col++) {
@@ -282,15 +292,15 @@ function spawnPixelSprites(data) {
     if (texPixels === 0) { continue; }
 
     // Spawn 'count' copies with randomized physics
-    var isAnchored = !!s.anchor;
-    for (var ci = 0; ci < count; ci++) {
-      var angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread - weight * 0.35;
-      var speed = 0.05 + (1 - weight) * 0.10 + Math.random() * 0.05;
+    let isAnchored = !!s.anchor;
+    for (let ci = 0; ci < count; ci++) {
+      let angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * spread - weight * 0.35;
+      let speed = 0.05 + (1 - weight) * 0.10 + Math.random() * 0.05;
       // Vary cell_scale slightly for visual variety (less for anchored)
-      var cs = isAnchored ? (s.cell_scale || 1) : (s.cell_scale || 1) * (0.8 + Math.random() * 0.4);
+      let cs = isAnchored ? (s.cell_scale || 1) : (s.cell_scale || 1) * (0.8 + Math.random() * 0.4);
 
-      var landX = 0.2 + Math.random() * 0.6;
-      var stackOffset = 0;
+      let landX = 0.2 + Math.random() * 0.6;
+      let stackOffset = 0;
       if (weight >= 0.5) {
         stackOffset = _landStackCount % 5;
         _landStackCount++;
@@ -298,9 +308,9 @@ function spawnPixelSprites(data) {
 
       // For anchored sprites: minimum 3s total (0.4 emerge + 1.6 hold + 1.0 fade)
       if (isAnchored) baseDuration = Math.max(baseDuration, 3.0);
-      var initLanded = isAnchored ? true : false;
-      var initDecayDelay = isAnchored ? baseDuration : (1.0 + Math.random() * 2.5);
-      var initLife = isAnchored ? 0.5 : 0;
+      let initLanded = isAnchored ? true : false;
+      let initDecayDelay = isAnchored ? baseDuration : (1.0 + Math.random() * 2.5);
+      let initLife = isAnchored ? 0.5 : 0;
 
       pixelSprites.push({
         _tex: oc,
@@ -333,7 +343,7 @@ function spawnPixelSprites(data) {
 
 function updatePixelSprites(dt) {
   try {
-  var spriteDt = Math.min(dt, 0.2);
+  let spriteDt = Math.min(dt, 0.2);
   for (let i = pixelSprites.length - 1; i >= 0; i--) {
     const s = pixelSprites[i];
 
@@ -358,7 +368,7 @@ function updatePixelSprites(dt) {
         s.life = 0.5; // mid-life = full alpha/scale in draw
       } else {
         // Fade-out phase
-        var fadeDuration = 1.2;
+        let fadeDuration = 1.2;
         s.life = 0.85 + Math.min(1, (s.decayTime - s.decayDelay) / fadeDuration) * 0.15;
       }
       if (s.life >= 1) {
@@ -372,7 +382,7 @@ function updatePixelSprites(dt) {
       // Gravity proportional to weight
       s.vy += 0.22 * s.weight * spriteDt;
       // Air resistance: light things slow faster
-      var drag = 0.998 - s.weight * 0.003;
+      let drag = 0.998 - s.weight * 0.003;
       s.vx *= drag;
       s.vy *= drag;
       // Float wobble for light sprites
@@ -385,7 +395,7 @@ function updatePixelSprites(dt) {
 
       // Check landing for heavy sprites
       if (s.weight >= 0.5) {
-        var floorY = 0.82 + s.stackOffset * 0.035;
+        let floorY = 0.82 + s.stackOffset * 0.035;
         if (s.y >= floorY) {
           s.y = floorY;
           s.landY = floorY;
@@ -414,57 +424,57 @@ function drawPixelSprites() {
   const prevSmoothing = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = false;
 
-  var hasLanded = false;
+  let hasLanded = false;
 
   for (const s of pixelSprites) {
     // Anchored sprites: face-relative with emerge→hold→fade animation
     if (s.anchor) {
-      var t2 = performance.now() / 1000;
-      var headBob2 = Math.sin(t2 * 0.78) * 0.03;
-      var tiltX2 = ((curParams.head_tilt || 0) + headBob2) * 3 * faceCS;
-      var faceCX = faceOx + 32 * faceCS + tiltX2;
-      var faceCY = faceOy + 32 * faceCS + faceBob;
-      var anchorPx = faceCX + (s.anchor_rx || 0) * faceCS;
-      var anchorPy = faceCY + (s.anchor_ry || 0) * faceCS;
+      let t2 = performance.now() / 1000;
+      let headBob2 = Math.sin(t2 * 0.78) * 0.03;
+      let tiltX2 = ((curParams.head_tilt || 0) + headBob2) * 3 * faceCS;
+      let faceCX = faceOx + 32 * faceCS + tiltX2;
+      let faceCY = faceOy + 32 * faceCS + faceBob;
+      let anchorPx = faceCX + (s.anchor_rx || 0) * faceCS;
+      let anchorPy = faceCY + (s.anchor_ry || 0) * faceCS;
 
       // Three-phase: emerge (elastic scale-in) → hold (gentle sway) → fade
-      var age = s.decayTime;
-      var emergeDur = 0.4;
-      var fadeDur = 1.0;
-      var holdDur = Math.max(0.5, s.decayDelay - emergeDur - fadeDur);
-      var aScale, aAlpha;
+      let age = s.decayTime;
+      let emergeDur = 0.4;
+      let fadeDur = 1.0;
+      let holdDur = Math.max(0.5, s.decayDelay - emergeDur - fadeDur);
+      let aScale, aAlpha;
       if (age < emergeDur) {
-        var et = age / emergeDur;
+        let et = age / emergeDur;
         // easeOutBack
-        var c1 = 1.70158, c3 = c1 + 1;
+        let c1 = 1.70158, c3 = c1 + 1;
         aScale = 1 + c3 * Math.pow(et - 1, 3) + c1 * Math.pow(et - 1, 2);
         aAlpha = et;
       } else if (age < emergeDur + holdDur) {
         aScale = 1 + Math.sin(age * 2.5) * 0.03;
         aAlpha = 1;
       } else {
-        var ft = Math.min(1, (age - emergeDur - holdDur) / fadeDur);
+        let ft = Math.min(1, (age - emergeDur - holdDur) / fadeDur);
         aScale = 1 - ft * 0.2;
         aAlpha = 1 - ft;
       }
 
-      var anchorCell = Math.max(canvas.width, canvas.height) * 0.005 * (s.cellScale || 1);
-      var anchorW = s.gridSize * anchorCell * aScale;
-      var anchorH = s.gridSize * anchorCell * aScale;
+      let anchorCell = Math.max(canvas.width, canvas.height) * 0.005 * (s.cellScale || 1);
+      let anchorW = s.gridSize * anchorCell * aScale;
+      let anchorH = s.gridSize * anchorCell * aScale;
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, aAlpha));
       ctx.drawImage(s._tex, anchorPx - anchorW / 2, anchorPy - anchorH / 2, anchorW, anchorH);
       ctx.restore();
       continue;
     }
-    var scale, alpha;
+    let scale, alpha;
     if (s.landed) {
       hasLanded = true;
       // Landed sprites: no fly-in/out animation, just sit and fade
       if (s.decayTime < s.decayDelay) {
         scale = 1; alpha = 1;
       } else {
-        var fade = Math.min(1, (s.decayTime - s.decayDelay) / 1.2);
+        let fade = Math.min(1, (s.decayTime - s.decayDelay) / 1.2);
         scale = 1 - fade * 0.3;
         alpha = 1 - fade;
       }
@@ -475,7 +485,7 @@ function drawPixelSprites() {
         scale = s.life / 0.15;
         alpha = scale;
       } else if (s.life > 0.85) {
-        var fade2 = (s.life - 0.85) / 0.15;
+        let fade2 = (s.life - 0.85) / 0.15;
         scale = 1 - fade2 * 0.4;
         alpha = 1 - fade2;
       } else {
@@ -484,11 +494,11 @@ function drawPixelSprites() {
       }
     }
 
-    var px = s.x * canvas.width;
-    var py = s.y * canvas.height;
-    var cellSize = Math.max(canvas.width, canvas.height) * 0.005 * scale * (s.cellScale || 1);
-    var totalW = s.gridSize * cellSize;
-    var totalH = s.gridSize * cellSize;
+    let px = s.x * canvas.width;
+    let py = s.y * canvas.height;
+    let cellSize = Math.max(canvas.width, canvas.height) * 0.005 * scale * (s.cellScale || 1);
+    let totalW = s.gridSize * cellSize;
+    let totalH = s.gridSize * cellSize;
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -508,8 +518,8 @@ function drawPixelSprites() {
 }
 
 function drawLandingShelf() {
-  var shelfY = canvas.height * 0.83;
-  var grad = ctx.createLinearGradient(0, shelfY - 4, 0, shelfY + 1);
+  let shelfY = canvas.height * 0.83;
+  let grad = ctx.createLinearGradient(0, shelfY - 4, 0, shelfY + 1);
   grad.addColorStop(0, 'rgba(124,131,255,0)');
   grad.addColorStop(0.5, 'rgba(124,131,255,0.12)');
   grad.addColorStop(1, 'rgba(124,131,255,0.04)');
@@ -532,7 +542,7 @@ function drawLandingShelf() {
 // Meteor showers
 // ═══════════════════════════════════════════
 let meteors = [];
-let meteorShowerTimer = 15 + Math.random() * 30; // seconds until next shower
+let meteorShowerTimer = 40 + Math.random() * 40; // seconds until next shower
 let meteorShowerActive = false;
 let showerMeteorsLeft = 0;
 let showerCooldown = 0;
@@ -558,9 +568,9 @@ function updateMeteors(dt) {
   meteorShowerTimer -= dt;
   if (meteorShowerTimer <= 0 && !meteorShowerActive) {
     meteorShowerActive = true;
-    showerMeteorsLeft = 5 + Math.floor(Math.random() * 8);
+    showerMeteorsLeft = 3 + Math.floor(Math.random() * 4);
     showerCooldown = 0;
-    meteorShowerTimer = 25 + Math.random() * 40;
+    meteorShowerTimer = 60 + Math.random() * 60;
   }
 
   // Spawn meteors during shower
@@ -574,8 +584,8 @@ function updateMeteors(dt) {
     if (showerMeteorsLeft <= 0 && meteors.length === 0) {
       meteorShowerActive = false;
     }
-  } else if (Math.random() < 0.004) {
-    // Occasional lone meteor outside showers
+  } else if (Math.random() < 0.0015) {
+    // Occasional lone meteor outside showers (reduced)
     spawnMeteor();
   }
 
@@ -709,7 +719,7 @@ function updateStarfield(dt) {
 }
 
 function drawConstellations(mx, my) {
-  const MAX_DIST = 120;
+  const MAX_DIST = 100;
   const lines = [];
   for (let i = 0; i < stars.length; i++) {
     for (let j = i + 1; j < stars.length; j++) {
@@ -752,17 +762,28 @@ function drawConstellations(mx, my) {
 
 let cursorX = null, cursorY = null;
 
+// Cached mood gradient — only rebuild when color or canvas size changes
+let _cachedGrad = null;
+let _cachedGradR = -1, _cachedGradG = -1, _cachedGradB = -1;
+let _cachedGradW = 0, _cachedGradH = 0;
+
 function drawStarfield() {
   // Mood-driven gradient — shifts warm/cool based on conversation sentiment
   // Blends AI background override with mood/circadian for topic-aware atmosphere
   const eff = getEffectiveMoodColor();
   const r = Math.round(eff.r), g = Math.round(eff.g), b = Math.round(eff.b);
-  const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/3.5, 0, canvas.width/2, canvas.height*0.8, canvas.height * 0.75);
-  grad.addColorStop(0, `rgb(${r},${g},${b})`);
-  grad.addColorStop(0.35, `rgb(${Math.round(r*0.72)},${Math.round(g*0.70)},${Math.round(b*0.74)})`);
-  grad.addColorStop(0.65, `rgb(${Math.round(r*0.40)},${Math.round(g*0.38)},${Math.round(b*0.44)})`);
-  grad.addColorStop(1, `rgb(${Math.round(r*0.10)},${Math.round(g*0.08)},${Math.round(b*0.15)})`);
-  ctx.fillStyle = grad;
+  // Rebuild gradient only when color changed >2 units or canvas resized
+  if (!_cachedGrad || Math.abs(r - _cachedGradR) > 2 || Math.abs(g - _cachedGradG) > 2 || Math.abs(b - _cachedGradB) > 2 ||
+      canvas.width !== _cachedGradW || canvas.height !== _cachedGradH) {
+    _cachedGrad = ctx.createRadialGradient(canvas.width/2, canvas.height/3.5, 0, canvas.width/2, canvas.height*0.8, canvas.height * 0.75);
+    _cachedGrad.addColorStop(0, `rgb(${r},${g},${b})`);
+    _cachedGrad.addColorStop(0.35, `rgb(${Math.round(r*0.72)},${Math.round(g*0.70)},${Math.round(b*0.74)})`);
+    _cachedGrad.addColorStop(0.65, `rgb(${Math.round(r*0.40)},${Math.round(g*0.38)},${Math.round(b*0.44)})`);
+    _cachedGrad.addColorStop(1, `rgb(${Math.round(r*0.10)},${Math.round(g*0.08)},${Math.round(b*0.15)})`);
+    _cachedGradR = r; _cachedGradG = g; _cachedGradB = b;
+    _cachedGradW = canvas.width; _cachedGradH = canvas.height;
+  }
+  ctx.fillStyle = _cachedGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Overlay AI-controlled color fields (Rothko-style abstract regions)
@@ -850,7 +871,6 @@ function updateConvergence(dt) {
       }
     }
     inputRow.classList.add('visible');
-    loadTopics();
     textarea.focus();
   }
 }
@@ -1197,14 +1217,21 @@ function drawFaceOnCanvas(params, oy) {
   }
 }
 
+let _cachedFacePixels = null;
+let _facePixelFrameSkip = 0;
+
 function drawSparkleOverlay(oy) {
   const t = performance.now() / 1000;
   const headBob = Math.sin(t * 0.78) * 0.03;
   const tiltX = ((curParams.head_tilt || 0) + headBob) * 3 * faceCS;
   const ox = faceOx + tiltX;
-  const facePixels = getFacePixels(curParams);
-  if (!facePixels.length) return;
-  const fps = facePixels;
+  // Recompute face pixels every 3 frames (20fps — sparkles don't need 60fps precision)
+  _facePixelFrameSkip = (_facePixelFrameSkip + 1) % 3;
+  if (_facePixelFrameSkip === 0 || !_cachedFacePixels) {
+    _cachedFacePixels = getFacePixels(curParams);
+  }
+  if (!_cachedFacePixels.length) return;
+  const fps = _cachedFacePixels;
   for (const sp of sparkleParticles) {
     const fpIdx = Math.floor(sp.idx / NUM_SPARKLES * fps.length) % fps.length;
     const fp = fps[fpIdx];
@@ -1262,3 +1289,236 @@ function drawChat() {
   // AI pixel sprites flying out from face
   drawPixelSprites();
 }
+
+// ═══════════════════════════════════════════
+// Visual Perception Module — Camera + Capture
+// ═══════════════════════════════════════════
+
+var _visualStream = null;
+var _visualTimer = null;
+var _visualIdleTimer = null;
+var _visualEnabled = false;
+var _visualFacingMode = 'environment';
+var _visualUploading = false;
+var _pressStartTime = 0;
+var _pressStartPos = { x: 0, y: 0 };
+var VISUAL_IDLE_TIMEOUT = 60000;  // 60s
+
+function resetVisualIdleTimer() {
+  if (!_visualEnabled) return;
+  clearTimeout(_visualIdleTimer);
+  _visualIdleTimer = setTimeout(stopVisual, VISUAL_IDLE_TIMEOUT);
+}
+
+function startVisual() {
+  var constraints = {
+    video: { width: 640, height: 480, facingMode: { ideal: _visualFacingMode } },
+    audio: false
+  };
+
+  navigator.mediaDevices.getUserMedia(constraints).then(function(stream) {
+    _visualStream = stream;
+
+    // Video IS the preview — fully visible, fills overlay
+    var overlay = document.getElementById('visualOverlay');
+    var oldVideo = overlay.querySelector('video[_visualVideo]');
+    if (oldVideo) oldVideo.remove();
+    var video = document.createElement('video');
+    video.srcObject = stream;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.setAttribute('playsinline', '');
+    video.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:0;';
+    overlay.appendChild(video);
+    video._visualVideo = true;
+
+    // Listen for track ended (screen lock, app switch, permission revoke)
+    stream.getVideoTracks()[0].addEventListener('ended', function() {
+      stopVisual();
+    });
+
+    // Prepare capture canvas (hidden — used only for screenshots, not preview)
+    var vc = document.getElementById('visualCanvas');
+    vc.width = 640;
+    vc.height = 480;
+    overlay.style.display = 'block';
+
+    // Start capture timer (0.5s)
+    _visualEnabled = true;
+    _visualTimer = setInterval(captureAndUpload, 500);
+    document.getElementById('visualBtn').classList.add('active');
+    resetVisualIdleTimer();
+  }).catch(function(err) {
+    var msg = '摄像头启动失败：';
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      msg += '权限被拒绝，请在浏览器设置中允许摄像头访问。';
+    } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      msg += '未检测到摄像头设备。';
+    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      msg += '摄像头可能正在被其他应用使用。';
+    } else if (err.name === 'OverconstrainedError') {
+      msg += '摄像头不支持所需分辨率，请尝试切换摄像头。';
+    } else if (err.name === 'SecurityError' || err.message.indexOf('secure') > -1) {
+      msg += '需要 HTTPS 安全连接。请先在浏览器中访问此页面并接受证书警告。';
+    } else {
+      msg += '未知错误：' + err.message;
+    }
+    if (typeof addDebugLog === 'function') addDebugLog('error', 'Camera', msg);
+  });
+}
+
+function stopVisual() {
+  _visualEnabled = false;
+
+  // Stop media tracks
+  if (_visualStream) {
+    _visualStream.getVideoTracks().forEach(function(t) { t.stop(); });
+    _visualStream = null;
+  }
+
+  // Clear timers
+  clearInterval(_visualTimer);
+  _visualTimer = null;
+  clearTimeout(_visualIdleTimer);
+  _visualIdleTimer = null;
+
+  // Clean up hidden video element
+  var videos = document.querySelectorAll('video[_visualVideo]');
+  for (var i = 0; i < videos.length; i++) { videos[i].remove(); }
+
+  // Hide overlay
+  var overlay = document.getElementById('visualOverlay');
+  if (overlay) overlay.style.display = 'none';
+
+  // Remove active state
+  var btn = document.getElementById('visualBtn');
+  if (btn) btn.classList.remove('active');
+}
+
+function toggleCamera() {
+  var wasEnabled = _visualEnabled;
+  stopVisual();
+  _visualFacingMode = (_visualFacingMode === 'environment') ? 'user' : 'environment';
+  if (wasEnabled) {
+    setTimeout(startVisual, 300);  // brief delay for track release
+  }
+}
+
+function captureAndUpload() {
+  if (_visualUploading) return;  // previous upload not finished
+  var vc = document.getElementById('visualCanvas');
+  if (!vc) return;
+
+  // Draw current video frame onto capture canvas first
+  var video = document.querySelector('video[_visualVideo]');
+  if (video && video.readyState >= video.HAVE_CURRENT_DATA) {
+    var ctx = vc.getContext('2d');
+    ctx.drawImage(video, 0, 0, vc.width, vc.height);
+  }
+
+  // Resize to 320×240 offscreen
+  var off = document.createElement('canvas');
+  off.width = 320;
+  off.height = 240;
+  var offCtx = off.getContext('2d');
+  offCtx.drawImage(vc, 0, 0, 320, 240);
+
+  _visualUploading = true;
+  var controller = new AbortController();
+  var timeout = setTimeout(function() { controller.abort(); }, 3000);
+
+  off.toBlob(function(blob) {
+    if (!blob) { _visualUploading = false; return; }
+    var reader = new FileReader();
+    reader.onload = function() {
+      clearTimeout(timeout);
+      var b64 = reader.result.split(',')[1];
+      fetch('/api/visual/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_base64: b64 }),
+        signal: controller.signal
+      }).catch(function() {}).finally(function() {
+        _visualUploading = false;
+      });
+    };
+    reader.onerror = function() {
+      clearTimeout(timeout);
+      _visualUploading = false;
+    };
+    reader.readAsDataURL(blob);
+  }, 'image/jpeg', 0.6);
+}
+
+// ── Page visibility: pause capture when hidden ──
+document.addEventListener('visibilitychange', function() {
+  if (!_visualEnabled) return;
+  if (document.hidden) {
+    clearInterval(_visualTimer);
+    _visualTimer = null;
+  } else {
+    if (!_visualTimer) {
+      _visualTimer = setInterval(captureAndUpload, 500);
+    }
+  }
+});
+
+// ── Cleanup on unload ──
+window.addEventListener('beforeunload', function() {
+  if (_visualEnabled) stopVisual();
+});
+
+// ── Overlay drag ──
+(function() {
+  var overlay = null;
+  var dragging = false;
+  var startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+  document.addEventListener('pointerdown', function(e) {
+    overlay = e.target.closest ? e.target.closest('#visualOverlay') : null;
+    if (!overlay) return;
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    _pressStartTime = Date.now();
+    _pressStartPos = { x: e.clientX, y: e.clientY };
+    var rect = overlay.getBoundingClientRect();
+    origLeft = rect.left;
+    origTop = rect.top;
+    overlay.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  document.addEventListener('pointermove', function(e) {
+    if (!dragging || !overlay) return;
+    var dx = e.clientX - startX;
+    var dy = e.clientY - startY;
+    overlay.style.right = 'auto';
+    overlay.style.top = 'auto';
+    overlay.style.left = (origLeft + dx) + 'px';
+    overlay.style.top = (origTop + dy) + 'px';
+  });
+
+  document.addEventListener('pointerup', function(e) {
+    // Long press detection: toggle camera (front/back) if held still >= 600ms
+    if (_pressStartTime) {
+      var dt = Date.now() - _pressStartTime;
+      var dx = e.clientX - _pressStartPos.x;
+      var dy = e.clientY - _pressStartPos.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 10 && dt >= 600) {
+        toggleCamera();
+      }
+      _pressStartTime = 0;
+    }
+    dragging = false;
+    overlay = null;
+  });
+
+  // Double-click: toggle size
+  document.addEventListener('dblclick', function(e) {
+    var ov = e.target.closest ? e.target.closest('#visualOverlay') : null;
+    if (ov) ov.classList.toggle('visual-overlay-large');
+  });
+})();

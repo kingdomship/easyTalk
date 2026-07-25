@@ -24,6 +24,8 @@ def cleanup_old_data():
         _cleanup_mood_history(retention_days=30)
         _cleanup_conversation_archive(max_lines=500, keep_lines=250)
         _cleanup_system_trace(retention_days=7)
+        _cleanup_audit_log(retention_days=180)
+        _cleanup_token_usage(retention_days=90)
         logger.info("Data lifecycle cleanup completed")
     except Exception:
         logger.warning("Data cleanup failed", exc_info=True)
@@ -93,3 +95,19 @@ def _cleanup_system_trace(retention_days: int):
     deleted = execute("DELETE FROM system_trace WHERE created_at < %s", [cutoff])
     if deleted > 0:
         logger.info("Cleaned %d old system trace records", deleted)
+
+
+def _cleanup_audit_log(retention_days: int = 180):
+    """Delete audit log records older than retention period."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    deleted = execute("DELETE FROM audit_log WHERE created_at < %s", [cutoff])
+    if deleted > 0:
+        logger.info("Cleaned %d old audit log records (retention=%d days)", deleted, retention_days)
+
+
+def _cleanup_token_usage(retention_days: int = 90):
+    """Delete token usage records older than retention period."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    deleted = execute("DELETE FROM token_usage WHERE created_at < %s", [cutoff])
+    if deleted > 0:
+        logger.info("Cleaned %d old token usage records (retention=%d days)", deleted, retention_days)

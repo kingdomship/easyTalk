@@ -8,15 +8,17 @@ import hashlib
 import random
 import re
 import threading
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.db import q, execute, init_db
-from app.utils import get_background_executor, get_low_priority_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear
+from app.utils import get_background_executor, get_low_priority_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear, llm_module_context
 from app.models import ChatRequest
 from app.tracer import set_request_id, step
+from app.audit import audit_log
 from app.emotion_params import (
     make_default_frame, clamp_frame, jitter_frame,
     frame_to_db_values, row_to_frame_dict, PARAM_DEFAULTS, EMOTION_PARAMS,
@@ -31,7 +33,6 @@ from services.identity.sprite_library import lookup_sprite, persist_sprite
 from services.emotion.affect import update_affect, get_affect_context, get_valence_context
 from services.memory.crystallization import maybe_crystallize, get_crystal_context
 from services.cognition.state_machine import determine_mode, get_mode_suffix, get_mode_temp_mod, determine_arousal, get_arousal_temp_mod, get_arousal_token_mod, get_drive_temp_mod
-from services.identity.guard import maybe_guard, get_drift_correction
 from services.identity.drift_detector import check_and_intervene
 from services.memory.knowledge_graph import maybe_extract_kg
 from services.cognition.predictive_agent import pre_dialogue_analyze, feedback, get_prediction_context
@@ -72,7 +73,7 @@ def _get_affect_dict() -> dict | None:
             return {k: round(v, 4) for k, v in affect.items()
                     if k in ("seeking", "play", "care", "fear", "rage", "panic")}
     except Exception:
-        pass
+        logger.warning("Failed to get affect dict", exc_info=True)
     return None
 
 
@@ -153,7 +154,6 @@ def _post_reply_pipeline(msg: str, reply: str, label: str,
     _lo = get_low_priority_executor()
     _lo.submit(pre_dialogue_analyze)
     _lo.submit(maybe_crystallize)
-    _lo.submit(maybe_guard)
     _lo.submit(detect_situations)
     _lo.submit(distill_episode)
     _lo.submit(analyze_attachment)
@@ -214,15 +214,16 @@ def _maybe_condense():
         client = get_llm()
         if client is None:
             return
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": CONDENSE_PROMPT},
-                {"role": "user", "content": f"以下是完整对话记录：\n\n{transcript}"},
-            ],
-            temperature=0.5,
-            max_tokens=2000,
-        )
+        with llm_module_context("condense"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": CONDENSE_PROMPT},
+                    {"role": "user", "content": f"以下是完整对话记录：\n\n{transcript}"},
+                ],
+                temperature=0.5,
+                max_tokens=2000,
+            )
         summary = resp.choices[0].message.content
 
         summary_path = SUMMARY_PATH
@@ -335,18 +336,19 @@ def _maybe_update_memory_files():
         # Update user profile every N turns
         if line_count - _last_profile_count >= _PROFILE_UPDATE_EVERY and current_profile:
             try:
-                resp = client.chat.completions.create(
-                    model=get_llm_model(),
-                    messages=[
-                        {"role": "system", "content": _PROFILE_UPDATE_PROMPT.format(
-                            current_profile=current_profile,
-                            recent_transcript=recent_transcript,
-                        )},
-                        {"role": "user", "content": "请更新用户档案。"},
-                    ],
-                    temperature=0.5,
-                    max_tokens=1500,
-                )
+                with llm_module_context("profile"):
+                    resp = client.chat.completions.create(
+                        model=get_llm_model(),
+                        messages=[
+                            {"role": "system", "content": _PROFILE_UPDATE_PROMPT.format(
+                                current_profile=current_profile,
+                                recent_transcript=recent_transcript,
+                            )},
+                            {"role": "user", "content": "请更新用户档案。"},
+                        ],
+                        temperature=0.5,
+                        max_tokens=1500,
+                    )
                 new_profile = resp.choices[0].message.content
                 with open(profile_path, "w") as f:
                     f.write(new_profile)
@@ -358,18 +360,19 @@ def _maybe_update_memory_files():
         # Update AI persona every N turns
         if line_count - _last_persona_count >= _PERSONA_UPDATE_EVERY and current_persona:
             try:
-                resp = client.chat.completions.create(
-                    model=get_llm_model(),
-                    messages=[
-                        {"role": "system", "content": _PERSONA_UPDATE_PROMPT.format(
-                            current_persona=current_persona,
-                            recent_transcript=recent_transcript,
-                        )},
-                        {"role": "user", "content": "请更新你的人设。"},
-                    ],
-                    temperature=0.6,
-                    max_tokens=1500,
-                )
+                with llm_module_context("persona"):
+                    resp = client.chat.completions.create(
+                        model=get_llm_model(),
+                        messages=[
+                            {"role": "system", "content": _PERSONA_UPDATE_PROMPT.format(
+                                current_persona=current_persona,
+                                recent_transcript=recent_transcript,
+                            )},
+                            {"role": "user", "content": "请更新你的人设。"},
+                        ],
+                        temperature=0.6,
+                        max_tokens=1500,
+                    )
                 new_persona = resp.choices[0].message.content
                 with open(persona_path, "w") as f:
                     f.write(new_persona)
@@ -446,6 +449,17 @@ def _is_story_request(msg: str) -> bool:
     return any(m in msg for m in _STORY_MARKERS)
 
 
+_VISUAL_KEYWORDS = [
+    "看看", "看到", "看见", "摄像头", "镜头", "画面",
+    "眼前", "前面", "后面", "桌上", "有什么", "能看到",
+    "帮我看看", "光线", "屏幕上", "拍到",
+]
+
+def _is_visual_request(msg: str) -> bool:
+    """Keyword fallback for visual intent — catches cases the LLM classifier misses."""
+    return any(kw in msg for kw in _VISUAL_KEYWORDS)
+
+
 def _is_deep_question(msg: str) -> bool:
     """Detect whether a message warrants deep thinking before reply."""
     if len(msg) > 100:
@@ -478,12 +492,14 @@ weather: 提到天气/季节/自然场景
 story: 要求讲故事或叙述事件
 object: 提到具体可见的物品（帽子/花/猫/咖啡等）
 topic: 提到有氛围感的话题（食物/浪漫/回忆/庆祝/旅行等）
+psychology: 用户表达了深层心理需求——自我反思或自我怀疑（"我是不是..."），复杂人际冲突（含归因和关系张力，而非随口吐槽），或寻求理解和方向（"不知道该怎么办"、"为什么会这样"）。注意：单纯的喜怒哀乐、日常抱怨、疲劳吐槽不应标记为psychology——这些属于emotion标签的范畴。只有当用户明显在寻求更深层的心理理解时才标记。
+	visual: 用户询问当前环境/画面相关的问题（"看看有什么"、"我在哪"、"屏幕上有什么"、"眼前是什么"、"看看我前面"、"能看到我吗"、"光线怎么样"、"我背后是什么"、"镜头里有什么"等需要摄像头视觉信息的问题）。注意：普通闲聊、情绪倾诉等不应标记为visual。
 none: 以上都不适用
 
 只输出JSON数组，如["emotion","weather"]，不要其他内容。"""
 
 
-def _analyze_intent_sync(msg: str) -> list[str] | None:
+def _analyze_intent_sync(msg: str, recent_history: str = "") -> list[str] | None:
     """Quick AI pre-analysis of user intent for module selection.
 
     Returns a list of intent tags, or None on failure (fall back to keyword
@@ -493,15 +509,19 @@ def _analyze_intent_sync(msg: str) -> list[str] | None:
         client = get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _INTENT_PROMPT},
-                {"role": "user", "content": msg},
-            ],
-            temperature=0.0,
-            max_tokens=50,
-        )
+        user_content = msg
+        if recent_history:
+            user_content = f"最近对话：\n{recent_history}\n\n用户当前消息：{msg}"
+        with llm_module_context("analyze_intent"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _INTENT_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                max_tokens=50,
+            )
         raw = resp.choices[0].message.content.strip()
         start = raw.find("[")
         end = raw.rfind("]") + 1
@@ -514,9 +534,9 @@ def _analyze_intent_sync(msg: str) -> list[str] | None:
     return None
 
 
-async def _analyze_intent(msg: str) -> list[str] | None:
+async def _analyze_intent(msg: str, recent_history: str = "") -> list[str] | None:
     """Async wrapper for _analyze_intent_sync."""
-    return await asyncio.to_thread(_analyze_intent_sync, msg)
+    return await asyncio.to_thread(_analyze_intent_sync, msg, recent_history)
 
 
 def _think(msg: str) -> str | None:
@@ -529,24 +549,103 @@ def _think(msg: str) -> str | None:
         client = get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _THINKING_PROMPT},
-                {"role": "user", "content": msg},
-            ],
-            temperature=0.7,
-            max_tokens=500,
-        )
+        with llm_module_context("think_deep"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _THINKING_PROMPT},
+                    {"role": "user", "content": msg},
+                ],
+                temperature=0.7,
+                max_tokens=500,
+            )
         return resp.choices[0].message.content.strip()
     except Exception:
         logger.warning("Operation failed", exc_info=True)
-        return None
+
+
+
+# ── Visual perception module ────────────────────────────────────
+
+_visual_analysis_in_progress = False
+
+
+def _analyze_visual_sync(query: str) -> str:
+    """Synchronous visual analysis: read buffer, select frames, stitch, call Qwen.
+
+    Returns visual description string, or "" on any failure.
+    """
+    from app.routes.visual import _get_buffer
+    import time
+    from app.utils import get_visual_llm, stitch_frames, analyze_frames
+
+    client = get_visual_llm()
+    if client is None:
+        return ""
+
+    buf = _get_buffer("default")
+    now = time.time()
+
+    # Select up to 4 frames with 15s TTL
+    import threading
+    from app.routes.visual import _buf_lock
+    with _buf_lock:
+        all_frames = [f for f in buf if now - f["timestamp"] < 15]
+
+    if not all_frames:
+        return ""
+
+    all_frames.sort(key=lambda f: f["timestamp"])
+    latest = all_frames[-1]
+
+    def _pick(target_offset: float):
+        target_ts = latest["timestamp"] + target_offset
+        best = all_frames[0]
+        for f in all_frames:
+            if abs(f["timestamp"] - target_ts) < abs(best["timestamp"] - target_ts):
+                best = f
+        return best
+
+    selected = [_pick(-10.0), _pick(-6.0), _pick(-3.0), latest]
+    seen = set()
+    unique = []
+    for f in selected:
+        if f["index"] not in seen:
+            seen.add(f["index"])
+            unique.append(f)
+
+    if not unique:
+        return ""
+
+    stitched = stitch_frames(unique)
+    if stitched is None:
+        return ""
+
+    return analyze_frames(query, stitched)
+
+
+async def _analyze_visual(msg: str) -> str:
+    """Async wrapper for visual analysis with concurrent guard.
+
+    Returns "" if another analysis is already in progress or on any failure.
+    """
+    global _visual_analysis_in_progress
+    if _visual_analysis_in_progress:
+        return ""
+    _visual_analysis_in_progress = True
+    try:
+        return await asyncio.to_thread(_analyze_visual_sync, msg)
+    except Exception:
+        logger.warning("Visual analysis failed", exc_info=True)
+        return ""
+    finally:
+        _visual_analysis_in_progress = False
 
 
 def _build_context(msg: str, thinking: str | None = None,
                    intent_tags: list[str] | None = None,
-                   idle_min: float = 0) -> list:
+                   idle_min: float = 0,
+                   visual_description: str = "") -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
@@ -680,10 +779,6 @@ def _build_context(msg: str, thinking: str | None = None,
     mode = determine_mode(_is_deep_question(msg), get_affect(), drives=drives)
     system_msg += "\n\n[互动模式]\n" + get_mode_suffix(mode)
 
-    drift_correction = get_drift_correction()
-    if drift_correction:
-        system_msg += "\n\n" + drift_correction
-
     self_eval_correction = get_self_eval_correction()
     if self_eval_correction:
         system_msg += "\n\n" + self_eval_correction
@@ -712,6 +807,11 @@ def _build_context(msg: str, thinking: str | None = None,
             system_msg += "\n\n" + portrait
     except Exception:
         logger.warning("Failed to get user portrait", exc_info=True)
+
+    # ── Visual perception ──
+    if visual_description:
+        system_msg += "\n\n[视觉感知]\n" + visual_description
+        system_msg += "\n（以上是摄像头实时画面分析，请参考来回答视觉问题。如描述与用户问题明显不符，以你的判断为准。）"
 
     history_rows = q(
         "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 4", [],
@@ -774,10 +874,11 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
         if is_story:
             temp += 0.05  # boost creativity for storytelling
         max_tok = 8192 if is_story else 4096
-        resp = client.chat.completions.create(
-            model=get_llm_model(), messages=msgs,
-            temperature=temp, max_tokens=max_tok,
-        )
+        with llm_module_context("llm_main"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(), messages=msgs,
+                temperature=temp, max_tokens=max_tok,
+            )
         raw = resp.choices[0].message.content
         start = raw.find("{")
         end = raw.rfind("}") + 1
@@ -874,11 +975,12 @@ def _generate_sprites(keywords: list) -> list:
         {"role": "user", "content": user_prompt},
     ]
     try:
-        resp = client.chat.completions.create(
-            model=get_llm_model(), messages=messages,
-            temperature=0.7, max_tokens=16384,
-            timeout=8.0,
-        )
+        with llm_module_context("generate_sprites"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(), messages=messages,
+                temperature=0.7, max_tokens=16384,
+                timeout=8.0,
+            )
         raw = resp.choices[0].message.content
         # Log without newlines so we can see the full response
         raw_flat = raw.replace('\n', '\\n') if raw else ''
@@ -922,6 +1024,7 @@ def _generate_sprites(keywords: list) -> list:
 @router.post("/api/chat")
 async def chat(req: ChatRequest):
     init_db()
+    set_request_id()
     msg = req.message.strip()
     if not msg:
         return {"error": "empty message"}
@@ -964,13 +1067,42 @@ async def chat(req: ChatRequest):
                 f.update(jitter_frame(f))
                 f.update(scale_emotion_params(f))
             result["source"] = "cache"
+            audit_log("chat_message", "chat", detail=msg[:200],
+                      metadata={"source": "cache"})
             return result
 
     fg_token = llm_foreground()
     try:
-        thinking = await asyncio.to_thread(_think, msg) if is_deep else None
-        intent_tags = await _analyze_intent(msg)
-        messages = _build_context(msg, thinking, intent_tags=intent_tags, idle_min=idle_min)
+        # Load recent 2-turn history for intent context
+        recent_rows = q(
+            "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 2",
+            [], fetch="all",
+        )
+        recent = "\n".join(f"用户：{r['user_msg']}\nAI：{r['avatar_reply']}" for r in reversed(recent_rows)) if recent_rows else ""
+
+        if is_deep:
+            intent_tags = await _analyze_intent(msg, recent)
+            has_visual = "visual" in (intent_tags or []) or _is_visual_request(msg)
+            if has_visual:
+                results = await asyncio.gather(
+                    asyncio.to_thread(_think, msg),
+                    _analyze_visual(msg),
+                    return_exceptions=True,
+                )
+                thinking = results[0] if not isinstance(results[0], BaseException) else None
+                visual_desc = results[1] if not isinstance(results[1], BaseException) else ""
+            else:
+                thinking = await asyncio.to_thread(_think, msg)
+                visual_desc = ""
+        else:
+            thinking = None
+            intent_tags = await _analyze_intent(msg, recent)
+            has_visual = "visual" in (intent_tags or []) or _is_visual_request(msg)
+            if has_visual:
+                visual_desc = await _analyze_visual(msg)
+            else:
+                visual_desc = ""
+        messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
     finally:
         llm_foreground_clear(fg_token)
@@ -997,21 +1129,24 @@ async def chat(req: ChatRequest):
     if scenes:
         result["scenes"] = scenes
 
-    new_row = q(
-        "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-        [msg, full_reply, parsed[0]["label"]], fetch="one",
-    )
-    turn_id = new_row["id"] if new_row else None
-    _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
-                         thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
-                         is_deep=is_deep)
-
-    first = parsed[0]
-    seq = json.dumps(parsed) if len(parsed) > 1 else None
-    _upsert(key, first, result["reply"], seq, result.get("color_fields"))
-    _upsert(first["label"], first, result["reply"], seq, result.get("color_fields"))
+    def _persist_and_pipeline_chat():
+        new_row = q(
+            "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
+            [msg, full_reply, parsed[0]["label"]], fetch="one",
+        )
+        tid = new_row["id"] if new_row else None
+        _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
+                             thinking=thinking, llm_tags=llm_tags, turn_id=tid,
+                             is_deep=is_deep)
+        first = parsed[0]
+        seq = json.dumps(parsed) if len(parsed) > 1 else None
+        _upsert(key, first, result["reply"], seq, result.get("color_fields"))
+        _upsert(first["label"], first, result["reply"], seq, result.get("color_fields"))
+    await asyncio.to_thread(_persist_and_pipeline_chat)
 
     result["source"] = "llm"
+    audit_log("chat_message", "chat", detail=msg[:200],
+              metadata={"source": "llm", "is_deep": is_deep})
     return result
 
 
@@ -1063,22 +1198,49 @@ async def chat_stream(req: ChatRequest):
                 for i in range(0, len(reply), 2):
                     yield f"data: {json.dumps({'type': 'text', 'text': reply[i:i+2]}, ensure_ascii=False)}\n\n"
                     await asyncio.sleep(_cache_delay)
+                audit_log("chat_stream", "chat", detail=msg[:200],
+                          metadata={"source": "cache"})
                 yield f"data: {json.dumps({'type': 'done', 'source': 'cache'}, ensure_ascii=False)}\n\n"
                 return
 
         fg_token = llm_foreground()
         try:
+            # Load recent 2-turn history for intent context
+            recent_rows = q(
+                "SELECT user_msg, avatar_reply FROM chat_history ORDER BY id DESC LIMIT 2",
+                [], fetch="all",
+            )
+            recent = "\n".join(f"用户：{r['user_msg']}\nAI：{r['avatar_reply']}" for r in reversed(recent_rows)) if recent_rows else ""
+
             if is_deep:
                 yield f"data: {json.dumps({'type': 'thinking'}, ensure_ascii=False)}\n\n"
-                with step("think_deep"):
-                    thinking = await asyncio.to_thread(_think, msg)
+                with step("analyze_intent"):
+                    intent_tags = await _analyze_intent(msg, recent)
+                has_visual = "visual" in (intent_tags or []) or _is_visual_request(msg)
+                if has_visual:
+                    with step("think_deep"):
+                        results = await asyncio.gather(
+                            asyncio.to_thread(_think, msg),
+                            _analyze_visual(msg),
+                            return_exceptions=True,
+                        )
+                    thinking = results[0] if not isinstance(results[0], BaseException) else None
+                    visual_desc = results[1] if not isinstance(results[1], BaseException) else ""
+                else:
+                    with step("think_deep"):
+                        thinking = await asyncio.to_thread(_think, msg)
+                    visual_desc = ""
             else:
                 thinking = None
-
-            with step("analyze_intent"):
-                intent_tags = await _analyze_intent(msg)
+                with step("analyze_intent"):
+                    intent_tags = await _analyze_intent(msg, recent)
+                has_visual = "visual" in (intent_tags or []) or _is_visual_request(msg)
+                if has_visual:
+                    visual_desc = await _analyze_visual(msg)
+                else:
+                    visual_desc = ""
             with step("build_context"):
-                messages = _build_context(msg, thinking, intent_tags=intent_tags, idle_min=idle_min)
+                messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc)
             with step("llm_main"):
                 data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
         finally:
@@ -1106,20 +1268,22 @@ async def chat_stream(req: ChatRequest):
             scenes = None  # ensure None for non-list / empty list
 
         # Persist before streaming — prevents data loss on client disconnect
-        new_row = q(
-            "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-            [msg, full_reply, parsed[0]["label"]], fetch="one",
-        )
-        turn_id = new_row["id"] if new_row else None
-        with step("post_reply_pipeline"):
+        def _persist_and_pipeline():
+            new_row = q(
+                "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
+                [msg, full_reply, parsed[0]["label"]], fetch="one",
+            )
+            tid = new_row["id"] if new_row else None
             _post_reply_pipeline(msg, reply, parsed[0]["label"],
-                                 thinking=thinking, llm_tags=llm_tags, turn_id=turn_id,
+                                 thinking=thinking, llm_tags=llm_tags, turn_id=tid,
                                  is_deep=is_deep)
-
-        first = parsed[0]
-        seq = json.dumps(parsed) if len(parsed) > 1 else None
-        _upsert(key, first, reply, seq, data.get("color_fields"))
-        _upsert(first["label"], first, reply, seq, data.get("color_fields"))
+            first = parsed[0]
+            seq = json.dumps(parsed) if len(parsed) > 1 else None
+            _upsert(key, first, reply, seq, data.get("color_fields"))
+            _upsert(first["label"], first, reply, seq, data.get("color_fields"))
+            return first, seq
+        with step("post_reply_pipeline"):
+            first, seq = await asyncio.to_thread(_persist_and_pipeline)
 
         lbl = parsed[0]["label"] if parsed else "neutral"
         cf = data.get("color_fields") or []
@@ -1226,6 +1390,8 @@ async def chat_stream(req: ChatRequest):
             # Signal end of final scene
             yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
 
+        audit_log("chat_stream", "chat", detail=msg[:200],
+                  metadata={"source": "llm", "is_deep": is_deep})
         yield f"data: {json.dumps({'type': 'done', 'source': 'llm', 'raw': data}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

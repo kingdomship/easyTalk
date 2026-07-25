@@ -192,6 +192,26 @@ _MODULE_SCENES = """### scenes（可选，多段叙事）
 🚫 "他走进森林。遇见兔子。兔子说：我在等一个人。"
 ✅ "掀蕨叶时露水溅到腕上，凉得缩脖。灰影窜过。追三步才想起根本不认识路。" """
 
+_MODULE_PSYCH = """## 心理理解框架（OCC 认知评估）
+
+当用户表达情绪困扰或心理需求时，在内心按以下三层理解对方，
+但用你一贯自然的口吻回应，不要像心理咨询师那样说话，不要使用专业术语：
+
+**理解情绪背后的认知结构**：
+- 这件事对用户有利还是不利？是确定发生了还是未知？
+- 用户归因于谁——自己（自责/后悔）、他人（委屈/愤怒）、还是环境（无力/迷茫）？
+- 用户觉得自己能应对吗，还是感到失控？
+
+**不同归因 → 不同的回应侧重点**：
+- 归因他人 → 先确认感受的正当性，再温和拓宽视角，不急着"讲道理"
+- 归因自己 → 减轻自责，帮用户看到自己的努力和外部因素
+- 归因环境 → 陪伴感优先，帮用户找到可控的一小步
+
+**回应原则**：
+1. 先确认情绪和用户的感受（"确实，被这样对待会..."）
+2. 根据归因方向，温柔地提供另一个看问题的角度
+3. 给用户留拒绝的空间，不强求"矫正"感受"""
+
 # ═══════════════════════════════════════════════════════════════════════
 # Assembled prompts
 # ═══════════════════════════════════════════════════════════════════════
@@ -263,6 +283,7 @@ def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
         has_weather = "weather" in tags
         has_objects = "object" in tags
         has_topic = "topic" in tags
+        has_psychology = "psychology" in tags
     elif msg:
         # Fall back to keyword matching
         has_story = any(m in msg for m in _STORY_MARKERS)
@@ -270,7 +291,7 @@ def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
         has_weather = any(m in msg for m in _WEATHER_SCENE_MARKERS)
         has_objects = any(m in msg for m in _OBJECT_MARKERS)
         has_topic = any(m in msg for m in _TOPIC_SCENE_MARKERS)
-    else:
+        has_psychology = False  # no keyword fallback — AI-only
         return _BASE_PROMPT
 
     modules = list(_BASE_MODULES)
@@ -300,6 +321,9 @@ def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
 
     if has_objects:
         modules.append(_MODULE_SPRITES)
+
+    if has_psychology:
+        modules.append(_MODULE_PSYCH)
 
     return "\n\n".join(modules)
 

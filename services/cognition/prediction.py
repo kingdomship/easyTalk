@@ -33,12 +33,13 @@ def generate_prediction(user_msg: str, avatar_reply: str):
         return
 
     try:
-        from app.utils import get_llm, get_llm_model
+        from app.utils import get_llm, get_llm_model, llm_module_context
         client = get_llm()
         if client is None:
             return
 
-        resp = client.chat.completions.create(
+        with llm_module_context("prediction"):
+            resp = client.chat.completions.create(
             model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _PREDICT_PROMPT},

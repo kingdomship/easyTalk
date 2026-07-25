@@ -10,6 +10,7 @@ No extra LLM cost — purely rule-based template synthesis with 60s cache.
 import json as _stdlib_json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from app.db import q
 logger = logging.getLogger("emoji-chat")
 
 _cache: tuple[str, float] | None = None
+_cache_lock = threading.Lock()
 CACHE_TTL = 60  # seconds
 
 
@@ -247,20 +249,28 @@ def synthesize_portrait(data: dict) -> str:
 
 
 def get_user_portrait(force_refresh: bool = False) -> str:
-    """Get the unified user portrait, cached for 60 seconds."""
+    """Get the unified user portrait, cached for 60 seconds (thread-safe)."""
     global _cache
+    # Fast path: read cached pointer without lock (GIL-safe for tuple ref)
+    cached = _cache
     now = time.time()
-    if not force_refresh and _cache and (now - _cache[1]) < CACHE_TTL:
-        return _cache[0]
+    if not force_refresh and cached and (now - cached[1]) < CACHE_TTL:
+        return cached[0]
 
-    try:
-        data = _get_raw_data()
-        portrait = synthesize_portrait(data)
-        _cache = (portrait, now)
-        return portrait
-    except Exception:
-        logger.warning("Failed to synthesize user portrait", exc_info=True)
-        return _cache[0] if _cache else ""
+    with _cache_lock:
+        # Double-check after acquiring lock
+        cached = _cache
+        if not force_refresh and cached and (now - cached[1]) < CACHE_TTL:
+            return cached[0]
+
+        try:
+            data = _get_raw_data()
+            portrait = synthesize_portrait(data)
+            _cache = (portrait, time.time())
+            return portrait
+        except Exception:
+            logger.warning("Failed to synthesize user portrait", exc_info=True)
+            return _cache[0] if _cache else ""
 
 
 # ── Proactive Care Context ────────────────────────────────────────────────────
@@ -277,22 +287,19 @@ def get_proactive_care_context() -> str:
 
     # ── 1. Return after long absence ──
     try:
-        from app.config import ARCHIVE_PATH
-        if os.path.exists(ARCHIVE_PATH):
-            with open(ARCHIVE_PATH) as f:
-                lines = f.readlines()
-            if lines:
-                last_line = _stdlib_json.loads(lines[-1].strip())
-                last_ts_str = last_line.get("timestamp", "")
-                if last_ts_str:
-                    last_ts = datetime.fromisoformat(last_ts_str)
-                    gap_hours = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
-                    if gap_hours > 24:
-                        days = int(gap_hours / 24)
-                        hints.append(
-                            f"用户{days}天没来了，这是久别重逢。语气里可以带一点想念和欣喜，"
-                            "但不要让对方有压力。可以自然地问一句'这几天还好吗'。"
-                        )
+        lines = _read_archive_cached()
+        if lines:
+            last_line = _stdlib_json.loads(lines[-1].strip())
+            last_ts_str = last_line.get("timestamp", "")
+            if last_ts_str:
+                last_ts = datetime.fromisoformat(last_ts_str)
+                gap_hours = (datetime.now(timezone.utc) - last_ts).total_seconds() / 3600
+                if gap_hours > 24:
+                    days = int(gap_hours / 24)
+                    hints.append(
+                        f"用户{days}天没来了，这是久别重逢。语气里可以带一点想念和欣喜，"
+                        "但不要让对方有压力。可以自然地问一句'这几天还好吗'。"
+                    )
     except Exception:
         pass
 
@@ -342,6 +349,37 @@ def get_proactive_care_context() -> str:
 
 _TIMELINE_PATH = os.path.join(MEMORY_DIR, "timeline.json")
 
+# Short-lived cache for archive file reads (avoid re-reading within same request)
+_archive_cache: tuple[str, float, list[str]] | None = None  # (mtime_str, ts, lines)
+_archive_cache_lock = threading.Lock()
+_ARCHIVE_CACHE_TTL = 3  # seconds
+
+
+def _read_archive_cached() -> list[str]:
+    """Read archive lines with a short TTL cache.
+
+    Multiple context functions read ARCHIVE_PATH within the same
+    _build_context call; this avoids redundant file I/O.
+    """
+    global _archive_cache
+    from app.config import ARCHIVE_PATH
+    if not os.path.exists(ARCHIVE_PATH):
+        return []
+    try:
+        mtime = str(os.path.getmtime(ARCHIVE_PATH))
+        now = time.time()
+        with _archive_cache_lock:
+            cached = _archive_cache
+            if cached and cached[0] == mtime and (now - cached[1]) < _ARCHIVE_CACHE_TTL:
+                return cached[2]
+        with open(ARCHIVE_PATH) as f:
+            lines = f.readlines()
+        with _archive_cache_lock:
+            _archive_cache = (mtime, time.time(), lines)
+        return lines
+    except Exception:
+        return []
+
 
 def get_session_anchor() -> str:
     """Return context about the last conversation for cross-session continuity.
@@ -350,13 +388,7 @@ def get_session_anchor() -> str:
     a brief anchor so the AI can naturally reference past conversations.
     """
     try:
-        from app.config import ARCHIVE_PATH
-        if not os.path.exists(ARCHIVE_PATH):
-            return ""
-
-        with open(ARCHIVE_PATH) as f:
-            lines = f.readlines()
-
+        lines = _read_archive_cached()
         if len(lines) < 2:
             return ""
 

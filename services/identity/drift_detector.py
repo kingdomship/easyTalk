@@ -1,17 +1,18 @@
-"""Mahalanobis-distance persona drift detector with multi-level intervention.
+"""Cosine-distance persona drift monitor with multi-level classification.
 
-Replaces the simple LLM-based scoring in identity_guard.py with:
+Zero-LLM-cost personality drift observation — measures how far each reply
+strays from a statistical baseline, logs trends, but no longer intervenes.
 
-1. BASELINE: 50 compliant replies → hash-vector embeddings → Gaussian (mu, Sigma)
-2. MAHALANOBIS DISTANCE: D_M(x) = sqrt(sum((x_i - mu_i)^2 / Sigma_ii))
-   Captures directional deviation — "too cold" flagged more strongly than "too chatty"
+1. BASELINE: 50 compliant replies → hash-vector embeddings → mean (mu)
+2. COSINE DISTANCE: 1 - cos(reply, baseline_mean), range 0–2
+   Captures stylistic deviation without the variance-estimation issues of Mahalanobis
 3. WEIGHTED CORESET: 128-point decaying store for trend analysis
 4. MULTI-LEVEL CLASSIFICATION:
-   - Green  (D_M < 2.0): normal
-   - Yellow (D_M < 3.0): log + observe
-   - Orange (D_M < 4.0): inject reinforce prompt
-   - Red    (D_M < 6.0): inject correct prompt
-   - Black  (D_M >= 6.0): inject reset prompt
+   - Green  (< 0.35): normal
+   - Yellow (< 0.55): mild deviation
+   - Orange (< 0.75): notable deviation — logged in drift_log
+   - Red    (< 0.90): significant deviation
+   - Black  (>= 0.90): extreme deviation
 5. TREND PREDICTION: linear regression over 32 most recent coreset points
    → predicts turns until each threshold is crossed
 """
@@ -22,6 +23,7 @@ import hashlib
 import math
 import os
 import time
+from datetime import datetime, timezone
 
 from app.db import q, execute
 
@@ -463,3 +465,97 @@ def get_drift_correction() -> str:
         return ""
     level = row["level"]
     return get_level_correction(level)
+
+
+# ── Status query (for debug panel) ────────────────────────────────────
+
+_LEVEL_LABELS = {
+    "green": "正常",
+    "yellow": "轻微偏离",
+    "orange": "明显偏离",
+    "red": "显著偏离",
+    "black": "严重偏离",
+}
+
+
+def get_drift_status() -> dict:
+    """Return current drift monitoring state for the debug panel.
+
+    Pure read — no side effects. Returns empty/graceful when baseline
+    hasn't been built yet or no data is available.
+    """
+    baseline = _load_baseline()
+    if not baseline:
+        return {"available": False, "reason": "基线尚未建立，需要积累足够对话数据"}
+
+    # Most recent drift_log entry
+    log_row = q(
+        "SELECT level, mahalanobis_distance, details FROM drift_log "
+        "ORDER BY id DESC LIMIT 1",
+        fetch="one",
+    )
+
+    # Trend from coreset distances
+    distances = _get_coreset_distances()
+    trend_data = _predict_trend(distances)
+
+    # Determine level and distance
+    if log_row:
+        level = log_row["level"]
+        distance = log_row["mahalanobis_distance"]
+    elif distances:
+        distance = distances[-1]
+        level = _classify(distance)
+    else:
+        distance = 0.0
+        level = Level.GREEN
+
+    # Trend direction
+    slope = trend_data.get("turns_until_yellow", 0)
+    actual_slope = 0.0
+    if len(distances) >= 4:
+        ys = distances[::-1]
+        n = len(ys)
+        xs = list(range(n))
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        num = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+        den = sum((x - mean_x) ** 2 for x in xs)
+        actual_slope = num / den if den != 0 else 0
+
+    if actual_slope > 0.01:
+        trend = "rising"
+    elif actual_slope < -0.01:
+        trend = "falling"
+    else:
+        trend = "stable"
+
+    # Baseline age
+    baseline_age_hours = 0.0
+    last_baseline_row = q(
+        "SELECT id FROM drift_baseline ORDER BY id DESC LIMIT 1",
+        fetch="one",
+    )
+    if last_baseline_row:
+        # Approximate: assume baseline ID correlates roughly with time
+        # Use the most recent log timestamp as proxy
+        ts_row = q(
+            "SELECT EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM created_at) AS age_seconds "
+            "FROM drift_log ORDER BY id DESC LIMIT 1",
+            fetch="one",
+        )
+        if ts_row and ts_row["age_seconds"]:
+            baseline_age_hours = round(float(ts_row["age_seconds"]) / 3600, 1)
+
+    return {
+        "available": True,
+        "distance": round(distance, 4),
+        "level": level,
+        "level_label": _LEVEL_LABELS.get(level, "未知"),
+        "trend": trend,
+        "trend_slope": round(actual_slope, 6),
+        "predicted_distance": trend_data.get("predicted_distance", distance),
+        "baseline_age_hours": baseline_age_hours,
+        "baseline_samples": baseline.get("sample_count", 0),
+        "recent_distances": [round(d, 4) for d in distances[-20:]],
+    }

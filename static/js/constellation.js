@@ -55,12 +55,12 @@ const Constellation = (() => {
   let CX = 400, CY = 300;
 
   // Physics config — tuned for calm, grounded feel (not bouncy)
-  const REPULSION = 1000;       // lower push = nodes stay closer, less chaotic
-  const SPRING_LEN = 130;       // slightly looser rest distance
-  const SPRING_K = 0.015;       // weaker springs = less oscillation
-  const DAMPING = 0.78;         // more friction = faster settling
-  const CENTER_GRAVITY = 0.005; // stronger center pull = tighter cluster
-  const MIN_VEL = 0.08;         // stop sooner = less micro-jitter
+  const REPULSION = 800;        // lower push = nodes stay closer
+  const SPRING_LEN = 130;       // rest distance
+  const SPRING_K = 0.006;       // weaker springs = less bounce
+  const DAMPING = 0.88;         // heavy damping = quick settle
+  const CENTER_GRAVITY = 0.008; // stronger center pull = tighter cluster
+  const MIN_VEL = 0.12;         // stop sooner
 
   let time = 0;
 
@@ -174,9 +174,11 @@ const Constellation = (() => {
     }
 
     // Spring force along edges
+    const nodeMap = {};
+    for (const n of nodes) nodeMap[n.id] = n;
     for (const e of edges) {
-      const a = nodes.find(n => n.id === e.from);
-      const b = nodes.find(n => n.id === e.to);
+      const a = nodeMap[e.from];
+      const b = nodeMap[e.to];
       if (!a || !b) continue;
       let dx = b.x - a.x;
       let dy = b.y - a.y;

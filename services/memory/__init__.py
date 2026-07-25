@@ -12,3 +12,17 @@ from services.memory.knowledge_graph import (
     get_current_state, get_knowledge_graph_context,
 )
 from services.memory.reranker import compute_confidence, llm_rerank, rerank_if_needed
+
+__all__ = [
+    "build_user_context",
+    "index_turn", "search_similar", "build_memory_context",
+    "build_constellation",
+    "maybe_crystallize", "get_crystal_context", "get_crystals", "reinforce_crystal",
+    "detect_situations", "distill_episode", "get_narrative_context",
+    "get_situations", "get_episodes",
+    "extract_transcript", "condense", "CONDENSE_PROMPT",
+    "upsert_entity", "add_relationship", "extract_from_message", "process_message",
+    "maybe_extract_kg", "get_temporal_insight", "get_entity_history",
+    "get_current_state", "get_knowledge_graph_context",
+    "compute_confidence", "llm_rerank", "rerank_if_needed",
+]

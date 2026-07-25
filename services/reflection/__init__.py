@@ -5,3 +5,9 @@ from services.reflection.consciousness_loop import (
     system2_consolidation, get_latest_idle_thought,
 )
 from services.reflection.diary import generate_diary, get_diaries, get_diary
+
+__all__ = [
+    "init_loop_db", "idle_thought", "mood_fluctuation", "diary_seed",
+    "system2_consolidation", "get_latest_idle_thought",
+    "generate_diary", "get_diaries", "get_diary",
+]

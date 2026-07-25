@@ -81,14 +81,15 @@ def analyze_attachment():
         if len(messages) < 8:
             return
 
-        from app.utils import get_llm, get_llm_model
+        from app.utils import get_llm, get_llm_model, llm_module_context
         client = get_llm()
         if client is None:
             return
 
         numbered = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(messages[-20:]))
         try:
-            resp = client.chat.completions.create(
+            with llm_module_context("attachment"):
+                resp = client.chat.completions.create(
                 model=get_llm_model(),
                 messages=[
                     {"role": "system", "content": _STYLE_PROMPT},

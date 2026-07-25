@@ -25,6 +25,8 @@ APIKEY_PATH = os.path.join(MEMORY_DIR, "api_key.txt")
 LIFE_DOMAINS_PATH = os.path.join(MEMORY_DIR, "life_domains.json")
 CURIOSITY_PATH = os.path.join(MEMORY_DIR, "curiosity_queue.json")
 
+LOG_DIR = os.path.join(MEMORY_DIR, "logs")
+
 # Lock for thread-safe archive file access
 archive_lock = threading.Lock()
 

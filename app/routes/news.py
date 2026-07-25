@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from app.db import q, init_db
+from app.audit import audit_log
 from services.info.news import fetch_all, get_suggested_news
 
 router = APIRouter()
@@ -16,6 +17,7 @@ def list_news(limit: int = 30):
 @router.post("/api/news/fetch")
 async def trigger_news_fetch():
     init_db()
+    audit_log("fetch_news", "news")
     count = await fetch_all()
     return {"ok": True, "count": count}
 

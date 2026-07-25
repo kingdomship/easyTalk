@@ -47,28 +47,47 @@ def _hash_to_vector(tags: list[str], dim: int = VEC_DIM) -> list[float]:
     return vec
 
 
+_tags_cache: dict[str, list[str]] = {}
+_TAGS_CACHE_MAX = 128
+
+
 def _llm_extract_tags(text: str) -> list[str]:
-    """Use LLM to extract semantic tags from text."""
-    from app.utils import get_llm, get_llm_model
+    """Use LLM to extract semantic tags from text, with MD5-based LRU cache."""
+    cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if cache_key in _tags_cache:
+        # Move to end (most recently used)
+        tags = _tags_cache.pop(cache_key)
+        _tags_cache[cache_key] = tags
+        return tags
+
+    from app.utils import get_llm, get_llm_model, llm_module_context
     client = get_llm()
     if client is None:
         return []
     try:
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _EXTRACT_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-            max_tokens=200,
-        )
+        with llm_module_context("search_tags"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _EXTRACT_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=200,
+            )
         data = json.loads(resp.choices[0].message.content)
-        return data.get("tags", [])
+        tags = data.get("tags", [])
     except Exception:
         logger.warning("Operation failed", exc_info=True)
         return []
+
+    if tags:
+        if len(_tags_cache) >= _TAGS_CACHE_MAX:
+            # Evict oldest (first inserted) entry
+            _tags_cache.pop(next(iter(_tags_cache)))
+        _tags_cache[cache_key] = tags
+    return tags
 
 
 

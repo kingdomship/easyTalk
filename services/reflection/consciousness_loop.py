@@ -18,7 +18,7 @@ import random
 from datetime import datetime, timezone
 
 from app.db import q, execute
-from app.utils import get_llm_model
+from app.utils import get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
 
@@ -133,15 +133,16 @@ def idle_thought():
         client = _get_llm_client()
         if client is None:
             return
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "（星空安静地闪烁...）"},
-            ],
-            temperature=0.85,
-            max_tokens=100 if action == "active_greeting" else 80,
-        )
+        with llm_module_context("idle_thought"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "（星空安静地闪烁...）"},
+                ],
+                temperature=0.85,
+                max_tokens=100 if action == "active_greeting" else 80,
+            )
         content = resp.choices[0].message.content.strip()
         if content:
             prefix = "[主动]" if action == "active_greeting" else ""
@@ -211,15 +212,16 @@ def diary_seed():
         client = _get_llm_client()
         if client is None:
             return
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": "将以下零散的思绪合并成一段30-60字的灵感片段，像一个写日记前的随手笔记。用第一人称，自然口语化。直接输出，不要引号。"},
-                {"role": "user", "content": combined},
-            ],
-            temperature=0.7,
-            max_tokens=100,
-        )
+        with llm_module_context("idle_thought"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": "将以下零散的思绪合并成一段30-60字的灵感片段，像一个写日记前的随手笔记。用第一人称，自然口语化。直接输出，不要引号。"},
+                    {"role": "user", "content": combined},
+                ],
+                temperature=0.7,
+                max_tokens=100,
+            )
         seed = resp.choices[0].message.content.strip()
         if seed:
             execute(

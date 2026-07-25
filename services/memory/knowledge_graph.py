@@ -61,25 +61,16 @@ def _get_llm():
 
 
 def upsert_entity(name: str, etype: str = "other", metadata: dict | None = None) -> int:
-    """Insert or update an entity, return its ID."""
-    existing = q(
-        "SELECT id, metadata FROM kg_entities WHERE name = %s AND type = %s",
-        [name, etype], fetch="one",
-    )
-    if existing:
-        merged_meta = dict(existing.get("metadata") or {})
-        if metadata:
-            merged_meta.update(metadata)
-        execute(
-            "UPDATE kg_entities SET last_seen = NOW(), metadata = %s WHERE id = %s",
-            [json.dumps(merged_meta, ensure_ascii=False), existing["id"]],
-        )
-        return existing["id"]
-    execute(
-        "INSERT INTO kg_entities (name, type, metadata) VALUES (%s, %s, %s)",
+    """Insert or update an entity, return its ID (single round-trip)."""
+    row = q(
+        "INSERT INTO kg_entities (name, type, metadata) VALUES (%s, %s, %s) "
+        "ON CONFLICT (name, type) DO UPDATE SET "
+        "last_seen = NOW(), "
+        "metadata = COALESCE(kg_entities.metadata, '{}'::jsonb) || EXCLUDED.metadata "
+        "RETURNING id",
         [name, etype, json.dumps(metadata or {}, ensure_ascii=False)],
+        fetch="one",
     )
-    row = q("SELECT id FROM kg_entities WHERE name = %s AND type = %s", [name, etype], fetch="one")
     return row["id"] if row else 0
 
 
@@ -106,20 +97,22 @@ def extract_from_message(msg: str) -> list[dict]:
     """
     if len(msg) < 10:
         return []
+    from app.utils import get_llm_model, llm_module_context
     try:
         client = _get_llm()
         if client is None:
             return []
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _EXTRACT_PROMPT},
-                {"role": "user", "content": msg},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=300,
-        )
+        with llm_module_context("kg_extract"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _EXTRACT_PROMPT},
+                    {"role": "user", "content": msg},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=300,
+            )
         raw = resp.choices[0].message.content
         # Handle both array and object wrapping
         data = json.loads(raw)
@@ -227,7 +220,8 @@ def get_entity_history(name: str) -> list[dict]:
         "FROM kg_relationships r "
         "JOIN kg_entities e ON e.id = r.target_id "
         "WHERE e.name = %s AND r.source_id = %s "
-        "ORDER BY r.valid_at DESC",
+        "ORDER BY r.valid_at DESC "
+        "LIMIT 100",
         [name, user_id],
     )
 

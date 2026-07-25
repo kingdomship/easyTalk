@@ -189,7 +189,6 @@ function openAuxiliary(tab = 'diary') {
   state = STATE.AUXILIARY;
   auxPanel.classList.add('open');
   auxTab = tab;
-  topicBubbles.classList.remove('visible');
   document.querySelectorAll('.aux-tab').forEach(/** @param {HTMLElement} t */ t => t.classList.toggle('active', t.dataset.tab === tab));
   loadAuxContent();
 }
@@ -198,7 +197,6 @@ function closeAuxiliary() {
   auxPanel.classList.remove('open');
   state = STATE.STARFIELD;
   chatFadeIn = 0;
-  topicBubbles.classList.remove('visible');
   // Clean up constellation overlay if present
   var overlay = document.querySelector('.constellation-overlay');
   if (overlay) {
@@ -946,11 +944,11 @@ function renderDiaryPerspective(perspective) {
   if (perspective === 'ai') {
     var mood = diaryModalData.mood_emoji || extractMoodEmoji(diaryModalData.content);
     var content = diaryModalData.content || '今天什么也没发生... ✨';
-    body.innerHTML = '<div class="diary-mood">' + mood + '</div><div>' + escapeHtml(content).replace(/\n/g, '<br>') + '</div>';
+    body.innerHTML = '<div class="diary-mood">' + escapeHtml(mood) + '</div><div>' + escapeHtml(content).replace(/\n/g, '<br>') + '</div>';
   } else if (perspective === 'user') {
     if (diaryModalData.has_user_diary && diaryModalData.user_content) {
       var uMood = diaryModalData.user_mood_emoji || '';
-      body.innerHTML = (uMood ? '<div class="diary-mood">' + uMood + '</div>' : '') + '<div>' + escapeHtml(diaryModalData.user_content).replace(/\n/g, '<br>') + '</div>';
+      body.innerHTML = (uMood ? '<div class="diary-mood">' + escapeHtml(uMood) + '</div>' : '') + '<div>' + escapeHtml(diaryModalData.user_content).replace(/\n/g, '<br>') + '</div>';
     } else {
       body.innerHTML = '<div class="diary-empty-state"><img src="/icons/user-pen.svg" class="empty-state-icon" alt=""><br>今天没有值得记录的对话<br><span style="font-size:0.65rem;color:#4a4a6a;">有实质内容的聊天才会被记录</span></div>';
     }
@@ -1325,7 +1323,7 @@ async function sendMessage() {
 
   initAudio(); // warm up AudioContext inside user gesture
   lastMessageTime = Date.now();
-  topicBubbles.classList.remove('visible');
+  if (typeof _visualEnabled !== 'undefined' && _visualEnabled && typeof resetVisualIdleTimer === 'function') resetVisualIdleTimer();
   closeKaomojiPanel();
   resetTextarea(); pending = true; sendBtn.disabled = true;
   // Clear any lingering sprites from previous reply
@@ -1450,14 +1448,13 @@ async function sendMessage() {
             dlgBody.innerHTML = escapeHtml(streamedReply);
             addDebugLog('error', 'LLM调用失败', evt.text, 'DeepSeek API 可能超时或返回异常，检查 API Key 和网络连接');
           } else if (evt.type === 'done') {
-            if (evt.raw) console.log('%c📦 LLM 原始回复', 'color:#a78bfa;font-weight:bold;font-size:14px', evt.raw);
+            // LLM raw reply logged server-side; suppress browser console output
             if (storyPaused) {
               storyBuffer.push({ type: 'done' });
             } else {
               clearInterval(thinkingTimer);
               dlgBody.innerHTML = escapeHtml(streamedReply);
-              console.log('%c💬 LLM → %c' + streamedEmotionLabel + '%c | ' + streamedReply.slice(0, 200),
-                'color:#a78bfa', 'color:#f59e0b;font-weight:bold', 'color:inherit');
+              addDebugLog('info', 'LLM', streamedEmotionLabel + ' | ' + streamedReply.slice(0, 120));
               checkChoices(streamedReply);
             }
           }
@@ -1492,34 +1489,6 @@ async function sendMessage() {
 }
 
 // Topic bubbles
-async function loadTopics() {
-  try {
-    const resp = await fetch('/api/news/suggest');
-    const data = await resp.json();
-    const matched = data.matched || [];
-    const general = data.general || [];
-    // Merge: matched first (interest-based), then general to fill up to 4
-    const items = [...matched, ...general].slice(0, 4);
-    if (!items.length) { topicBubbles.classList.remove('visible'); return; }
-    topicBubbles.innerHTML = items.map(n => {
-      const prompt = n.title.includes('？') || n.title.includes('?')
-        ? n.title.slice(0, 40)
-        : `你怎么看「${n.title.slice(0, 25)}」？`;
-      return `<span class="topic-bubble" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</span>`;
-    }).join('');
-    topicBubbles.classList.add('visible');
-    topicBubbles.querySelectorAll('.topic-bubble').forEach(/** @param {HTMLElement} b */ b => {
-      b.addEventListener('click', () => {
-        const prompt = b.dataset.prompt;
-        textarea.value = prompt;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        topicBubbles.classList.remove('visible');
-        sendMessage();
-      });
-    });
-  } catch(e) { topicBubbles.classList.remove('visible'); }
-}
-
 sendBtn.addEventListener('click', sendMessage);
 
 // ═══════════════════════════════════════════
@@ -1614,16 +1583,6 @@ try {
 } catch(e) { console.error('init story button', e); }
 requestAnimationFrame(loop);
 
-// Idle topic suggestion: poll every 30s, show bubbles when user hasn't sent a
-// message for >30s — gives them a conversation starter when the chat goes quiet.
-setInterval(() => {
-  if (state === STATE.CHAT
-      && !topicBubbles.classList.contains('visible')
-      && Date.now() - lastMessageTime > 30000) {
-    loadTopics();
-  }
-}, 30000);
-
 // ═══════════════════════════════════════════
 // Settings panel (LLM provider config)
 // ═══════════════════════════════════════════
@@ -1658,6 +1617,9 @@ settingsSave.addEventListener('click', async function () {
   var base_url = baseUrlInput.value.trim();
   var model = modelInput.value.trim();
   var api_key = apiKeyInput.value.trim();
+  var visual_base_url = visualBaseUrlInput.value.trim();
+  var visual_model = visualModelInput.value.trim();
+  var visual_api_key = visualApiKeyInput.value.trim();
 
   if (!api_key) { showStatus('请输入 API Key', 'error'); return; }
   if (!base_url) { showStatus('请输入 API Base URL', 'error'); return; }
@@ -1667,7 +1629,7 @@ settingsSave.addEventListener('click', async function () {
     var resp = await fetch('/api/config/llm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: provider, base_url: base_url, model: model, api_key: api_key }),
+      body: JSON.stringify({ provider: provider, base_url: base_url, model: model, api_key: api_key, visual_base_url: visual_base_url, visual_model: visual_model, visual_api_key: visual_api_key }),
     });
     if (resp.ok) {
       showStatus('✅ 配置已保存并生效', 'success');
@@ -1685,7 +1647,7 @@ settingsClear.addEventListener('click', async function () {
     await fetch('/api/config/llm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'deepseek', base_url: '', model: '', api_key: '' }),
+      body: JSON.stringify({ provider: 'deepseek', base_url: '', model: '', api_key: '', visual_base_url: '', visual_model: '', visual_api_key: '' }),
     });
     await loadSettings();
     showStatus('已恢复默认 DeepSeek 配置', 'success');
@@ -1746,6 +1708,11 @@ async function loadSettings() {
     baseUrlInput.value = data.base_url || '';
     modelInput.value = data.model || '';
     apiKeyInput.value = data.api_key || '';
+    if (data.visual) {
+      visualBaseUrlInput.value = data.visual.base_url || '';
+      visualModelInput.value = data.visual.model || '';
+      visualApiKeyInput.value = data.visual.api_key || '';
+    }
     providerSelect.dispatchEvent(new Event('change'));
   } catch (e) {
     // Offline or server not ready — keep defaults

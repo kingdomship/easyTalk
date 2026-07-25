@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from app.db import q, execute, init_db
+from app.audit import audit_log
 
 router = APIRouter()
 
@@ -15,6 +16,7 @@ def list_emotions():
 @router.delete("/api/emotions/{label}")
 def delete_emotion(label: str):
     execute("DELETE FROM emotion_cache WHERE label = %s", [label])
+    audit_log("delete_emotion", "emotion", detail=label[:200])
     return {"ok": True}
 
 

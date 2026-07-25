@@ -1,18 +1,19 @@
 """Emoji Chat — LLM-driven pixel avatar with emotion sequences."""
 
+import asyncio
 import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+from app.log_setup import setup_logging
+from app.tracer import set_request_id, get_request_id
+from app.config import MEMORY_DIR, LOG_DIR
+
+setup_logging(LOG_DIR, level="INFO")
 logger = logging.getLogger("emoji-chat")
 
 from app.routes import router
@@ -27,7 +28,6 @@ from services.emotion.salience import init_salience_db
 from services.drive.engine import init_drive_db, drive_heartbeat
 from app.cleanup import cleanup_old_data
 from services.cognition.predictive_agent import offline_analysis
-from app.config import MEMORY_DIR
 
 
 def _seed_memory():
@@ -68,8 +68,8 @@ def _check_memory_files():
             logger.info("可选文件尚未创建: %s — %s", fname, desc)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+def _init_all():
+    """Run all synchronous initialization steps (called in thread pool with timeout)."""
     _seed_memory()
     _check_memory_files()
     init_db()
@@ -78,6 +78,21 @@ async def lifespan(app: FastAPI):
     init_loop_db()
     init_salience_db()
     init_drive_db()
+    # Catch-up: fill gaps from downtime
+    from app.catchup import catchup_mood, catchup_drives
+    catchup_mood()
+    catchup_drives()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_init_all), timeout=60)
+    except asyncio.TimeoutError:
+        logger.error("初始化超时（60s），请检查数据库连接是否正常")
+    except Exception:
+        logger.error("初始化失败", exc_info=True)
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(generate_daily_diary, "cron", hour=4, minute=0)
     scheduler.add_job(fetch_all_news, "cron", hour=7, minute=0)
@@ -90,19 +105,15 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(drive_heartbeat, "cron", minute="*/10")
     scheduler.start()
 
-    # ── Catch-up: fill gaps from downtime ──────────────────────
-    from app.catchup import catchup_mood, catchup_drives
-    catchup_mood()                                          # fast: inline
-    catchup_drives()                                        # fast: inline
-    get_background_executor().submit(_run_diary_catchup)    # slow: thread
-    # ────────────────────────────────────────────────────────────
+    # Diary catch-up runs in background thread (slow, fire-and-forget)
+    get_background_executor().submit(_run_diary_catchup)
 
     yield
     scheduler.shutdown()
     executor = get_background_executor()
-    executor.shutdown(wait=False)
+    executor.shutdown(wait=True, timeout=10)
     lo_executor = get_low_priority_executor()
-    lo_executor.shutdown(wait=False)
+    lo_executor.shutdown(wait=True, timeout=10)
 
 
 def _run_diary_catchup():
@@ -127,19 +138,34 @@ async def fetch_all_news():
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Assign a request_id to every request for log correlation.
+
+    Uses raw ASGI middleware (not BaseHTTPMiddleware) to avoid
+    buffering StreamingResponse — critical for SSE chat streaming.
+    """
+    set_request_id()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = get_request_id()
+    return response
+
+
 app.include_router(router)
 
 
-class CacheControlMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        path = request.url.path
-        if path.endswith((".js", ".css")):
-            response.headers["Cache-Control"] = "no-cache, must-revalidate"
-        if path == "/manifest.json":
-            response.headers["Content-Type"] = "application/manifest+json"
-        return response
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    """Add cache-control headers for static assets."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.endswith((".js", ".css")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    if path == "/manifest.json":
+        response.headers["Content-Type"] = "application/manifest+json"
+    return response
 
 
-app.add_middleware(CacheControlMiddleware)
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

@@ -13,7 +13,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
-from app.utils import get_llm_model
+from app.utils import get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
 
@@ -51,6 +51,31 @@ AI回复：{avatar_reply}
 
 返回JSON：
 {{"trust_impact": 0.0, "warmth_impact": 0.0, "engagement_impact": 0.0, "risk_level": 0.0, "assessment": "简短评估"}}
+
+只输出JSON，不要其他内容。"""
+
+_COMBINED_EVAL_PROMPT = """同时完成两项评估，返回一个JSON对象：
+
+1. 关系影响（impact）：
+   用户消息：{user_msg}
+   AI回复：{avatar_reply}
+
+   - trust_impact: 对信任的影响（-0.1到0.1）
+   - warmth_impact: 对温暖度的影响（-0.1到0.1）
+   - engagement_impact: 对参与度的影响（-0.1到0.1）
+   - risk_level: 风险等级（0=无风险，1=高风险）
+   - assessment: 简短评估（≤20字）
+
+2. 矛盾检测（contradiction）：
+   AI已知信息（知识图谱）：
+   {kg_context}
+
+   - contradiction: 用户说法是否与已知信息矛盾（true/false）
+   - description: 矛盾描述（无矛盾时为空字符串）
+   - confidence: 置信度（0.0-1.0）
+
+返回JSON格式：
+{{"impact": {{"trust_impact": 0.0, "warmth_impact": 0.0, "engagement_impact": 0.0, "risk_level": 0.0, "assessment": ""}}, "contradiction": {{"contradiction": false, "description": "", "confidence": 0.0}}}}
 
 只输出JSON，不要其他内容。"""
 
@@ -134,19 +159,20 @@ def detect_contradictions(user_msg: str) -> dict | None:
         client = _get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _CONTRADICT_PROMPT.format(
-                    kg_context=kg_ctx[:800],
-                    user_msg=user_msg[:200],
-                )},
-                {"role": "user", "content": "检测矛盾。"},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=200,
-        )
+        with llm_module_context("self_evaluate"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _CONTRADICT_PROMPT.format(
+                        kg_context=kg_ctx[:800],
+                        user_msg=user_msg[:200],
+                    )},
+                    {"role": "user", "content": "检测矛盾。"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=200,
+            )
         data = json.loads(resp.choices[0].message.content)
         return {
             "contradiction": bool(data.get("contradiction", False)),
@@ -169,19 +195,20 @@ def assess_impact(user_msg: str, avatar_reply: str) -> dict | None:
         client = _get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": _IMPACT_PROMPT.format(
-                    user_msg=user_msg[:200],
-                    avatar_reply=avatar_reply[:300],
-                )},
-                {"role": "user", "content": "评估影响。"},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=200,
-        )
+        with llm_module_context("self_evaluate"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _IMPACT_PROMPT.format(
+                        user_msg=user_msg[:200],
+                        avatar_reply=avatar_reply[:300],
+                    )},
+                    {"role": "user", "content": "评估影响。"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=200,
+            )
         data = json.loads(resp.choices[0].message.content)
         return {
             "trust_impact": float(data.get("trust_impact", 0)),
@@ -193,6 +220,60 @@ def assess_impact(user_msg: str, avatar_reply: str) -> dict | None:
     except Exception:
         logger.warning("Impact assessment failed", exc_info=True)
         return None
+
+
+def _combined_eval(user_msg: str, avatar_reply: str) -> tuple[dict | None, dict | None]:
+    """Single LLM call for both impact assessment and contradiction detection."""
+    try:
+        from services.memory.knowledge_graph import get_knowledge_graph_context
+        kg_ctx = get_knowledge_graph_context()
+    except Exception:
+        kg_ctx = ""
+
+    if len(user_msg) < 10 and not kg_ctx:
+        return None, None
+
+    try:
+        client = _get_llm()
+        if client is None:
+            return None, None
+        with llm_module_context("self_evaluate"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": _COMBINED_EVAL_PROMPT.format(
+                        user_msg=user_msg[:200],
+                        avatar_reply=avatar_reply[:300],
+                        kg_context=kg_ctx[:800] if kg_ctx else "（暂无已知信息）",
+                    )},
+                    {"role": "user", "content": "评估。"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.15,
+                max_tokens=300,
+            )
+        data = json.loads(resp.choices[0].message.content)
+        impact_data = data.get("impact", {})
+        contra_data = data.get("contradiction", {})
+
+        impact = {
+            "trust_impact": float(impact_data.get("trust_impact", 0)),
+            "warmth_impact": float(impact_data.get("warmth_impact", 0)),
+            "engagement_impact": float(impact_data.get("engagement_impact", 0)),
+            "risk_level": float(impact_data.get("risk_level", 0)),
+            "assessment": str(impact_data.get("assessment", "")),
+        } if impact_data else None
+
+        contra = {
+            "contradiction": bool(contra_data.get("contradiction", False)),
+            "description": str(contra_data.get("description", "")),
+            "confidence": float(contra_data.get("confidence", 0)),
+        } if contra_data else None
+
+        return impact, contra
+    except Exception:
+        logger.warning("Combined evaluation failed", exc_info=True)
+        return None, None
 
 
 def store_insight(insight: str, source_message: str = "",
@@ -271,8 +352,7 @@ def self_evaluate(user_msg: str, avatar_reply: str, turn_id: int | None = None) 
     Runs in background thread — never blocks the user.
     """
     try:
-        impact = assess_impact(user_msg, avatar_reply)
-        contra = detect_contradictions(user_msg)
+        impact, contra = _combined_eval(user_msg, avatar_reply)
 
         trust_imp = impact["trust_impact"] if impact else 0
         warmth_imp = impact["warmth_impact"] if impact else 0
@@ -382,19 +462,20 @@ def deep_self_audit() -> None:
         if client is None:
             return
 
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": (
-                    "你是AI自我反思系统。分析回复质量趋势并给出改进建议。返回JSON: "
-                    '{"trend": "up/stable/down", "key_issues": "主要问题", '
-                    '"suggestion": "改进建议", "adjust_amplitude": true/false, '
-                    '"amplitude_delta": -0.1~0.1}'
-                )},
-                {"role": "user", "content": summary},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
+        with llm_module_context("deep_audit"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": (
+                        "你是AI自我反思系统。分析回复质量趋势并给出改进建议。返回JSON: "
+                        '{"trend": "up/stable/down", "key_issues": "主要问题", '
+                        '"suggestion": "改进建议", "adjust_amplitude": true/false, '
+                        '"amplitude_delta": -0.1~0.1}'
+                    )},
+                    {"role": "user", "content": summary},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
             max_tokens=200,
         )
         data = json.loads(resp.choices[0].message.content)

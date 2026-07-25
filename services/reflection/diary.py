@@ -6,7 +6,7 @@ import random
 from datetime import date, timedelta
 
 from app.db import q, execute
-from app.utils import get_llm_model
+from app.utils import get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
 
@@ -234,16 +234,17 @@ def generate_diary(for_date: str = "") -> dict | None:
         client = _get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": AI_DIARY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.9,
-            max_tokens=800,
-        )
+        with llm_module_context("diary"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": AI_DIARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.9,
+                max_tokens=800,
+            )
         data = json.loads(resp.choices[0].message.content)
         diary_text = data.get("diary", "")
         mood_emoji = data.get("mood_emoji", "✨")
@@ -298,15 +299,16 @@ def generate_user_diary(for_date: str = "") -> dict | None:
         client = _get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[
-                {"role": "system", "content": USER_DIARY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.7,
-            max_tokens=500,
+        with llm_module_context("diary"):
+            resp = client.chat.completions.create(
+                model=get_llm_model(),
+                messages=[
+                    {"role": "system", "content": USER_DIARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.7,
+                max_tokens=500,
         )
         data = json.loads(resp.choices[0].message.content)
 

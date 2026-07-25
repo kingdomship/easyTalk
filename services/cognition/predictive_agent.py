@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
-from app.utils import get_llm_model
+from app.utils import get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
 
@@ -27,6 +27,8 @@ _EMOTION_TYPES = ["开心", "难过", "焦虑", "平静", "兴奋", "疲惫", "�
 
 _last_prediction = None
 _pred_lock = threading.Lock()
+_analyze_turn_count = 0
+_ANALYZE_EVERY_N = 3
 
 _ANALYZE_PROMPT = """分析以下对话上下文，预测用户接下来最可能的：
 1. 需求（倾诉/求助/闲聊/答疑/陪伴）
@@ -89,8 +91,14 @@ def pre_dialogue_analyze() -> dict | None:
     Called at the start of each chat turn. Returns predicted dimensions
     that feed into memory preloading and context building.
 
+    Throttled to every _ANALYZE_EVERY_N turns to reduce LLM cost.
     Returns None if insufficient history.
     """
+    global _analyze_turn_count, _last_prediction
+    _analyze_turn_count += 1
+    if _analyze_turn_count % _ANALYZE_EVERY_N != 0:
+        return _last_prediction
+
     history = _get_recent_history(6)
     if not history:
         return None
@@ -101,7 +109,8 @@ def pre_dialogue_analyze() -> dict | None:
         client = _get_llm()
         if client is None:
             return None
-        resp = client.chat.completions.create(
+        with llm_module_context("predictive_agent"):
+            resp = client.chat.completions.create(
             model=get_llm_model(),
             messages=[
                 {"role": "system", "content": _ANALYZE_PROMPT},
@@ -121,7 +130,6 @@ def pre_dialogue_analyze() -> dict | None:
             "reason": str(data.get("reason", "")),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        global _last_prediction
         with _pred_lock:
             _last_prediction = prediction
         logger.info("Prediction: need=%s emotion=%s topic=%s confidence=%.2f",

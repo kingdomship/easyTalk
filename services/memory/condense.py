@@ -97,13 +97,14 @@ AI角色的人设是：风趣、幽默、知性的漂亮女性，主动找话题
 
 def condense(transcript: str) -> str:
     """Call DeepSeek to condense the transcript."""
-    from app.utils import get_llm, get_llm_model
+    from app.utils import get_llm, get_llm_model, llm_module_context
 
     client = get_llm()
     if client is None:
         logger.warning("No API key configured — skipping condensation")
         return transcript
-    resp = client.chat.completions.create(
+    with llm_module_context("condense"):
+        resp = client.chat.completions.create(
         model=get_llm_model(),
         messages=[
             {"role": "system", "content": CONDENSE_PROMPT},
