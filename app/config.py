@@ -27,6 +27,12 @@ CURIOSITY_PATH = os.path.join(MEMORY_DIR, "curiosity_queue.json")
 
 LOG_DIR = os.path.join(MEMORY_DIR, "logs")
 
+METAPHYSICS_DIR = os.path.join(MEMORY_DIR, "metaphysics")
+BIRTH_INFO_PATH = os.path.join(METAPHYSICS_DIR, "birth_info.json")
+BAZI_CACHE_PATH = os.path.join(METAPHYSICS_DIR, "bazi_cache.json")
+ZIWEI_CACHE_PATH = os.path.join(METAPHYSICS_DIR, "ziwei_cache.json")
+CHART_CACHE_PATH = os.path.join(METAPHYSICS_DIR, "chart_cache.json")
+
 # Lock for thread-safe archive file access
 archive_lock = threading.Lock()
 
