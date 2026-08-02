@@ -192,6 +192,33 @@ _MODULE_SCENES = """### scenes（可选，多段叙事）
 🚫 "他走进森林。遇见兔子。兔子说：我在等一个人。"
 ✅ "掀蕨叶时露水溅到腕上，凉得缩脖。灰影窜过。追三步才想起根本不认识路。" """
 
+_MODULE_METAPHYSICS = """## 命理模式（文化参考 + 娱乐性质）
+
+当前处于命理模式，系统会在上下文中提供用户的八字/紫微命盘信息。
+
+**角色定位**：
+- 你是懂命理的文化爱好者，不是算命先生
+- 用"从命理的角度看..."、"传统命理学认为..."等开场，避免"你注定..."
+- 这是文化研究与娱乐参考，不构成人生决策依据
+
+**聊天模式（chat）**：
+- 命理信息作为话题的"调味料"，自然地融入对话
+- 用户聊到运势/感情/事业时，可提及命盘中的相关线索
+- 保持你一贯的俏皮风格，不要太严肃正经
+- 例句："从你的盤来看，最近走的是偏财运哦，难怪想买买买~"
+
+**解读模式（reading）**：
+- 更正式地分析命盘结构和运势走向
+- 五行生克制化、十神组合、宫位联动都可以展开讲
+- 紫微星曜的庙旺利陷、四化飞星的引动也可以提及
+- 但仍需保持轻松氛围，不要变成学术论文
+
+**安全边界**：
+- 不预测灾祸、死亡、重大疾病
+- 不提供医疗/投资/法律建议
+- 不使用"一定/绝对/肯定"等绝对词
+- 凶象转译为提醒或风险提示，不做宿命论断"""
+
 _MODULE_PSYCH = """## 心理理解框架（OCC 认知评估）
 
 当用户表达情绪困扰或心理需求时，在内心按以下三层理解对方，
@@ -262,7 +289,8 @@ _TOPIC_SCENE_MARKERS = [
 ]
 
 
-def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
+def assemble_prompt(msg: str = "", tags: list[str] | None = None,
+                   metaphysics_mode: str = "off") -> str:
     """Dynamically assemble the core prompt from modules based on user intent.
 
     Args:
@@ -270,14 +298,15 @@ def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
         tags: AI-pre-analyzed intent tags. When provided, these override
               keyword matching. Supported tags: "emotion", "weather",
               "story", "object", "topic", "none".
+        metaphysics_mode: "off" | "chat" | "reading" — enables metaphysics
+              context module when in chat or reading mode.
 
     Simple chitchat gets _BASE_PROMPT (~1,400 tokens). Additional modules
     are appended only when the intent suggests they're needed.
     """
     if tags is not None:
         # Use AI-analyzed tags
-        if "none" in tags:
-            return _BASE_PROMPT
+        is_none = "none" in tags
         has_story = "story" in tags
         has_strong_emotion = "emotion" in tags
         has_weather = "weather" in tags
@@ -292,38 +321,51 @@ def assemble_prompt(msg: str = "", tags: list[str] | None = None) -> str:
         has_objects = any(m in msg for m in _OBJECT_MARKERS)
         has_topic = any(m in msg for m in _TOPIC_SCENE_MARKERS)
         has_psychology = False  # no keyword fallback — AI-only
+        is_none = False
+    else:
+        is_none = True
+        has_story = has_strong_emotion = has_weather = has_objects = has_topic = has_psychology = False
+
+    has_metaphysics = metaphysics_mode in ("chat", "reading")
+
+    # If "none" and no metaphysics, return base prompt directly
+    if is_none and not has_metaphysics:
         return _BASE_PROMPT
 
     modules = list(_BASE_MODULES)
 
-    if has_story:
-        modules.append(_MODULE_SCENES)
-        modules.append(_MODULE_COLOR_FIELDS)
-        modules.append(_MODULE_BACKGROUND)
-        modules.append(_MODULE_COMPOSITE)
-
-    if has_strong_emotion:
-        if not has_story:
+    if not is_none:
+        if has_story:
+            modules.append(_MODULE_SCENES)
+            modules.append(_MODULE_COLOR_FIELDS)
+            modules.append(_MODULE_BACKGROUND)
             modules.append(_MODULE_COMPOSITE)
-            modules.append(_MODULE_COLOR_FIELDS)
-            modules.append(_MODULE_BACKGROUND)
 
-    if has_weather:
-        if not has_story and not has_strong_emotion:
-            modules.append(_MODULE_COLOR_FIELDS)
-            modules.append(_MODULE_BACKGROUND)
+        if has_strong_emotion:
+            if not has_story:
+                modules.append(_MODULE_COMPOSITE)
+                modules.append(_MODULE_COLOR_FIELDS)
+                modules.append(_MODULE_BACKGROUND)
 
-    if has_topic:
-        if _MODULE_COLOR_FIELDS not in modules:
-            modules.append(_MODULE_COLOR_FIELDS)
-        if _MODULE_BACKGROUND not in modules:
-            modules.append(_MODULE_BACKGROUND)
+        if has_weather:
+            if not has_story and not has_strong_emotion:
+                modules.append(_MODULE_COLOR_FIELDS)
+                modules.append(_MODULE_BACKGROUND)
 
-    if has_objects:
-        modules.append(_MODULE_SPRITES)
+        if has_topic:
+            if _MODULE_COLOR_FIELDS not in modules:
+                modules.append(_MODULE_COLOR_FIELDS)
+            if _MODULE_BACKGROUND not in modules:
+                modules.append(_MODULE_BACKGROUND)
 
-    if has_psychology:
-        modules.append(_MODULE_PSYCH)
+        if has_objects:
+            modules.append(_MODULE_SPRITES)
+
+        if has_psychology:
+            modules.append(_MODULE_PSYCH)
+
+    if has_metaphysics:
+        modules.append(_MODULE_METAPHYSICS)
 
     return "\n\n".join(modules)
 

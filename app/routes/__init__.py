@@ -10,6 +10,7 @@ from app.routes.memory import router as memory_router
 from app.routes.config import router as config_router
 from app.routes.debug import router as debug_router
 from app.routes.visual import router as visual_router
+from app.routes.metaphysics import router as metaphysics_router
 
 router = APIRouter()
 router.include_router(chat_router)
@@ -20,3 +21,4 @@ router.include_router(memory_router)
 router.include_router(config_router)
 router.include_router(debug_router)
 router.include_router(visual_router)
+router.include_router(metaphysics_router)

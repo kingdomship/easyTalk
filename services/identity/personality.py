@@ -132,7 +132,8 @@ _ARCHETYPE_PREFIXES = {
 
 
 def build_dynamic_system_prompt(personality: dict | None = None, msg: str = "",
-                               intent_tags: list[str] | None = None) -> str:
+                               intent_tags: list[str] | None = None,
+                               metaphysics_mode: str = "off") -> str:
     """Generate the system prompt from personality parameters.
 
     Args:
@@ -140,6 +141,7 @@ def build_dynamic_system_prompt(personality: dict | None = None, msg: str = "",
         msg: Current user message (fallback for keyword matching).
         intent_tags: AI-pre-analyzed intent tags. When provided, these
                      override keyword matching in assemble_prompt().
+        metaphysics_mode: "off" | "chat" | "reading" — enables metaphysics module.
     """
     if personality is None:
         personality = load_personality()
@@ -194,7 +196,7 @@ def build_dynamic_system_prompt(personality: dict | None = None, msg: str = "",
     personality_section = "\n\n".join(parts)
 
     from services.identity.prompt import assemble_prompt
-    core = assemble_prompt(msg, tags=intent_tags)
+    core = assemble_prompt(msg, tags=intent_tags, metaphysics_mode=metaphysics_mode)
     return personality_section + "\n\n" + core
 
 

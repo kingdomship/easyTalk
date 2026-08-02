@@ -433,4 +433,23 @@ def init_db():
         ALTER TABLE system_trace ADD COLUMN IF NOT EXISTS ip_address VARCHAR(45) DEFAULT ''
     """)
 
+    # ── metaphysics_reading — 命理解读缓存 ─────────────────────────
+    execute("""
+        CREATE TABLE IF NOT EXISTS metaphysics_reading (
+            id SERIAL PRIMARY KEY,
+            request_id VARCHAR(24) NOT NULL DEFAULT '',
+            reading_type VARCHAR(16) NOT NULL DEFAULT 'bazi',
+            scope VARCHAR(32) NOT NULL DEFAULT 'general',
+            is_temp_birth BOOLEAN DEFAULT FALSE,
+            static_chart_hash VARCHAR(64) NOT NULL DEFAULT '',
+            reading_text TEXT NOT NULL DEFAULT '',
+            chart_snapshot JSONB DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    execute("""
+        CREATE INDEX IF NOT EXISTS idx_metaphysics_reading_lookup
+        ON metaphysics_reading (reading_type, scope, static_chart_hash, created_at DESC)
+    """)
+
     _init_done = True

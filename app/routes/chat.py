@@ -645,13 +645,15 @@ async def _analyze_visual(msg: str) -> str:
 def _build_context(msg: str, thinking: str | None = None,
                    intent_tags: list[str] | None = None,
                    idle_min: float = 0,
-                   visual_description: str = "") -> list:
+                   visual_description: str = "",
+                   metaphysics_mode: str = "off",
+                   temp_birth: dict | None = None) -> list:
     time_context = build_time_context()
 
     # Use dynamic personality-based prompt if config exists, else fallback
     try:
         from services.identity.personality import build_dynamic_system_prompt, get_personality_context
-        system_msg = build_dynamic_system_prompt(msg=msg, intent_tags=intent_tags) + f"\n\n[当前时间节律]\n{time_context}"
+        system_msg = build_dynamic_system_prompt(msg=msg, intent_tags=intent_tags, metaphysics_mode=metaphysics_mode) + f"\n\n[当前时间节律]\n{time_context}"
         personality_ctx = get_personality_context()
         if personality_ctx:
             system_msg += "\n\n" + personality_ctx
@@ -807,6 +809,19 @@ def _build_context(msg: str, thinking: str | None = None,
             system_msg += "\n\n" + portrait
     except Exception:
         logger.warning("Failed to get user portrait", exc_info=True)
+
+    # ── Metaphysics context ──
+    if metaphysics_mode in ("chat", "reading"):
+        try:
+            from services.metaphysics import get_metaphysics_context, _get_fortune_injection
+            if metaphysics_mode == "reading":
+                meta_ctx = get_metaphysics_context(temp_birth)
+            else:
+                meta_ctx = _get_fortune_injection()
+            if meta_ctx:
+                system_msg += "\n\n[命理参考]\n" + meta_ctx
+        except Exception:
+            logger.warning("Failed to get metaphysics context", exc_info=True)
 
     # ── Visual perception ──
     if visual_description:
@@ -1102,7 +1117,7 @@ async def chat(req: ChatRequest):
                 visual_desc = await _analyze_visual(msg)
             else:
                 visual_desc = ""
-        messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc)
+        messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc, req.metaphysics_mode, req.temp_birth)
         data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
     finally:
         llm_foreground_clear(fg_token)
@@ -1146,7 +1161,8 @@ async def chat(req: ChatRequest):
 
     result["source"] = "llm"
     audit_log("chat_message", "chat", detail=msg[:200],
-              metadata={"source": "llm", "is_deep": is_deep})
+              metadata={"source": "llm", "is_deep": is_deep,
+                        "metaphysics_mode": req.metaphysics_mode})
     return result
 
 
@@ -1240,7 +1256,7 @@ async def chat_stream(req: ChatRequest):
                 else:
                     visual_desc = ""
             with step("build_context"):
-                messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc)
+                messages = await asyncio.to_thread(_build_context, msg, thinking, intent_tags, idle_min, visual_desc, req.metaphysics_mode, req.temp_birth)
             with step("llm_main"):
                 data, fallback, llm_tags = await asyncio.to_thread(_call_llm, messages, intent_tags)
         finally:
@@ -1391,7 +1407,8 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'scene_done', 'index': scene_total - 1, 'total': scene_total}, ensure_ascii=False)}\n\n"
 
         audit_log("chat_stream", "chat", detail=msg[:200],
-                  metadata={"source": "llm", "is_deep": is_deep})
+                  metadata={"source": "llm", "is_deep": is_deep,
+                            "metaphysics_mode": req.metaphysics_mode})
         yield f"data: {json.dumps({'type': 'done', 'source': 'llm', 'raw': data}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
