@@ -1215,6 +1215,13 @@ function drawFaceOnCanvas(params, oy) {
       }
     }
   }
+
+  // Face overlay hooks (e.g. metaphysics glasses)
+  if (window.faceOverlayHooks && window.faceOverlayHooks.length > 0) {
+    window.faceOverlayHooks.forEach(function(fn) {
+      try { fn(ctx, ox, faceOy, faceCS); } catch(e) { console.warn("overlay hook error:", e); }
+    });
+  }
 }
 
 let _cachedFacePixels = null;

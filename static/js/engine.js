@@ -3,6 +3,9 @@ function escapeHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Face overlay hooks (e.g. metaphysics glasses)
+window.faceOverlayHooks = [];
+
 // Emoji detection via code-point ranges (avoids regex character-class issues)
 function isEmojiCodePoint(cp) {
   // Common emoji Unicode ranges (same coverage as the old regex)

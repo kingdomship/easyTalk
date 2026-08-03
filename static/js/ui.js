@@ -1353,7 +1353,7 @@ async function sendMessage() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, metaphysics_mode: localStorage.getItem("metaphysics_mode") || "off" }),
       signal: abortController.signal,
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -1456,6 +1456,11 @@ async function sendMessage() {
               dlgBody.innerHTML = escapeHtml(streamedReply);
               addDebugLog('info', 'LLM', streamedEmotionLabel + ' | ' + streamedReply.slice(0, 120));
               checkChoices(streamedReply);
+              // Auto-downgrade metaphysics reading mode to chat after each reading
+              if (localStorage.getItem("metaphysics_mode") === "reading") {
+                localStorage.setItem("metaphysics_mode", "chat");
+                if (typeof setMetaphysicsMode === "function") setMetaphysicsMode("chat");
+              }
             }
           }
         } catch(e) {
