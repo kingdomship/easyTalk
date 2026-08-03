@@ -154,11 +154,18 @@ async function triggerHehun() {
       body: JSON.stringify({ other_birth: other }),
     });
     const data = await resp.json();
+    const hepan = data.hepan || {};
+    const si = hepan.star_interactions || {};
+    const ds = hepan.daxian_sync || {};
     outputDiv.innerHTML = escapeHtml(
       "综合评分: " + (data.compatibility_score || "?") + "/100\n" +
       "纳音关系: " + (data.nayan_relation || "—") + "\n" +
       "干支合: " + (data.ganzhi_he ? data.ganzhi_he.join(", ") : "—") + "\n" +
-      "十神互补: " + (data.shishen_complement || "—")
+      "十神互补: " + (data.shishen_complement || "—") + "\n" +
+      "五行互补: " + (data.wuxing_balance || "—") + "\n" +
+      "---\n" +
+      "星曜互动: " + (si.total || "?") + " (" + (si.positive || 0) + "正/" + (si.negative || 0) + "负)\n" +
+      "大限同步: " + (ds.sync_level || "—")
     ).replace(/\n/g, "<br>");
   } catch (e) {
     outputDiv.textContent = "合盘请求失败: " + e.message;
@@ -167,9 +174,10 @@ async function triggerHehun() {
 
 // ── Rendering ──
 function renderBaziTable() {
-  if (!fullChartData?.bazi?.static?.four_pillars) return;
-  const fp = fullChartData.bazi.static.four_pillars;
-  const tg = fullChartData.bazi.static.ten_gods_gan || {};
+  const c = fullChartData?.chart || fullChartData;
+  if (!c?.bazi?.static?.four_pillars) return;
+  const fp = c.bazi.static.four_pillars;
+  const tg = c.bazi.static.ten_gods_gan || {};
   ["year", "month", "day", "time"].forEach((k, i) => {
     const ganCell = document.querySelector("#bazi-gan-row td:nth-child(" + (i+1) + ")");
     const zhiCell = document.querySelector("#bazi-zhi-row td:nth-child(" + (i+1) + ")");
@@ -187,7 +195,8 @@ function renderChartForTab() {
   const canvas = document.getElementById("ziwei-canvas");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
-  drawZiweiStarMap(ctx, fullChartData.ziwei, metaActiveTab);
+  const c = fullChartData.chart || fullChartData;
+  drawZiweiStarMap(ctx, c.ziwei, metaActiveTab);
 }
 
 function drawZiweiStarMap(ctx, ziweiData, tab) {

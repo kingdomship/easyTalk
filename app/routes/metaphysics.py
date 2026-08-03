@@ -116,7 +116,7 @@ async def get_full_chart(request: Request):
     if_none_match = request.headers.get("If-None-Match", "")
     if if_none_match == etag:
         from fastapi.responses import Response
-        return Response(status_code=304)
+        return Response(status_code=304, headers={"ETag": etag})
 
     from services.metaphysics.solar_time import correct_solar_time
     import json
@@ -126,7 +126,8 @@ async def get_full_chart(request: Request):
 
     from services.metaphysics.calculator import get_full_chart as _get_full_chart
     chart = await _get_full_chart(birth_info)
-    return {"chart": chart, "etag": etag}
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content={"chart": chart, "etag": etag}, headers={"ETag": etag})
 
 
 @router.get("/reading")
@@ -278,12 +279,15 @@ async def hehun(req: HehunRequest):
         raise HTTPException(422, "对方出生信息校验失败")
 
     from services.metaphysics.ziwei.hepan import compute_hepan
+    from services.metaphysics.bazi.hehun import compute_hehun
+    bazi_hehun = compute_hehun(self_bazi, other_bazi)
     hepan_result = compute_hepan(self_ziwei, other_ziwei)
 
     audit_log("hehun", "metaphysics", "合盘分析")
 
     return {
+        **bazi_hehun,
+        "hepan": hepan_result,
         "self": {"bazi": self_bazi, "ziwei": self_ziwei},
         "other": {"bazi": other_bazi, "ziwei": other_ziwei},
-        "hepan": hepan_result,
     }

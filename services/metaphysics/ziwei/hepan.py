@@ -101,11 +101,11 @@ def _analyze_couple_flying(self_palaces, other_palaces):
         self_target = self_fuqi_fly.get(hua_type, {}).get("to", "")
         other_target = other_fuqi_fly.get(hua_type, {}).get("to", "")
         if self_target and other_target:
-            cross.append(f"双方夫妻宫{hwa_type}: 自己→{self_target}, 对方→{other_target}")
+            cross.append(f"双方夫妻宫{hua_type}: 自己→{self_target}, 对方→{other_target}")
         elif self_target:
-            cross.append(f"自己夫妻宫{hwa_type}入{self_target}")
+            cross.append(f"自己夫妻宫{hua_type}入{self_target}")
         elif other_target:
-            cross.append(f"对方夫妻宫{hwa_type}入{other_target}")
+            cross.append(f"对方夫妻宫{hua_type}入{other_target}")
 
     return {"cross_flying": cross}
 

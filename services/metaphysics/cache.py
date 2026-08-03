@@ -43,11 +43,10 @@ class ChartCache:
     def get_ziwei(self, include_dynamic=True):
         with self._lock:
             current_hash = self._read_birth_hash()
-            if self._birth_hash != current_hash and self._birth_hash is not None:
-                current_hash = self._read_birth_hash()
-            if self._birth_hash != current_hash:
+            if self._birth_hash != current_hash or self._ziwei_static is None:
                 self._ziwei_static = self._compute_ziwei_static()
                 self._save_json(ZIWEI_CACHE_PATH, self._ziwei_static)
+                self._birth_hash = current_hash
 
         static = self._ziwei_static
         if not include_dynamic or not static:
