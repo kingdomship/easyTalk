@@ -21,11 +21,30 @@ def _safe_compute(fn, *args):
         }
 
 
+def _normalize_birth_info(birth_info):
+    """标准化出生信息: 农历→公历转换（若需要）"""
+    if birth_info.get("calendar") == "lunar" and birth_info.get("lunar_date"):
+        from services.metaphysics.solar_time import convert_lunar_to_solar
+        solar = convert_lunar_to_solar(
+            birth_info["lunar_date"],
+            birth_info.get("clock_time", "12:00"),
+        )
+        info = dict(birth_info)
+        info["calendar"] = "solar"
+        info["solar_date"] = solar["solar_date"]
+        info["clock_time"] = solar["clock_time"]
+        return info
+    return birth_info
+
+
 def validate_birth_info(birth_info):
     """校验 birth_info 字段合法性"""
     if not birth_info:
         return {"error": True, "error_code": "INVALID_BIRTH_INFO",
                 "error_message": "缺少出生信息"}
+
+    # 农历→公历转换
+    birth_info = _normalize_birth_info(birth_info)
 
     solar_date = birth_info.get("solar_date", "")
     clock_time = birth_info.get("clock_time", "")
@@ -54,6 +73,7 @@ def validate_birth_info(birth_info):
 
 def compute_bazi_from_birth(birth_info):
     """从临时出生信息计算八字 (不走缓存, 不求动态层)"""
+    birth_info = _normalize_birth_info(birth_info)
     err = validate_birth_info(birth_info)
     if err:
         return err
@@ -67,6 +87,7 @@ def compute_bazi_from_birth(birth_info):
 
 def compute_ziwei_from_birth(birth_info):
     """从临时出生信息计算紫微 (不走缓存, 不求动态层)"""
+    birth_info = _normalize_birth_info(birth_info)
     err = validate_birth_info(birth_info)
     if err:
         return err
@@ -80,6 +101,7 @@ def compute_ziwei_from_birth(birth_info):
 
 async def get_full_chart(birth_info):
     """并行排盘: 八字+紫微, asyncio.gather"""
+    birth_info = _normalize_birth_info(birth_info)
     err = validate_birth_info(birth_info)
     if err:
         return err

@@ -106,26 +106,42 @@ async def get_ziwei():
 
 @router.get("/full-chart")
 async def get_full_chart(request: Request):
-    """一次性返回八字+紫微静态层 (面板加载用, 支持ETag)"""
+    """一次性返回八字+紫微 (静态层+动态层, 面板加载用, 支持ETag)"""
     from services.metaphysics.cache import cache
     birth_hash = cache.get_birth_hash()
     if not birth_hash:
         return {"error": True, "error_message": "未填写出生信息"}
 
-    etag = f'"{birth_hash}"'
+    # ETag with 5-min time window for dynamic data freshness
+    time_window = int(time.time() / 300)
+    etag = f'"{birth_hash}:{time_window}"'
     if_none_match = request.headers.get("If-None-Match", "")
     if if_none_match == etag:
         from fastapi.responses import Response
         return Response(status_code=304, headers={"ETag": etag})
 
-    from services.metaphysics.solar_time import correct_solar_time
-    import json
-    birth_info = json.load(open(BIRTH_INFO_PATH)) if os.path.exists(BIRTH_INFO_PATH) else None
+    if os.path.exists(BIRTH_INFO_PATH):
+        with open(BIRTH_INFO_PATH) as f:
+            birth_info = json.load(f)
+    else:
+        birth_info = None
     if not birth_info:
         return {"error": True, "error_message": "未填写出生信息"}
 
     from services.metaphysics.calculator import get_full_chart as _get_full_chart
     chart = await _get_full_chart(birth_info)
+
+    # Inject dynamic layer (dayun/liunian/liuyue) from cache
+    try:
+        bazi_dynamic = await cache.get_bazi_async(include_dynamic=True)
+        ziwei_dynamic = await cache.get_ziwei_async(include_dynamic=True)
+        if bazi_dynamic and "current" in bazi_dynamic:
+            chart["bazi"]["current"] = bazi_dynamic["current"]
+        if ziwei_dynamic and "current" in ziwei_dynamic:
+            chart["ziwei"]["current"] = ziwei_dynamic["current"]
+    except Exception:
+        logger.warning("Dynamic layer injection failed, serving static-only chart", exc_info=True)
+
     from fastapi.responses import JSONResponse
     return JSONResponse(content={"chart": chart, "etag": etag}, headers={"ETag": etag})
 
@@ -225,11 +241,19 @@ async def trigger_reading(req: ReadingRequest, request: Request):
     prompt = build_reading_prompt(chart, req.scope, kb_entries, user_portrait)
 
     # Call LLM
-    from app.utils import get_llm
+    from app.utils import get_llm, get_llm_model
     try:
-        llm = get_llm()
-        response = await asyncio.to_thread(llm.invoke, prompt)
-        reading_text = response.content if hasattr(response, 'content') else str(response)
+        client = get_llm()
+        if client is None:
+            raise RuntimeError("LLM not configured — no API key")
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model=get_llm_model(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=2000,
+        )
+        reading_text = response.choices[0].message.content
     except Exception as e:
         logger.error("LLM reading failed: %s", e)
         from services.metaphysics.interpreter import build_fallback_reading

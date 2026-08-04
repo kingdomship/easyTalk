@@ -11,14 +11,13 @@ Prediction results feed into memory preloading and system prompt context.
 Feedback learning stores prediction-vs-actual in prediction_history table.
 """
 
-import json
 import logging
 import os
 import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
-from app.utils import get_llm_model, llm_module_context
+from app.utils import extract_json, get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
 
@@ -116,12 +115,13 @@ def pre_dialogue_analyze() -> dict | None:
                 {"role": "system", "content": _ANALYZE_PROMPT},
                 {"role": "user", "content": f"时间背景：{time_ctx}\n\n最近对话：\n{history}\n\n请预测用户接下来最可能的需求、情绪和话题。"},
             ],
-            response_format={"type": "json_object"},
             temperature=0.3,
             max_tokens=200,
         )
         raw = resp.choices[0].message.content
-        data = json.loads(raw)
+        data = extract_json(raw)
+        if not data:
+            return None
         prediction = {
             "need": str(data.get("need", "闲聊")),
             "emotion": str(data.get("emotion", "平静")),
@@ -138,6 +138,8 @@ def pre_dialogue_analyze() -> dict | None:
         return prediction
     except Exception:
         logger.warning("Pre-dialogue analysis failed", exc_info=True)
+        with _pred_lock:
+            _last_prediction = None
         return None
 
 

@@ -80,6 +80,123 @@ def debug_drift():
         return {"available": False, "reason": "查询失败"}
 
 
+# ── Relationship / psychology dashboard endpoints ────────────────────
+
+
+@router.get("/api/debug/affinity")
+def debug_affinity():
+    """10D affinity values + full milestone checklist for the debug panel."""
+    try:
+        from services.emotion.affinity import init_affinity_db, get_affinity, get_milestones, _MILESTONES
+        init_affinity_db()
+        aff = get_affinity()
+        achieved = {m["name"] for m in get_milestones()}
+        milestones = [
+            {
+                "name": name, "description": desc, "dimension": dim,
+                "threshold": threshold,
+                "value": round(aff.get(dim, 0), 3),
+                "reached": name in achieved,
+            }
+            for dim, threshold, name, desc in _MILESTONES
+        ]
+        return {"values": aff, "milestones": milestones}
+    except Exception:
+        return {"values": {}, "milestones": []}
+
+
+@router.get("/api/debug/psych")
+def debug_psych():
+    """Aggregate attachment, contagion, goal, salience, curiosity for the debug panel."""
+    result = {"attachment": None, "contagion": None, "goal": None,
+              "salience": {}, "curiosity": []}
+    try:
+        import json as _json, os as _os
+        from app.config import STYLE_PATH
+        if _os.path.exists(STYLE_PATH):
+            with open(STYLE_PATH) as f:
+                result["attachment"] = _json.load(f)
+    except Exception:
+        pass
+    try:
+        from services.emotion.contagion import _load_state as _load_contagion
+        result["contagion"] = _load_contagion()
+    except Exception:
+        pass
+    try:
+        from services.psych.conversation_goal import _load_state as _load_goal
+        result["goal"] = _load_goal()
+    except Exception:
+        pass
+    try:
+        from services.emotion.salience import get_salience, init_salience_db
+        init_salience_db()
+        result["salience"] = get_salience()
+    except Exception:
+        pass
+    try:
+        from services.psych.entry_point import _load as _load_curiosity
+        result["curiosity"] = _load_curiosity()
+    except Exception:
+        pass
+    return result
+
+
+@router.get("/api/debug/life-domains")
+def debug_life_domains():
+    """6 life domains with CN labels for the debug panel."""
+    try:
+        from services.psych.life_domains import _load, DOMAINS
+        data = _load()
+        domains = [
+            {"key": key, "label": DOMAINS[key]["label"],
+             "status": data.get(key, {}).get("status", "neutral"),
+             "salience": data.get(key, {}).get("salience", 0.0),
+             "last_mention": data.get(key, {}).get("last_mention", "")}
+            for key in DOMAINS
+        ]
+        domains.sort(key=lambda d: d["salience"], reverse=True)
+        return {"domains": domains}
+    except Exception:
+        return {"domains": []}
+
+
+@router.get("/api/debug/portrait")
+def debug_portrait():
+    """Synthesized user portrait + key stats for the debug panel."""
+    result = {"portrait": "", "stats": {"kg_entities": 0, "first_date": "",
+                                         "total_messages": 0, "total_days": 0}}
+    try:
+        from services.psych.user_model import _get_raw_data, synthesize_portrait
+        data = _get_raw_data()
+        result["portrait"] = synthesize_portrait(data)
+    except Exception:
+        pass
+    try:
+        from app.db import q
+        row = q("SELECT COUNT(*) AS c FROM kg_entities", fetch="one")
+        if row:
+            result["stats"]["kg_entities"] = row["c"]
+    except Exception:
+        pass
+    try:
+        import json as _json, os as _os
+        from app.config import MEMORY_DIR
+        from datetime import datetime as _dt, timezone as _tz
+        p = _os.path.join(MEMORY_DIR, "timeline.json")
+        if _os.path.exists(p):
+            with open(p) as f:
+                tl = _json.load(f)
+            result["stats"]["first_date"] = tl.get("first_date", "")
+            result["stats"]["total_messages"] = tl.get("total_lines", 0)
+            if tl.get("first_date"):
+                fd = _dt.fromisoformat(tl["first_date"]).date()
+                result["stats"]["total_days"] = (_dt.now(_tz.utc).date() - fd).days + 1
+    except Exception:
+        pass
+    return result
+
+
 # ── Audit log endpoints ──────────────────────────────────────────────
 
 

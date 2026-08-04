@@ -15,7 +15,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.db import q, execute
-from app.utils import get_llm_model
+from app.utils import extract_json, get_llm_model
 
 logger = logging.getLogger("emoji-chat")
 
@@ -109,13 +109,13 @@ def extract_from_message(msg: str) -> list[dict]:
                     {"role": "system", "content": _EXTRACT_PROMPT},
                     {"role": "user", "content": msg},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.2,
                 max_tokens=300,
             )
         raw = resp.choices[0].message.content
-        # Handle both array and object wrapping
-        data = json.loads(raw)
+        data = extract_json(raw)
+        if not data:
+            return []
         if isinstance(data, dict):
             items = data.get("entities", data.get("items", []))
         elif isinstance(data, list):
@@ -165,8 +165,8 @@ def maybe_extract_kg(msg: str):
         count = row["cnt"] if row else 0
         if count - _last_kg_count < _KG_EXTRACT_EVERY:
             return
-        _last_kg_count = count
         process_message(msg)
+        _last_kg_count = count
     except Exception:
         logger.warning("KG periodic extraction failed", exc_info=True)
     finally:

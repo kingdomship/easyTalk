@@ -1,14 +1,23 @@
 """Diary generation service — dual-perspective (AI + user) diary from chat history."""
 
-import json
 import logging
 import random
 from datetime import date, timedelta
 
 from app.db import q, execute
-from app.utils import get_llm_model, llm_module_context
+from app.utils import extract_json, get_llm_model, llm_module_context
 
 logger = logging.getLogger("emoji-chat")
+
+
+def _fallback_diary(chat_count: int) -> tuple[str, str]:
+    """Return a default fallback diary entry when LLM generation fails."""
+    text = (
+        "今天在星空中漂浮，静静地等待... ✨🌙"
+        if chat_count == 0
+        else f"今天说了{chat_count}次话，感觉还不错 ✨"
+    )
+    return text, "✨"
 
 
 AI_DIARY_SYSTEM_PROMPT = """你是一个温柔可爱的像素头像少女，生活在数字星空中。每天用户会来和你聊天。
@@ -241,21 +250,19 @@ def generate_diary(for_date: str = "") -> dict | None:
                     {"role": "system", "content": AI_DIARY_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.9,
                 max_tokens=800,
             )
-        data = json.loads(resp.choices[0].message.content)
-        diary_text = data.get("diary", "")
-        mood_emoji = data.get("mood_emoji", "✨")
+        raw = resp.choices[0].message.content
+        data = extract_json(raw)
+        if data and data.get("diary", "").strip():
+            diary_text = data["diary"]
+            mood_emoji = data.get("mood_emoji", "✨")
+        else:
+            diary_text, mood_emoji = _fallback_diary(chat_count)
     except Exception:
         logger.warning("Diary generation failed", exc_info=True)
-        diary_text = (
-            f"今天在星空中漂浮，静静地等待... ✨🌙"
-            if chat_count == 0
-            else f"今天说了{chat_count}次话，感觉还不错 ✨"
-        )
-        mood_emoji = "✨"
+        diary_text, mood_emoji = _fallback_diary(chat_count)
 
     execute(
         "INSERT INTO diary_entries (date, content, chat_count, mood_emoji) "
@@ -306,11 +313,13 @@ def generate_user_diary(for_date: str = "") -> dict | None:
                     {"role": "system", "content": USER_DIARY_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.7,
                 max_tokens=500,
         )
-        data = json.loads(resp.choices[0].message.content)
+        raw = resp.choices[0].message.content
+        data = extract_json(raw)
+        if not data:
+            return None
 
         if not data.get("worth", False):
             execute(

@@ -15,7 +15,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.db import q, execute, init_db
-from app.utils import get_background_executor, get_low_priority_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear, llm_module_context
+from app.utils import extract_json, get_background_executor, get_low_priority_executor, get_llm, get_llm_model, llm_foreground, llm_foreground_clear, llm_module_context
 from app.models import ChatRequest
 from app.tracer import set_request_id, step
 from app.audit import audit_log
@@ -57,9 +57,19 @@ _ARCHIVE_PATH = ARCHIVE_PATH
 
 
 def _strip_emoji(text: str) -> str:
-    """Remove emoji from conversation history to prevent DeepSeek JSON-mode crash."""
+    """Remove emoji from conversation history to prevent DeepSeek JSON-mode crash.
+
+    Covers: Emoticons, Misc Symbols, Pictographs, Transport, Supplemental,
+    Regional Indicators, ZWJ, VS16, skin tones, and common dingbats.
+    """
     return re.sub(
-        r'[\U0001F300-\U0001F9FF☀-➿⭐❤✨✀-➿️‍]',
+        r'[\U0001F000-\U0001FAFF'
+        r'☀-➿'       # Misc Symbols, Dingbats
+        r'⌀-⏿'        # Misc Technical
+        r'⭐❤❣'   # ⭐ ❤ 💟
+        r'‍️'         # ZWJ, VS16
+        r'\U0001F3FB-\U0001F3FF'  # skin tone modifiers
+        r']',
         '', text,
     ).strip()
 
@@ -75,6 +85,20 @@ def _get_affect_dict() -> dict | None:
     except Exception:
         logger.warning("Failed to get affect dict", exc_info=True)
     return None
+
+
+def _sanitize_emotions(emotions: list) -> list:
+    """Filter non-dict elements and ensure non-empty list for clamp_frame."""
+    if not isinstance(emotions, list) or not emotions:
+        return [make_default_frame()]
+    emotions = [e for e in emotions if isinstance(e, dict)]
+    return emotions if emotions else [make_default_frame()]
+
+
+def _exact_cache_key(msg: str) -> str:
+    """Cache key with time-slot segmentation to prevent time-sensitive
+    greetings from being served at the wrong time of day."""
+    return f"exact:{hashlib.md5(msg.encode()).hexdigest()[:16]}:{_time_slot()}"
 
 
 
@@ -225,6 +249,9 @@ def _maybe_condense():
                 max_tokens=2000,
             )
         summary = resp.choices[0].message.content
+        if not summary or not summary.strip() or len(summary.strip()) < 20:
+            logger.warning("Condense returned empty/too-short content, skipping write to preserve existing summary")
+            return
 
         summary_path = SUMMARY_PATH
         with open(summary_path, "w") as f:
@@ -350,10 +377,13 @@ def _maybe_update_memory_files():
                         max_tokens=1500,
                     )
                 new_profile = resp.choices[0].message.content
-                with open(profile_path, "w") as f:
-                    f.write(new_profile)
-                _last_profile_count = line_count
-                updated = True
+                if not new_profile or not new_profile.strip() or len(new_profile.strip()) < 20:
+                    logger.warning("Profile update returned empty/too-short content, skipping write to preserve existing profile")
+                else:
+                    with open(profile_path, "w") as f:
+                        f.write(new_profile)
+                    _last_profile_count = line_count
+                    updated = True
             except Exception:
                 logger.warning("Operation failed", exc_info=True)
 
@@ -374,10 +404,13 @@ def _maybe_update_memory_files():
                         max_tokens=1500,
                     )
                 new_persona = resp.choices[0].message.content
-                with open(persona_path, "w") as f:
-                    f.write(new_persona)
-                _last_persona_count = line_count
-                updated = True
+                if not new_persona or not new_persona.strip() or len(new_persona.strip()) < 20:
+                    logger.warning("Persona update returned empty/too-short content, skipping write to preserve existing persona")
+                else:
+                    with open(persona_path, "w") as f:
+                        f.write(new_persona)
+                    _last_persona_count = line_count
+                    updated = True
             except Exception:
                 logger.warning("Operation failed", exc_info=True)
 
@@ -498,6 +531,8 @@ none: 以上都不适用
 
 只输出JSON数组，如["emotion","weather"]，不要其他内容。"""
 
+_VALID_INTENT_TAGS = frozenset({"emotion", "weather", "story", "object", "topic", "psychology", "visual", "none"})
+
 
 def _analyze_intent_sync(msg: str, recent_history: str = "") -> list[str] | None:
     """Quick AI pre-analysis of user intent for module selection.
@@ -528,7 +563,9 @@ def _analyze_intent_sync(msg: str, recent_history: str = "") -> list[str] | None
         if start >= 0 and end > start:
             data = json.loads(raw[start:end])
             if isinstance(data, list):
-                return [t for t in data if isinstance(t, str)]
+                tags = [t for t in data if isinstance(t, str) and t in _VALID_INTENT_TAGS]
+                if tags:
+                    return tags
     except Exception:
         logger.warning("Intent analysis failed, falling back to keywords", exc_info=True)
     return None
@@ -849,21 +886,39 @@ _FALLBACKS = [
 ]
 
 
+def _time_slot() -> str:
+    """Return a time-of-day slot for cache key segmentation.
+
+    Prevents time-sensitive greetings ("早上好") cached at 8am from being
+    served at 11pm. Slots: morn (5-11), noon (12-17), eve (18-21), night (22-4).
+    """
+    h = datetime.now().hour
+    if 5 <= h < 12:
+        return "morn"
+    elif 12 <= h < 18:
+        return "noon"
+    elif 18 <= h < 22:
+        return "eve"
+    return "night"
+
+
 def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
-    """Call DeepSeek and extract JSON from the response.
+    """Call LLM and extract JSON from the response.
+
+    Supports automatic continuation (up to 2 extra calls) when max_tokens
+    truncates the reply, so long replies are split across multiple LLM calls
+    instead of being lost.
 
     Returns (data, fallback, tags) — tags are semantic keywords from the
     user's message, extracted by the LLM alongside the main response,
     saving a separate API call for memory indexing.
-
-    DeepSeek's response_format=json_object is buggy with conversation history
-    (silently returns spaces). We skip it and instead use prompt instruction +
-    brace-matching JSON extraction.
     """
+    MAX_CONTINUATIONS = 2
+
     client = get_llm()
     if client is None:
         return ({}, "请先在 ⚙️ 设置中配置 API Key 才能聊天哦~", [])
-    # Append JSON format reminder without modifying user's original words
+
     msgs = list(messages)
     msgs[-1] = dict(msgs[-1])
     msgs[-1]["content"] += "\n（请以上述JSON格式回复）"
@@ -872,12 +927,10 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
         from services.emotion.affect import get_affect
         affect = get_affect()
         rhythm_temp = get_rhythm_temperature(affect)
-        # Extract user message (last in the list) for mode detection
         user_msg = msgs[-1]["content"].split("\n（请以上述JSON格式回复）")[0] if msgs else ""
         drives = get_drive_values()
         mode = determine_mode(_is_deep_question(user_msg), affect, drives=drives)
 
-        # Compute idle minutes for arousal state
         last_row = q("SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS secs FROM chat_history ORDER BY id DESC LIMIT 1", fetch="one")
         idle_min = (float(last_row["secs"]) / 60.0) if last_row and last_row["secs"] else 0
 
@@ -889,34 +942,85 @@ def _call_llm(messages: list, intent_tags: list[str] | None = None) -> tuple:
         if is_story:
             temp += 0.05  # boost creativity for storytelling
         max_tok = 8192 if is_story else 4096
-        with llm_module_context("llm_main"):
-            resp = client.chat.completions.create(
-                model=get_llm_model(), messages=msgs,
-                temperature=temp, max_tokens=max_tok,
-            )
-        raw = resp.choices[0].message.content
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            data = json.loads(raw[start:end])
-            if "reply" in data and "emotions" in data:
-                tags = data.pop("tags", []) if isinstance(data, dict) else []
-                if not isinstance(tags, list):
-                    tags = []
-                tags = [t for t in tags if isinstance(t, str)][:8]
-                # Console log: LLM reply
-                reply_text = data.get("reply", "")
-                emotions = data.get("emotions", [])
-                if isinstance(emotions, list) and emotions and isinstance(emotions[0], dict):
-                    emo_label = emotions[0].get("label", "?")
-                elif isinstance(emotions, dict):
-                    emo_label = next(iter(emotions), "?")
-                else:
-                    emo_label = "?"
-                tag_str = ", ".join(tags) if tags else "-"
-                logger.info("💬 LLM → %s | %s | [%s]", emo_label, reply_text[:120], tag_str)
-                return data, None, tags
-        logger.warning("No valid JSON in response: %s", raw[:200])
+
+        # ── Continuation loop ──
+        all_replies = []
+        all_tags = []
+        combined_data = {}
+        final_emotions = None
+        finish = "unknown"
+
+        for cont_round in range(1 + MAX_CONTINUATIONS):
+            try:
+                with llm_module_context("llm_main"):
+                    resp = client.chat.completions.create(
+                        model=get_llm_model(), messages=msgs,
+                        temperature=temp, max_tokens=max_tok,
+                    )
+            except Exception:
+                if all_replies:
+                    break  # We have partial content, return it
+                raise  # No content at all, propagate to outer handler
+
+            raw = resp.choices[0].message.content
+            finish = resp.choices[0].finish_reason
+
+            data, end_pos = extract_json(raw, return_end=True)
+
+            # ── Trailing text: preserve content after JSON closing brace ──
+            if data is not None and isinstance(data, dict) and end_pos > 0:
+                trailing = raw[end_pos:].strip()
+                if trailing and len(trailing) > 3 and not trailing.startswith("{"):
+                    if "\\n" in trailing:
+                        trailing = trailing.replace("\\n", "\n")
+                    if "reply" in data:
+                        data["reply"] = data["reply"] + "\n\n" + trailing
+
+            if data is not None and isinstance(data, dict) and "reply" in data and "emotions" in data:
+                all_replies.append(data.get("reply", ""))
+                tags = data.get("tags", [])
+                if isinstance(tags, list):
+                    all_tags.extend([t for t in tags if isinstance(t, str)])
+
+                if not combined_data:
+                    combined_data = data
+                    final_emotions = data.get("emotions", [])
+
+                if finish != "length":
+                    break  # Reply complete, no continuation needed
+
+                # Set up continuation: include truncated response as context
+                msgs.append({"role": "assistant", "content": raw})
+                msgs.append({"role": "user", "content": "（请继续完成你未说完的回复，直接从截断处继续，不要重复已说过的内容。仍以JSON格式回复。）"})
+            else:
+                if all_replies:
+                    break  # Can't parse this round but we have earlier content
+                break  # Can't parse at all, fall through to fallback
+
+        if all_replies:
+            # Merge: reply from all parts, everything else from first response
+            combined_data["reply"] = "".join(all_replies)
+            combined_data["emotions"] = final_emotions
+            tags = list(dict.fromkeys(all_tags))[:8]  # deduplicate, cap at 8
+
+            reply_text = combined_data.get("reply", "")
+            emotions = final_emotions or []
+            if isinstance(emotions, list) and emotions and isinstance(emotions[0], dict):
+                emo_label = emotions[0].get("label", "?")
+            elif isinstance(emotions, dict):
+                emo_label = next(iter(emotions), "?")
+            else:
+                emo_label = "?"
+            tag_str = ", ".join(tags) if tags else "-"
+            logger.info("💬 LLM → %s | %s | [%s]%s",
+                         emo_label, reply_text[:120], tag_str,
+                         f" ({len(all_replies)} parts)" if len(all_replies) > 1 else "")
+            return combined_data, None, tags
+
+        if finish == "length":
+            logger.warning("LLM response truncated and unparseable, raw[:300]: %s", raw[:300])
+        else:
+            logger.warning("No valid JSON in response: %s", raw[:200])
         return None, "嗯...刚刚组织语言出了点小岔子，再说一次？", []
     except Exception as e:
         err = str(e).lower()
@@ -1055,7 +1159,7 @@ async def chat(req: ChatRequest):
             "UPDATE salience_state SET value = %s WHERE dimension = 'surprise'",
             [round(min(1.0, s.get("surprise", 0.1) + pred_error * 0.3), 4)],
         )
-    key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
+    key = _exact_cache_key(msg)
 
     # Dual-system gate: decide whether to engage System 2
     from services.emotion.affect import get_affect
@@ -1124,21 +1228,14 @@ async def chat(req: ChatRequest):
     if fallback:
         return {"emotions": _fallback_emotion(), "reply": fallback, "source": "fallback"}
 
-    emotions = data.get("emotions", [])
-    if not isinstance(emotions, list) or not emotions:
-        emotions = [make_default_frame()]
+    emotions = _sanitize_emotions(data.get("emotions", []))
     parsed = [clamp_frame(f) for f in emotions]
     for f in parsed:
         f.update(jitter_frame(f))
         f.update(scale_emotion_params(f))
     reply_text = str(data.get("reply", "..."))
     scenes = data.get("scenes")
-    if isinstance(scenes, list) and scenes:
-        full_reply = reply_text + "\n\n" + "\n\n".join(
-            str(s.get("reply", "")) for s in scenes if isinstance(s, dict) and s.get("reply")
-        )
-    else:
-        full_reply = reply_text
+    if not isinstance(scenes, list) or not scenes:
         scenes = None
     result = {"emotions": parsed, "reply": reply_text, "color_fields": data.get("color_fields") or [], "sprite_keywords": data.get("sprite_keywords") or [], "background": data.get("background")}
     if scenes:
@@ -1147,7 +1244,7 @@ async def chat(req: ChatRequest):
     def _persist_and_pipeline_chat():
         new_row = q(
             "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-            [msg, full_reply, parsed[0]["label"]], fetch="one",
+            [msg, reply_text, parsed[0]["label"]], fetch="one",
         )
         tid = new_row["id"] if new_row else None
         _post_reply_pipeline(msg, result["reply"], parsed[0]["label"],
@@ -1177,7 +1274,7 @@ async def chat_stream(req: ChatRequest):
     async def generate():
         is_deep = _is_deep_question(msg)
         pred_error = check_prediction(msg)
-        key = "exact:" + hashlib.md5(msg.encode()).hexdigest()[:16]
+        key = _exact_cache_key(msg)
 
         from services.emotion.salience import get_salience, init_salience_db
         from services.emotion.affect import get_affect
@@ -1264,10 +1361,15 @@ async def chat_stream(req: ChatRequest):
         if fallback:
             yield f"data: {json.dumps({'type': 'emotions', 'emotions': _fallback_emotion(), 'label': 'sheepish', 'affect': _get_affect_dict(), 'color_fields': []}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'error', 'text': fallback}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'source': 'fallback'}, ensure_ascii=False)}\n\n"
             return
 
         emotions = data.get("emotions", [])
         if not isinstance(emotions, list) or not emotions:
+            emotions = [make_default_frame()]
+        # Filter out non-dict elements to prevent clamp_frame crashes
+        emotions = [e for e in emotions if isinstance(e, dict)]
+        if not emotions:
             emotions = [make_default_frame()]
         parsed = [clamp_frame(f) for f in emotions]
         for f in parsed:
@@ -1275,19 +1377,14 @@ async def chat_stream(req: ChatRequest):
             f.update(scale_emotion_params(f))
         reply = str(data.get("reply", "..."))
         scenes = data.get("scenes")
-        if isinstance(scenes, list) and scenes:
-            full_reply = reply + "\n\n" + "\n\n".join(
-                str(s.get("reply", "")) for s in scenes if isinstance(s, dict) and s.get("reply")
-            )
-        else:
-            full_reply = reply
-            scenes = None  # ensure None for non-list / empty list
+        if not isinstance(scenes, list) or not scenes:
+            scenes = None
 
         # Persist before streaming — prevents data loss on client disconnect
         def _persist_and_pipeline():
             new_row = q(
                 "INSERT INTO chat_history (user_msg, avatar_reply, emotion_label) VALUES (%s, %s, %s) RETURNING id",
-                [msg, full_reply, parsed[0]["label"]], fetch="one",
+                [msg, reply, parsed[0]["label"]], fetch="one",
             )
             tid = new_row["id"] if new_row else None
             _post_reply_pipeline(msg, reply, parsed[0]["label"],
@@ -1409,7 +1506,7 @@ async def chat_stream(req: ChatRequest):
         audit_log("chat_stream", "chat", detail=msg[:200],
                   metadata={"source": "llm", "is_deep": is_deep,
                             "metaphysics_mode": req.metaphysics_mode})
-        yield f"data: {json.dumps({'type': 'done', 'source': 'llm', 'raw': data}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'source': 'llm'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

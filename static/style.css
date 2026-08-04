@@ -26,6 +26,8 @@
     overflow: hidden; user-select: none; -webkit-user-select: none;
   }
   canvas { display:block; position:fixed; top:0; left:0; width:100%; height:100%; height:100dvh; touch-action: none; }
+  /* Metaphysics star-map — override global canvas rule; this canvas lives inside #auxContent */
+  #ziwei-canvas { position: relative; top: auto; left: auto; width: 100%; height: auto; touch-action: auto; }
 
   /* ── Input bar ── */
   #input-row {
@@ -56,6 +58,7 @@
   }
   #input-row textarea::placeholder { color:#8a8aaa; }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+  .hidden { display: none !important; }
   .kaomoji-btn {
     width:30px; height:30px; border-radius:50%; border:none; flex-shrink:0;
     background:rgba(124,131,255,0.12); color:inherit; font-size:0.85rem;
@@ -154,11 +157,11 @@
     font-family:inherit; letter-spacing:0.04em;
   }
   #aux-panel .aux-back:hover { border-color:var(--accent); color:var(--accent); }
-  #aux-panel .aux-tabs { display:flex; gap:4px; }
+  #aux-panel .aux-tabs { display:flex; flex-wrap:wrap; gap:4px; }
   #aux-panel .aux-tab {
-    background:none; border:none; color:#6a6a8a; padding:6px 14px;
-    border-radius:16px; cursor:pointer; font-size:0.8rem; font-family:inherit;
-    letter-spacing:0.04em;
+    background:none; border:none; color:#6a6a8a; padding:4px 10px;
+    border-radius:16px; cursor:pointer; font-size:0.78rem; font-family:inherit;
+    letter-spacing:0.04em; white-space:nowrap;
   }
   #aux-panel .aux-tab.active { background:rgba(124,131,255,0.15); color:var(--accent); }
   #aux-panel .aux-content { padding:12px 20px 24px; flex:1; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
@@ -306,6 +309,73 @@
   .diary-tabs { padding:8px 18px 0; }
   .diary-tab { padding:7px 16px; font-size:0.72rem; }
   .diary-mood { font-size:2rem; margin-bottom:12px; }
+}
+
+/* ── Reading Modal ── */
+#reading-modal {
+  position:fixed; top:0; left:0; width:100vw; height:100vh; height:100dvh;
+  z-index:45; pointer-events:none;
+  display:flex; align-items:center; justify-content:center;
+}
+#reading-modal.open { pointer-events:auto; }
+.reading-overlay {
+  position:absolute; top:0; left:0; width:100%; height:100%;
+  background:rgba(0,0,0,0.5); opacity:0;
+  transition:opacity 0.4s ease;
+  backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+}
+#reading-modal.open .reading-overlay { opacity:1; }
+.reading-dialog {
+  position:relative; z-index:1;
+  background:linear-gradient(135deg, rgba(22,18,42,0.97) 0%, rgba(28,22,52,0.97) 50%, rgba(18,20,42,0.97) 100%);
+  border:1px solid rgba(180,160,255,0.18);
+  border-radius:22px; width:600px; max-width:92vw;
+  box-shadow:0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(160,140,255,0.06) inset;
+  transform:translateY(24px) scale(0.96); opacity:0;
+  transition:all 0.35s cubic-bezier(0.22,1,0.36,1);
+  display:flex; flex-direction:column; max-height:80vh;
+}
+#reading-modal.open .reading-dialog { transform:translateY(0) scale(1); opacity:1; }
+.reading-header {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:18px 24px 12px; border-bottom:1px solid rgba(180,160,255,0.12);
+  flex-shrink:0; color:mediumpurple; font-size:0.85rem; letter-spacing:0.05em;
+}
+.reading-close {
+  background:none; border:none; color:#888; font-size:1.1rem;
+  cursor:pointer; padding:4px 8px; border-radius:6px; line-height:1;
+  transition:color 0.2s, background 0.2s;
+}
+.reading-close:hover { color:#f87171; background:rgba(255,255,255,0.06); }
+.reading-body {
+  padding:18px 24px 24px; overflow-y:auto; flex:1;
+  font-size:0.95rem; line-height:1.9; letter-spacing:0.02em;
+  color:#c8c8e8; word-break:break-word; user-select:text; -webkit-user-select:text;
+}
+.reading-body::-webkit-scrollbar { width:6px; }
+.reading-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.12); border-radius:3px; }
+.reading-placeholder { color:#4a4a6a; text-align:center; padding:50px 0; font-size:0.8rem; }
+
+/* Markdown typography inside reading body */
+.reading-body h2 {
+  font-size:1.15rem; color:#e0d0ff; margin:18px 0 8px;
+  border-left:3px solid mediumpurple; padding-left:10px;
+}
+.reading-body h3 { font-size:1rem; color:#d0c0f0; margin:14px 0 6px; }
+.reading-body h4 { font-size:0.9rem; color:#c0b0e0; margin:10px 0 4px; }
+.reading-body p { margin:8px 0; }
+.reading-body ul, .reading-body ol { margin:8px 0; padding-left:22px; }
+.reading-body li { margin:3px 0; }
+.reading-body hr { border:none; border-top:1px solid rgba(180,160,255,0.25); margin:14px 0; }
+.reading-body code {
+  background:rgba(124,131,255,0.12); padding:1px 6px; border-radius:4px;
+  font-family:monospace; font-size:0.85em;
+}
+.reading-body strong { color:#e8e0f8; }
+.reading-body em { color:#c8c0e8; }
+@media (max-width:600px) {
+  .reading-dialog { width:94vw; max-height:85vh; border-radius:18px; }
+  .reading-body { padding:14px 18px 20px; font-size:0.9rem; }
 }
 
   /* ── Diary search & filter toolbar ── */
@@ -510,6 +580,8 @@
     background:rgba(124,131,255,0.04);
   }
   .debug-tab:hover { color:#999; }
+  .debug-tabs.many-tabs .debug-tab { padding:6px 3px; gap:2px; font-size:0.56rem; }
+  .debug-tabs.many-tabs .debug-tab .svg-icon { display:none; }
 
   /* Debug content areas */
   .debug-content { display:none; flex:1; overflow-y:auto; overflow-x:hidden; }
@@ -723,6 +795,55 @@
     color:#aaa; padding:2px 10px; border-radius:4px; cursor:pointer; font-size:0.5rem; font-family:inherit; }
   .audit-pagination button:hover { background:rgba(124,131,255,0.2); }
   .audit-pagination button:disabled { opacity:0.3; cursor:default; }
+
+  /* ── New tabs: affinity / psych / domains / portrait ── */
+  #debugAffinityTab, #debugPsychTab, #debugDomainsTab, #debugPortraitTab { padding:8px 10px; gap:6px; }
+  .debug-empty { color:#555; padding:10px 0; text-align:center; font-size:0.55rem; }
+
+  /* Milestone checklist */
+  .milestone-item { display:flex; align-items:center; gap:6px; font-size:0.58rem; padding:2px 0; }
+  .milestone-check { color:#4caf50; font-size:0.6rem; width:12px; flex-shrink:0; }
+  .milestone-item:not(.reached) .milestone-check { color:#3a3a52; }
+  .milestone-item:not(.reached) .milestone-name { color:#5a5a78; }
+  .milestone-name { color:#ccc; }
+  .milestone-progress { margin-left:auto; color:#888; font-family:'Courier New',monospace; font-size:0.52rem; }
+  .milestone-desc { font-size:0.52rem; color:#5a5a78; padding-left:18px; margin-bottom:4px; }
+
+  /* Psych tab badges */
+  .psych-badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:0.56rem; margin-right:6px; }
+  .psych-badge.secure { background:rgba(76,175,80,0.15); color:#81c784; }
+  .psych-badge.anxious { background:rgba(255,152,0,0.15); color:#ffb74d; }
+  .psych-badge.avoidant { background:rgba(100,160,220,0.15); color:#90caf9; }
+  .psych-meta { font-size:0.52rem; color:#5a5a78; margin:2px 0; }
+  .psych-advice { font-size:0.54rem; color:#8a8aaa; margin-top:3px; }
+  .curiosity-item { padding:3px 0; border-bottom:1px solid rgba(255,255,255,0.03); font-size:0.55rem; color:#999; }
+  .curiosity-hook { color:#b8b8d0; margin-bottom:1px; }
+  .curiosity-asked { color:#7c83ff; margin-left:4px; font-size:0.5rem; }
+
+  /* Domain cards */
+  .domain-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .domain-card { border:1px solid rgba(124,131,255,0.12); border-left:3px solid #9e9e9e;
+    border-radius:6px; padding:6px 8px; background:rgba(124,131,255,0.04); }
+  .domain-card.status-positive { border-left-color:#4caf50; }
+  .domain-card.status-negative { border-left-color:#f44336; }
+  .domain-card.status-neutral { border-left-color:#9e9e9e; }
+  .domain-head { display:flex; align-items:center; justify-content:space-between; font-size:0.58rem; }
+  .domain-name { color:#d0d0e8; font-weight:500; }
+  .domain-status { font-size:0.52rem; }
+  .domain-status.pos { color:#81c784; } .domain-status.neg { color:#f48fb1; } .domain-status.neu { color:#8a8aaa; }
+  .domain-salience { flex:1; height:4px; background:rgba(255,255,255,0.05); border-radius:2px; margin:4px 0; overflow:hidden; }
+  .domain-salience-fill { display:block; height:100%; background:linear-gradient(90deg,#7c83ff,#a78bfa); border-radius:2px; }
+  .domain-mention { font-size:0.5rem; color:#5a5a78; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Portrait tab */
+  .portrait-text { font-size:0.58rem; color:#b8b8d0; white-space:pre-wrap; line-height:1.6;
+    border:1px solid rgba(124,131,255,0.12); border-radius:6px; padding:8px;
+    background:rgba(124,131,255,0.03); max-height:210px; overflow-y:auto; }
+  .stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .stat-card { border:1px solid rgba(124,131,255,0.12); border-radius:6px; padding:5px 8px;
+    background:rgba(124,131,255,0.04); }
+  .stat-value { font-size:0.7rem; color:#e8e0ff; font-family:'Courier New',monospace; }
+  .stat-label { font-size:0.5rem; color:#5a5a78; }
 
   /* ── Responsive ── */
   @media (max-width: 768px) {
@@ -1101,42 +1222,13 @@
   }
 }
 
-/* ── Metaphysics Panel ── */
-.metaphysics-toggle {
-  position: fixed;
-  right: 16px;
-  top: 60px;
-  z-index: 100;
-  background: rgba(255,255,255,0.1);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 50%;
-  width: 40px; height: 40px;
-  font-size: 20px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-.metaphysics-toggle.active {
-  background: rgba(147,112,219,0.4);
-  border-color: mediumpurple;
-  box-shadow: 0 0 12px rgba(147,112,219,0.3);
-}
-
+/* ── Metaphysics Panel (rendered inside #auxContent) ── */
 .metaphysics-panel {
-  position: fixed;
-  right: 0; top: 0;
-  width: 320px; height: 100vh;
-  background: rgba(10,10,30,0.95);
-  border-left: 1px solid rgba(255,255,255,0.1);
-  z-index: 200;
-  overflow-y: auto;
-  padding: 16px;
-  transition: transform 0.3s ease;
   color: #ccc;
   font-size: 13px;
 }
-.metaphysics-panel.hidden {
-  transform: translateX(100%);
-}
+.metaphysics-panel button { cursor: pointer; }
+
 
 .metaphysics-header {
   display: flex;
@@ -1183,6 +1275,17 @@
   color: #fff;
 }
 
+.tab-info-panel {
+  margin-bottom: 12px; padding: 8px 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(124,131,255,0.12);
+  border-radius: 8px; font-size: 12px;
+}
+.tab-info-row { display:flex; justify-content:space-between; gap:12px; padding:3px 0; }
+.tab-info-label { color:#8a8a9a; flex-shrink:0; }
+.tab-info-value { color:#d8d8f0; text-align:right; word-break:break-all; }
+.tab-info-empty { color:#666; font-style:italic; text-align:center; padding:6px 0; margin:0; }
+
 .bazi-table {
   width: 100%;
   border-collapse: collapse;
@@ -1199,13 +1302,38 @@
   margin-bottom: 6px;
   font-size: 12px;
 }
-.birth-info-form input, .birth-info-form select {
-  width: 100%;
-  padding: 4px 8px;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 4px;
-  color: #ccc;
+/* Shared form input styles for metaphysics panel */
+.birth-info-form input, .birth-info-form select,
+#hehun-section input, #hehun-section select {
+  width: 100%; padding: 8px 12px;
+  background: rgba(18,18,42,0.8);
+  border: 1px solid rgba(124,131,255,0.2);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  color-scheme: dark;
+}
+.birth-info-form input:focus, .birth-info-form select:focus,
+#hehun-section input:focus, #hehun-section select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+#lunar-date-group select {
+  width: auto;
+  min-width: 70px;
+  padding: 6px 8px;
+}
+#lunar-date-group label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+#save-birth-btn {
+  display: block;
+  margin-left: auto;
+  margin-bottom: 16px;
 }
 
 .btn-primary {
@@ -1259,12 +1387,46 @@
 }
 
 /* Hehun section */
-#hehun-section h4 { color: mediumpurple; text-align: center; margin-bottom: 8px; }
-#hehun-section label { display: block; margin-bottom: 4px; font-size: 12px; }
-#hehun-section input, #hehun-section select {
-  width: 100%; padding: 4px 8px;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 4px; color: #ccc;
+.hehun-header {
+  display:flex; align-items:center; justify-content:center; gap:6px;
+  width:100%; padding:6px 0; background:none; border:none;
+  color:mediumpurple; font-family:inherit; font-size:14px;
+  letter-spacing:0.05em; cursor:pointer; text-align:center;
 }
+.hehun-arrow {
+  display:inline-block; font-size:12px; color:#8a8aaa;
+  transform:rotate(0); transition:transform 0.3s ease;
+}
+#hehun-section:not(.collapsed) .hehun-arrow { transform:rotate(90deg); }
+.hehun-body {
+  display:grid; grid-template-rows:0fr;
+  transition:grid-template-rows 0.3s ease;
+}
+#hehun-section:not(.collapsed) .hehun-body { grid-template-rows:1fr; }
+.hehun-inner { overflow:hidden; min-height:0; }
+#hehun-section label { display: block; margin-bottom: 4px; font-size: 12px; }
 #hehun-output { margin-top: 8px; font-size: 12px; line-height: 1.5; }
+
+/* Dark native controls: appearance reset + dropdown options */
+.birth-info-form select, #hehun-section select {
+  -webkit-appearance: none; appearance: none;
+}
+
+.birth-info-form select option, #hehun-section select option {
+  background: rgba(16,16,36,0.97); color: var(--text);
+}
+
+.birth-info-form input[type="date"]::-webkit-calendar-picker-indicator,
+.birth-info-form input[type="time"]::-webkit-calendar-picker-indicator,
+#hehun-section input[type="date"]::-webkit-calendar-picker-indicator,
+#hehun-section input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+/* Right-align 查看合盘 button */
+#hehun-btn {
+  display: block;
+  margin-left: auto;
+}

@@ -214,8 +214,13 @@ def test_reading_get_after_post_cached(client, monkeypatch):
 
     # Use fake LLM so the reading path succeeds and caches
     class FakeLLM:
-        def invoke(self, prompt):
-            return types.SimpleNamespace(content="AI 解读测试内容")
+        class Chat:
+            class Completions:
+                def create(self, **kwargs):
+                    msg = types.SimpleNamespace(content="AI 解读测试内容")
+                    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+            completions = Completions()
+        chat = Chat()
 
     monkeypatch.setattr("app.utils.get_llm", lambda: FakeLLM())
 
@@ -270,9 +275,16 @@ def test_reading_kb_injection(client, monkeypatch):
     captured_prompt = []
 
     class FakeLLM:
-        def invoke(self, prompt):
-            captured_prompt.append(prompt)
-            return types.SimpleNamespace(content="测试解读—KB注入验证")
+        def __init__(self):
+            self._captured = captured_prompt
+        class Chat:
+            class Completions:
+                def create(self, **kwargs):
+                    captured_prompt.append(kwargs.get("messages", [{}])[0].get("content", ""))
+                    msg = types.SimpleNamespace(content="测试解读—KB注入验证")
+                    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+            completions = Completions()
+        chat = Chat()
 
     monkeypatch.setattr("app.utils.get_llm", lambda: FakeLLM())
 

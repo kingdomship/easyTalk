@@ -95,10 +95,12 @@ def _read_last_n_user_messages(n: int) -> list[str]:
     return messages
 
 
-def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> list[dict]:
+def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> list[dict] | None:
     """Call LLM to distill topic crystals from a list of user messages.
 
     Returns list of {"tag": str, "crystal": str} dicts, skipping existing tags.
+    Returns None on LLM failure (caller should NOT advance counter).
+    Returns [] when no crystals found (caller should advance counter).
     """
     if len(messages) < 5:
         return []
@@ -123,7 +125,7 @@ def _crystallize_from_messages(messages: list[str], existing_tags: set[str]) -> 
         raw = resp.choices[0].message.content.strip()
     except Exception:
         logger.warning("Operation failed", exc_info=True)
-        return []
+        return None
 
     if not raw or raw == "无":
         return []
@@ -206,7 +208,10 @@ def maybe_crystallize():
             return
 
         new_crystals = _crystallize_from_messages(messages, existing_tags)
-        _save_crystals(new_crystals)
+        if new_crystals is None:
+            return  # LLM failed, retry next turn
+        if new_crystals:
+            _save_crystals(new_crystals)
         _last_check_count = line_count
     except Exception:
         logger.warning("Operation failed", exc_info=True)

@@ -317,16 +317,14 @@ debugTrigger.addEventListener('click', () => {
     var opening = !debugPanel.classList.contains('visible');
     debugPanel.classList.toggle('visible');
     if (opening) {
-      // Start polling if emotion tab is active
       var activeTab = document.querySelector('.debug-tab.active');
-      if (activeTab && activeTab.getAttribute('data-debug-tab') === 'emotion') {
-        startEmotionPolling();
-      }
-      if (activeTab && activeTab.getAttribute('data-debug-tab') === 'token') {
-        autoLoadLatestTokens();
-      }
+      var tabName = activeTab ? activeTab.getAttribute('data-debug-tab') : 'log';
+      if (tabName === 'emotion') startEmotionPolling();
+      else if (tabName === 'token') autoLoadLatestTokens();
+      else if (tabName === 'audit') { loadAuditCategories(); refreshAuditLog(0); }
+      else startTabPolling(tabName);
     } else {
-      stopEmotionPolling();
+      stopAllDebugPolling();
     }
   }
 });
@@ -343,15 +341,14 @@ document.addEventListener('click', function(e) {
 
   // Show matching content
   document.querySelectorAll('.debug-content').forEach(function(c) { c.classList.remove('active'); });
-  var tabIdMap = { log: 'debugLogTab', emotion: 'debugEmotionTab', token: 'debugTokenTab', audit: 'debugAuditTab' };
+  var tabIdMap = { log: 'debugLogTab', emotion: 'debugEmotionTab', token: 'debugTokenTab', audit: 'debugAuditTab', affinity: 'debugAffinityTab', psych: 'debugPsychTab', domains: 'debugDomainsTab', portrait: 'debugPortraitTab' };
   var content = document.getElementById(tabIdMap[tabName] || 'debugLogTab');
   if (content) content.classList.add('active');
 
-  // Lifecycle: start/stop polling based on tab
-  if (tabName === 'emotion') {
-    if (debugPanel.classList.contains('visible')) startEmotionPolling();
-  } else {
-    stopEmotionPolling();
+  // Lifecycle: stop all polls, then start the appropriate one
+  stopAllDebugPolling();
+  if (tabName === 'emotion' && debugPanel.classList.contains('visible')) {
+    startEmotionPolling();
   }
   if (tabName === 'token' && debugPanel.classList.contains('visible')) {
     autoLoadLatestTokens();
@@ -360,7 +357,28 @@ document.addEventListener('click', function(e) {
     loadAuditCategories();
     refreshAuditLog(0);
   }
+  if (debugPanel.classList.contains('visible')) startTabPolling(tabName);
 });
+
+// ── Generic 5s polling for relationship/psych tabs ───────────────────
+var _debugPolls = {};
+function startDebugPolling(name, fn) {
+  if (_debugPolls[name]) return;
+  _debugPolls[name] = setInterval(fn, 5000);
+  fn();
+}
+function stopDebugPolling(name) {
+  if (_debugPolls[name]) { clearInterval(_debugPolls[name]); _debugPolls[name] = null; }
+}
+function stopAllDebugPolling() {
+  for (var k in _debugPolls) stopDebugPolling(k);
+  stopEmotionPolling();
+}
+function startTabPolling(tabName) {
+  var fns = { affinity: fetchAffinity, psych: fetchPsych,
+              domains: fetchDomains, portrait: fetchPortrait };
+  if (fns[tabName]) startDebugPolling(tabName, fns[tabName]);
+}
 
 // ── Emotion polling ──────────────────────────────────────────────
 var _emotionPollTimer = null;
@@ -501,6 +519,217 @@ function renderSparklineBars(container, distances) {
     html += '<span class="spark-bar ' + cls + (isLast ? ' current' : '') + '" style="height:' + h.toFixed(1) + 'px" title="' + d.toFixed(3) + '"></span>';
   }
   container.innerHTML = html;
+}
+
+// ── Affinity tab ────────────────────────────────────────────────────
+var AFFINITY_LABELS_CN = {
+  warmth: '温暖度', trust: '信任度', intimacy: '亲密度',
+  curiosity: '好奇心', patience: '耐心度', tension: '紧张度',
+  expression_amplitude: '表达幅度', user_autonomy: '用户自主性',
+  user_competence: '用户胜任感', user_relatedness: '用户关联感',
+};
+
+function fetchAffinity() {
+  if (document.hidden) return;
+  fetch('/api/debug/affinity')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderAffinityBars(data.values || {});
+      renderMilestones(data.milestones || []);
+    })
+    .catch(function() {});
+}
+
+function renderAffinityBars(values) {
+  var container = document.getElementById('affinityBars');
+  if (!container) return;
+  var html = '';
+  for (var key in AFFINITY_LABELS_CN) {
+    var val = values[key] != null ? values[key] : 0;
+    var pct;
+    if (key === 'expression_amplitude') {
+      pct = Math.round((val - 0.5) * 100);
+    } else if (key === 'tension') {
+      pct = Math.round((1 - val) * 100);
+    } else {
+      pct = Math.round(val * 100);
+    }
+    pct = Math.max(0, Math.min(100, pct));
+    var intensity = pct >= 70 ? 'high' : pct >= 40 ? 'mid' : 'low';
+    html += '<div class="emotion-row">'
+      + '<span class="emotion-label label-' + intensity + '">' + AFFINITY_LABELS_CN[key] + '</span>'
+      + '<span class="emotion-bar-wrap"><span class="emotion-bar-fill bar-' + intensity + '" style="width:' + pct + '%"></span></span>'
+      + '<span class="emotion-value value-' + intensity + '">' + (key === 'expression_amplitude' ? val.toFixed(2) : pct + '%') + '</span>'
+      + '</div>';
+  }
+  container.innerHTML = html || '<div class="debug-empty">暂无数据</div>';
+}
+
+function renderMilestones(milestones) {
+  var container = document.getElementById('affinityMilestones');
+  if (!container) return;
+  if (!milestones.length) { container.innerHTML = '<div class="debug-empty">暂无里程碑</div>'; return; }
+  var html = '';
+  milestones.forEach(function(m) {
+    var cls = m.reached ? 'milestone-item reached' : 'milestone-item';
+    html += '<div class="' + cls + '">'
+      + '<span class="milestone-check">' + (m.reached ? '✓' : '○') + '</span>'
+      + '<span class="milestone-name">' + escapeHtml(m.name) + '</span>'
+      + '<span class="milestone-progress">' + m.value.toFixed(2) + ' / ' + m.threshold.toFixed(2) + '</span>'
+      + '</div>'
+      + '<div class="milestone-desc">' + escapeHtml(m.description) + '</div>';
+  });
+  container.innerHTML = html;
+}
+
+// ── Psych tab ───────────────────────────────────────────────────────
+var ATTACHMENT_CN = { secure: '安全型', anxious: '焦虑型', avoidant: '回避型' };
+var GOAL_CN = { venting: '倾诉', help_seeking: '求助', sharing: '分享', debating: '辩论', chat: '闲聊' };
+
+function fetchPsych() {
+  if (document.hidden) return;
+  fetch('/api/debug/psych')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderAttachment(data.attachment);
+      renderContagion(data.contagion);
+      renderGoal(data.goal);
+      renderSalience(data.salience || {});
+      renderCuriosity(data.curiosity || []);
+    })
+    .catch(function() {});
+}
+
+function renderAttachment(att) {
+  var container = document.getElementById('psychAttachment');
+  if (!container) return;
+  if (!att) { container.innerHTML = '<div class="debug-empty">暂无数据</div>'; return; }
+  var style = att.style || 'secure';
+  var html = '<span class="psych-badge ' + style + '">' + (ATTACHMENT_CN[style] || style) + '</span>';
+  if (att.confidence != null) {
+    html += '<span class="psych-meta">置信度: ' + (att.confidence * 100).toFixed(0) + '%</span>';
+  }
+  if (att.advice) {
+    html += '<div class="psych-advice">' + escapeHtml(att.advice) + '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function renderContagion(ct) {
+  var container = document.getElementById('psychContagion');
+  if (!container) return;
+  if (!ct) { container.innerHTML = '<div class="debug-empty">暂无数据</div>'; return; }
+  var html = '';
+  if (ct.last_ai_emotion) {
+    html += '<div class="psych-meta">上轮AI情绪: ' + escapeHtml(ct.last_ai_emotion) + '</div>';
+  }
+  if (ct.comfort_effectiveness != null) {
+    html += '<div class="psych-meta">安抚有效性: ' + (ct.comfort_effectiveness * 100).toFixed(0) + '%</div>';
+  }
+  if (ct.comfort_stats) {
+    var s = ct.comfort_stats;
+    html += '<div class="psych-meta">使用' + (s.uses || 0) + '次 / 有效' + (s.improved || 0) + ' / 恶化' + (s.worsened || 0) + ' / 不变' + (s.unchanged || 0) + '</div>';
+  }
+  container.innerHTML = html || '<div class="debug-empty">暂无数据</div>';
+}
+
+function renderGoal(goal) {
+  var container = document.getElementById('psychGoal');
+  if (!container) return;
+  if (!goal) { container.innerHTML = '<div class="debug-empty">暂无数据</div>'; return; }
+  var typeCN = GOAL_CN[goal.type] || goal.type || '未知';
+  var html = '<span class="psych-badge secure">' + typeCN + '</span>';
+  if (goal.duration != null) {
+    html += '<span class="psych-meta">持续 ' + goal.duration + ' 轮</span>';
+  }
+  if (goal.emotion_trend) {
+    html += '<span class="psych-meta">情绪趋势: ' + escapeHtml(goal.emotion_trend) + '</span>';
+  }
+  container.innerHTML = html;
+}
+
+function renderSalience(values) {
+  renderEmotionBars('psychSalience', values, { surprise: '惊喜度', novelty: '新奇度', arousal: '唤醒度', reward: '奖赏度', conflict: '冲突度' });
+}
+
+function renderCuriosity(items) {
+  var container = document.getElementById('psychCuriosity');
+  if (!container) return;
+  if (!items.length) { container.innerHTML = '<div class="debug-empty">暂无待追问项</div>'; return; }
+  var html = '';
+  items.forEach(function(item, i) {
+    if (i >= 5) return;
+    html += '<div class="curiosity-item">'
+      + '<div class="curiosity-hook">' + escapeHtml(item.hook || item.question || '') + '</div>';
+    if (item.asked_count != null) {
+      html += '<span class="curiosity-asked">追问 ' + item.asked_count + ' 次</span>';
+    }
+    html += '</div>';
+  });
+  container.innerHTML = html || '<div class="debug-empty">暂无待追问项</div>';
+}
+
+// ── Domains tab ─────────────────────────────────────────────────────
+var DOMAIN_STATUS_CN = { positive: '正面', negative: '负面', neutral: '中性' };
+
+function fetchDomains() {
+  if (document.hidden) return;
+  fetch('/api/debug/life-domains')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderDomains(data.domains || []);
+    })
+    .catch(function() {});
+}
+
+function renderDomains(domains) {
+  var container = document.getElementById('domainCards');
+  if (!container) return;
+  if (!domains.length) { container.innerHTML = '<div class="debug-empty">暂无数据</div>'; return; }
+  var html = '';
+  domains.forEach(function(d) {
+    var statusCN = DOMAIN_STATUS_CN[d.status] || '中性';
+    var statusCls = d.status === 'positive' ? 'pos' : d.status === 'negative' ? 'neg' : 'neu';
+    var saliencePct = Math.round((d.salience || 0) * 100);
+    html += '<div class="domain-card status-' + (d.status || 'neutral') + '">'
+      + '<div class="domain-head">'
+      + '<span class="domain-name">' + escapeHtml(d.label) + '</span>'
+      + '<span class="domain-status ' + statusCls + '">' + statusCN + '</span>'
+      + '</div>'
+      + '<div class="domain-salience"><span class="domain-salience-fill" style="width:' + saliencePct + '%"></span></div>';
+    if (d.last_mention) {
+      html += '<div class="domain-mention">最近: ' + escapeHtml(d.last_mention) + '</div>';
+    }
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
+// ── Portrait tab ────────────────────────────────────────────────────
+function fetchPortrait() {
+  if (document.hidden) return;
+  fetch('/api/debug/portrait')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      renderPortrait(data);
+    })
+    .catch(function() {});
+}
+
+function renderPortrait(data) {
+  var textEl = document.getElementById('portraitText');
+  if (textEl) {
+    textEl.textContent = data.portrait || '暂无画像数据';
+  }
+  var statsEl = document.getElementById('portraitStats');
+  if (statsEl) {
+    var s = data.stats || {};
+    var html = '<div class="stat-card"><div class="stat-value">' + (s.total_days || 0) + '</div><div class="stat-label">相识天数</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + escapeHtml(s.first_date || '—') + '</div><div class="stat-label">首次聊天</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + (s.total_messages || 0).toLocaleString() + '</div><div class="stat-label">消息总数</div></div>'
+      + '<div class="stat-card"><div class="stat-value">' + (s.kg_entities || 0) + '</div><div class="stat-label">知识图谱实体</div></div>';
+    statsEl.innerHTML = html;
+  }
 }
 
 // ── Token data ───────────────────────────────────────────────────

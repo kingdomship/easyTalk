@@ -193,10 +193,15 @@ function openAuxiliary(tab = 'diary') {
   loadAuxContent();
 }
 
+function _cleanupMetaphysics() {
+  if (typeof cleanupMetaphysicsContent === 'function') cleanupMetaphysicsContent();
+}
+
 function closeAuxiliary() {
   auxPanel.classList.remove('open');
   state = STATE.STARFIELD;
   chatFadeIn = 0;
+  _cleanupMetaphysics();
   // Clean up constellation overlay if present
   var overlay = document.querySelector('.constellation-overlay');
   if (overlay) {
@@ -231,11 +236,14 @@ function loadAuxContent() {
     if (overlay) overlay.remove();
     auxContent.innerHTML = '';
   }
+  // Cleanup metaphysics when switching away
+  if (auxTab !== 'metaphysics') _cleanupMetaphysics();
   if (auxTab === 'diary') loadDiaryContent(true);
   else if (auxTab === 'news') loadNewsContent();
   else if (auxTab === 'mood') loadMoodContent();
   else if (auxTab === 'memory') loadMemoryContent();
   else if (auxTab === 'constellation') loadConstellationContent();
+  else if (auxTab === 'metaphysics') loadMetaphysicsContent();
 }
 
 async function loadMemoryContent() {
@@ -370,6 +378,21 @@ async function loadConstellationContent() {
   } catch(e) {
     console.error('[Constellation] load failed:', e);
     auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">星图加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ── Metaphysics ──
+function loadMetaphysicsContent() {
+  var template = document.getElementById('metaphysics-template');
+  if (!template) {
+    auxContent.innerHTML = '<div style="text-align:center;padding:40px;color:#f44336;">命理模板加载失败</div>';
+    return;
+  }
+  auxContent.innerHTML = '';
+  auxContent.appendChild(template.content.cloneNode(true));
+  // Initialize event listeners on the cloned content
+  if (typeof initMetaphysicsContent === 'function') {
+    initMetaphysicsContent();
   }
 }
 

@@ -744,14 +744,6 @@ def build_constellation() -> dict:
                         continue
                     if in_frontmatter:
                         continue
-                    if "名字" in stripped and ("：" in stripped or ":" in stripped):
-                        for sep in ("：", ":"):
-                            parts = stripped.split(sep, 1)
-                            if "名字" in parts[0] and len(parts) > 1:
-                                ai_label = parts[1].strip()[:8]
-                                break
-                        if ai_label != "AI":
-                            break
                     if ai_label == "AI" and "我是" in stripped:
                         rest = stripped.split("我是", 1)[1]
                         for sep in ("，", ",", "。", ".", "、", " "):

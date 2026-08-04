@@ -558,6 +558,49 @@ finally:
 - SSE 流解析：`decoder.decode(value, {stream: true})` 后按 `\n` 分割，不完整的 JSON 行存回 buffer 等待下个 chunk
 - **日志转发熔断器**: `forwardLogToBackend()` — 连续 3 次失败（含 HTTP 4xx/5xx）→ `_logForwardDisabled = true` 永久禁用；2 秒节流；只转发 error 级别；catch 中不调用 `console.error`（防反馈循环）
 
+## LLM JSON 响应：安全提取规范
+
+### DeepSeek `response_format=json_object` Bug
+
+DeepSeek API 的 `response_format={"type": "json_object"}` 在历史对话场景下有已知 bug — 会静默返回空字符串或空格（`chat.py:859` 已文档记录）。主聊天 `_call_llm()` 已通过花括号匹配绕过。
+
+**禁忌**: 任何 LLM JSON 调用都**不应**使用 `response_format={"type": "json_object"}` + 直接 `json.loads()`。
+
+### 安全提取模式
+
+所有 LLM JSON 响应统一使用花括号匹配 + 空内容保护：
+
+```python
+resp = client.chat.completions.create(
+    model=get_llm_model(),
+    messages=[...],
+    temperature=0.15,
+    max_tokens=300,
+    # 不传 response_format
+)
+raw = resp.choices[0].message.content
+if not raw or not raw.strip():
+    return <safe_default>  # None / [] / 默认值
+start = raw.find("{")
+end = raw.rfind("}") + 1
+if start < 0 or end <= start:
+    return <safe_default>
+data = json.loads(raw[start:end])
+```
+
+### 受影响模块（共6个，10处调用，已于 2026-08-03 修复）
+
+| 文件 | 函数 | 空响应默认值 |
+|------|------|-------------|
+| `services/cognition/dual_system.py` | `_combined_eval`, `maybe_deep_audit`, `detect_contradictions`, `assess_impact` | `None` |
+| `services/memory/search.py` | `_llm_extract_tags` | `[]` |
+| `services/reflection/diary.py` | `generate_diary`, `generate_user_diary` | fallback 文案 / `None` |
+| `services/memory/knowledge_graph.py` | `_llm_extract_kg` | `[]` |
+| `services/memory/reranker.py` | `_llm_rerank` | 原始列表 `candidates[:10]` |
+| `services/cognition/predictive_agent.py` | `_llm_predict` | `None` |
+
+**新增 LLM JSON 调用时**: 严格遵循上述安全提取模式，不复制旧的 `response_format` + 直接 `json.loads` 写法。
+
 ## 部署 (阿里云 ACR)
 
 ```bash

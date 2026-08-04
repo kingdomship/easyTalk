@@ -111,9 +111,9 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
     executor = get_background_executor()
-    executor.shutdown(wait=True, timeout=10)
+    executor.shutdown(wait=True)
     lo_executor = get_low_priority_executor()
-    lo_executor.shutdown(wait=True, timeout=10)
+    lo_executor.shutdown(wait=True)
 
 
 def _run_diary_catchup():

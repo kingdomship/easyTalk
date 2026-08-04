@@ -100,7 +100,7 @@ def llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
         cand_lines.append(f"[{i}] 用户: {user}")
 
     try:
-        from app.utils import get_llm, get_llm_model, llm_module_context
+        from app.utils import extract_json, get_llm, get_llm_model, llm_module_context
         client = get_llm()
         if client is None:
             return candidates[:10]
@@ -114,24 +114,22 @@ def llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
                 )},
                 {"role": "user", "content": "请按相关度排序。"},
             ],
-            response_format={"type": "json_object"},
             temperature=0.1,
             max_tokens=200,
         )
         raw = resp.choices[0].message.content
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            data = json.loads(raw[start:end])
-            indices = data.get("ranked_indices", [])
-            # Reorder candidates by LLM ranking
-            idx_set = set(indices)
-            reranked = [candidates[i - 1] for i in indices if 1 <= i <= len(candidates)]
-            # Append any candidates the LLM dropped
-            for i, c in enumerate(candidates, 1):
-                if i not in idx_set:
-                    reranked.append(c)
-            return reranked[:5]
+        data = extract_json(raw)
+        if not data:
+            return candidates[:10]
+        indices = data.get("ranked_indices", [])
+        # Reorder candidates by LLM ranking
+        idx_set = set(indices)
+        reranked = [candidates[i - 1] for i in indices if 1 <= i <= len(candidates)]
+        # Append any candidates the LLM dropped
+        for i, c in enumerate(candidates, 1):
+            if i not in idx_set:
+                reranked.append(c)
+        return reranked[:5]
     except Exception:
         logger.warning("LLM rerank failed, returning original order", exc_info=True)
 

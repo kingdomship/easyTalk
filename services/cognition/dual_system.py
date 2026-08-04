@@ -7,7 +7,7 @@ GATE (门控逻辑) evaluates multiple signals to decide which system(s) to enga
 System 2 insights feed back into System 1 via periodic consolidation.
 """
 
-import json
+from app.utils import extract_json
 import logging
 import threading
 from datetime import datetime, timezone
@@ -169,11 +169,12 @@ def detect_contradictions(user_msg: str) -> dict | None:
                     )},
                     {"role": "user", "content": "检测矛盾。"},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.1,
                 max_tokens=200,
             )
-        data = json.loads(resp.choices[0].message.content)
+        data = extract_json(resp.choices[0].message.content)
+        if not data:
+            return None
         return {
             "contradiction": bool(data.get("contradiction", False)),
             "description": str(data.get("description", "")),
@@ -205,11 +206,12 @@ def assess_impact(user_msg: str, avatar_reply: str) -> dict | None:
                     )},
                     {"role": "user", "content": "评估影响。"},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.2,
                 max_tokens=200,
             )
-        data = json.loads(resp.choices[0].message.content)
+        data = extract_json(resp.choices[0].message.content)
+        if not data:
+            return None
         return {
             "trust_impact": float(data.get("trust_impact", 0)),
             "warmth_impact": float(data.get("warmth_impact", 0)),
@@ -248,11 +250,12 @@ def _combined_eval(user_msg: str, avatar_reply: str) -> tuple[dict | None, dict 
                     )},
                     {"role": "user", "content": "评估。"},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.15,
                 max_tokens=300,
             )
-        data = json.loads(resp.choices[0].message.content)
+        data = extract_json(resp.choices[0].message.content)
+        if not data:
+            return None, None
         impact_data = data.get("impact", {})
         contra_data = data.get("contradiction", {})
 
@@ -474,11 +477,12 @@ def deep_self_audit() -> None:
                     )},
                     {"role": "user", "content": summary},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.2,
-            max_tokens=200,
-        )
-        data = json.loads(resp.choices[0].message.content)
+                max_tokens=200,
+            )
+        data = extract_json(resp.choices[0].message.content)
+        if not data:
+            return
         trend = data.get("trend", "stable")
         suggestion = data.get("suggestion", "")
 
@@ -500,12 +504,14 @@ def deep_self_audit() -> None:
                 )
     except Exception:
         logger.warning("Deep self-audit failed", exc_info=True)
+        raise
 
 
 def maybe_deep_audit():
     """Thread-safe wrapper: run deep_self_audit every _DEEP_AUDIT_EVERY evaluations.
 
     Uses non-blocking lock + count check, same pattern as maybe_guard().
+    Only advances counter on success — failures retry next turn.
     """
     global _last_audit_count
     if not _AUDIT_LOCK.acquire(blocking=False):
@@ -517,7 +523,11 @@ def maybe_deep_audit():
         cnt = row["cnt"]
         if cnt - _last_audit_count < _DEEP_AUDIT_EVERY:
             return
-        deep_self_audit()
+        try:
+            deep_self_audit()
+        except Exception:
+            logger.warning("Deep self-audit failed, will retry", exc_info=True)
+            return
         _last_audit_count = cnt
     except Exception:
         logger.warning("Deep audit check failed", exc_info=True)

@@ -22,6 +22,25 @@ def lookup_city(name: str) -> dict:
     return city
 
 
+def convert_lunar_to_solar(lunar_date: dict, clock_time: str = "12:00") -> dict:
+    """农历→公历转换, 使用 lunar-python 库.
+    lunar_date: {year, month, day, is_leap_month?}
+    返回: {solar_date: "YYYY-MM-DD", clock_time: "HH:MM"}"""
+    from lunar_python import Lunar
+
+    year = int(lunar_date.get("year", 2000))
+    month = int(lunar_date.get("month", 1))
+    day = int(lunar_date.get("day", 1))
+    is_leap = lunar_date.get("is_leap_month", False)
+
+    lunar = Lunar.fromYmd(year, month, day)
+    solar = lunar.getSolar()
+    return {
+        "solar_date": f"{solar.getYear():04d}-{solar.getMonth():02d}-{solar.getDay():02d}",
+        "clock_time": clock_time,
+    }
+
+
 def normalize_gender(gender: str) -> int:
     """'女' → 0, '男' → 1 (lunar-python getYun(sex) 约定: 0=女 1=男)"""
     return 0 if gender in ("女", "female", "f") else 1

@@ -12,6 +12,7 @@ import json
 import logging
 
 from app.db import q, execute
+from app.utils import extract_json
 
 logger = logging.getLogger("emoji-chat")
 
@@ -72,11 +73,13 @@ def _llm_extract_tags(text: str) -> list[str]:
                     {"role": "system", "content": _EXTRACT_PROMPT},
                     {"role": "user", "content": text},
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.3,
                 max_tokens=200,
             )
-        data = json.loads(resp.choices[0].message.content)
+        raw = resp.choices[0].message.content
+        data = extract_json(raw)
+        if not data:
+            return []
         tags = data.get("tags", [])
     except Exception:
         logger.warning("Operation failed", exc_info=True)

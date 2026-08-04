@@ -315,16 +315,50 @@ def read_api_key() -> str | None:
     return load_llm_config().api_key or None
 
 
-def extract_json(raw: str) -> dict | None:
-    """Extract the first JSON object from a raw LLM response using brace matching."""
+def extract_json(raw: str, return_end: bool = False):
+    """Extract the first JSON object from a raw LLM response.
+
+    Uses brace matching with a balanced-brace scan fallback when the simple
+    rfind approach fails (e.g. stray braces in the reply text).  Handles
+    DeepSeek's known bug where response_format=json_object silently returns
+    empty strings or whitespace.
+
+    When return_end is True, returns (data, end_pos) so callers can recover
+    trailing text after the closing brace (used by the continuation loop in
+    chat.py).  Otherwise returns data or None.
+    """
+    if not raw or not raw.strip():
+        return (None, 0) if return_end else None
+
     start = raw.find("{")
+    if start < 0:
+        return (None, 0) if return_end else None
+
+    # First try: rfind("}") — works when no stray braces in reply
     end = raw.rfind("}") + 1
-    if start >= 0 and end > start:
+    if end > start:
         try:
-            return json.loads(raw[start:end])
+            data = json.loads(raw[start:end])
+            return (data, end) if return_end else data
         except json.JSONDecodeError:
-            return None
-    return None
+            pass
+
+    # Fallback: balanced-brace scan from the first "{"
+    depth = 0
+    for i in range(start, len(raw)):
+        if raw[i] == "{":
+            depth += 1
+        elif raw[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = json.loads(raw[start:i + 1])
+                    return (data, i + 1) if return_end else data
+                except json.JSONDecodeError:
+                    pass
+                break
+
+    return (None, 0) if return_end else None
 
 
 def read_last_n_lines(path: str, n: int) -> list[str]:

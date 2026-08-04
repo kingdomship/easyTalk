@@ -57,6 +57,13 @@ def generate_prediction(user_msg: str, avatar_reply: str):
             logger.info("Prediction: %s", prediction[:50])
     except Exception:
         logger.warning("Operation failed", exc_info=True)
+        # Remove stale prediction file to prevent check_prediction
+        # from scoring new messages against an old prediction
+        try:
+            if os.path.exists(_PREDICTION_PATH):
+                os.remove(_PREDICTION_PATH)
+        except OSError:
+            pass
 
 
 def check_prediction(user_msg: str) -> float:

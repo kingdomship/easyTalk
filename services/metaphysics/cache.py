@@ -77,8 +77,10 @@ class ChartCache:
         birth_info = self._read_birth_info()
         if not birth_info:
             return {}
+        from services.metaphysics.calculator import _normalize_birth_info
         from services.metaphysics.solar_time import correct_solar_time
         from services.metaphysics.bazi.paipan import compute_bazi_static
+        birth_info = _normalize_birth_info(birth_info)
         corrected = correct_solar_time(birth_info)
         return compute_bazi_static(corrected)
 
@@ -87,8 +89,10 @@ class ChartCache:
         if not birth_info:
             return {}
         try:
+            from services.metaphysics.calculator import _normalize_birth_info
             from services.metaphysics.solar_time import correct_solar_time
             from services.metaphysics.ziwei.paipan import compute_ziwei_static
+            birth_info = _normalize_birth_info(birth_info)
             corrected = correct_solar_time(birth_info)
             return compute_ziwei_static(corrected)
         except ImportError:
